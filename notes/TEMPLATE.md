@@ -1,6 +1,6 @@
 # Architecture trial: <ID>
 
-This note is written **before** the training result. Keep later observations in a separate dated section; do not rewrite the prediction after seeing the score.
+This note is written **before** the training result. Keep later observations in a separate dated section; do not rewrite the prediction after seeing the score. Complete a separate [diagnostic review](REVIEW_TEMPLATE.md) after every attempted stage, including failures.
 
 ## Evidence and applicability
 

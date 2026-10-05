@@ -454,14 +454,16 @@ def _qat_probe_locked(rules: dict, settings: dict, lock: dict, root: Path,
     return record
 
 
-def status(campaign_path: Path) -> dict:
-    from .signals import compare_signals, summarize_run
+def status(campaign_path: Path, *, trial_id: str | None = None) -> dict:
+    from .signals import compare_checkpoint_diagnostics, compare_signals, summarize_run
 
     rules, settings, _, root = read_lock(campaign_path)
     ledger = read_ledger(root / "ledger.jsonl")
     complete = [item for item in ledger if item["outcome"] == "completed"]
     comparisons = []
     for item in complete:
+        if trial_id is not None and item["trial_id"] != trial_id:
+            continue
         if item.get("evaluation_sha256") != sha256(root / item["evaluation"]):
             raise ValueError(f"completed evaluation changed after ledger append: {item['trial_id']}/{item['stage']}")
         if item["stage"] == "qat_probe" and item.get("conversion_evaluation_sha256") != sha256(root / item["conversion_evaluation"]):
@@ -487,7 +489,9 @@ def status(campaign_path: Path) -> dict:
         comparison = {"trial_id": item["trial_id"], "stage": stage,
                       **compare_losses(candidate, baseline, rules),
                       "paired_interval": paired_batch_interval(candidate_eval, baseline_eval, rules),
-                      "other_axes": compare_signals(candidate_signals, baseline_signals)}
+                      "other_axes": compare_signals(candidate_signals, baseline_signals),
+                      "checkpoint_diagnostics": compare_checkpoint_diagnostics(
+                          candidate_result, baseline_result)}
         candidate_hours = sum(float(row.get("gpu_hours", 0)) for row in ledger
                               if row["trial_id"] == item["trial_id"] and row["stage"] == stage)
         baseline_hours = sum(float(row.get("gpu_hours", 0)) for row in ledger
@@ -495,6 +499,15 @@ def status(campaign_path: Path) -> dict:
         comparison["stage_gpu_hours_including_retries"] = candidate_hours
         comparison["baseline_stage_gpu_hours_including_retries"] = baseline_hours
         comparison["stage_cost_ratio"] = candidate_hours / baseline_hours if baseline_hours else None
+        stages_to_checkpoint = {"screen": {"screen"},
+                                "full": {"screen", "full"},
+                                "qat_probe": {"screen", "full", "qat_probe"}}[stage]
+        comparison["candidate_gpu_hours_to_checkpoint"] = sum(
+            float(row.get("gpu_hours", 0)) for row in ledger
+            if row["trial_id"] == item["trial_id"] and row["stage"] in stages_to_checkpoint)
+        comparison["baseline_gpu_hours_to_checkpoint"] = sum(
+            float(row.get("gpu_hours", 0)) for row in ledger
+            if row["trial_id"] == settings["baseline_trial"] and row["stage"] in stages_to_checkpoint)
         comparison["parameters"] = item["parameters"]
         if stage == "qat_probe":
             candidate_dense = read_json(root / "trials" / item["trial_id"] / "eval_full.json")["heldout"]
@@ -516,6 +529,8 @@ def status(campaign_path: Path) -> dict:
         comparisons.append(comparison)
     failures = []
     for item in ledger:
+        if trial_id is not None and item["trial_id"] != trial_id:
+            continue
         if item["outcome"] == "completed":
             continue
         trial_dir = root / "trials" / item["trial_id"]
@@ -554,7 +569,7 @@ def main(*, default_command: str | None = None) -> None:
         result = trial(args.campaign, args.trial_id, args.stage,
                        qat_rationale=args.qat_rationale)
     else:
-        result = status(args.campaign)
+        result = status(args.campaign, trial_id=args.trial_id)
     print(json.dumps(result, sort_keys=True, indent=2, allow_nan=False))
 
 
