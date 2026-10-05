@@ -6,6 +6,7 @@ This note is written **before** the training result. Keep later observations in 
 
 - Terminus observation: exact run/checkpoint/log, measured signal, uncertainty, and why the current architecture may cause it.
 - External evidence: primary paper and section/table; implementation URL and pinned commit; model size, data, precision, training budget, metric, and license. Say which differences limit transfer to Terminus.
+- Independent search trail: the question from Terminus evidence, search queries and sources checked (with access date), supporting result, plausible competing method, and contrary or negative result. Record why each source is relevant or inapplicable; do not treat a snippet or abstract as a verified result. If nothing close was found or a source could not be read, say so.
 - If the mechanism is original: derive it below and attach an existing empirical analogue or a reproducible cheap diagnostic. Do not present an unmeasured conjecture as evidence.
 
 ## Mathematical specification

@@ -36,3 +36,5 @@ Write one copy for every screen, full continuation, QAT probe or failed attempt.
 | <one material finding per row> | <classification> | <file, tokens, tensor/layer, candidate versus baseline> | <reason> | <continue, reject, test, or monitor> |
 
 State the strongest favorable and adverse evidence, what is still unmeasured, and the decision: reject, continue to full, run matched QAT, retain as a Pareto alternative, or revise the hypothesis. Do not promote a candidate solely because one metric improved; do not reject one solely because a diagnostic moved without showing why that movement is harmful.
+
+For each material surprise or unexplained result, state the new research question. Search primary papers, ablations and implementations independently while the H100 is off; record the sources and contrary evidence that support or weaken the next hypothesis. If the result is already explained or no further source is relevant, state that briefly. Do not turn literature search into an automatic new GPU trial.
