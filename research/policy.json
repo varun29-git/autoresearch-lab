@@ -21,6 +21,7 @@
   "group_weights": {"en": 0.35, "indic": 0.35, "code": 0.15, "math": 0.15},
   "regression_guardrail": 0.02,
   "indifference_band": 0.005,
+  "excluded_qk_norm_modes": ["unit_rms"],
   "fixed_model_fields": {
     "vocab_size": 65536,
     "max_seq_len": 4096,

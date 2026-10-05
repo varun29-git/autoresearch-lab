@@ -6,6 +6,7 @@
   "local_attention_window": 1024,
   "global_attention_every": 5,
   "qk_norm_mode": "learned_rms",
+  "use_subln": false,
   "attention_backend": "fa3",
   "weight_init": "normal",
   "pad_token_id": 3,

@@ -101,11 +101,21 @@ def assert_edit_scope(base_commit: str, rules: dict) -> list[str]:
 
 def load_candidate(rules: dict) -> dict:
     model = read_json(ROOT / rules["candidate_file"])
+    return validate_candidate(model, rules)
+
+
+def validate_candidate(model: dict, rules: dict) -> dict:
     if not isinstance(model, dict):
         raise ValueError("candidate model must be a JSON object")
+    for field in ("qk_norm_mode", "use_subln"):
+        if field not in model:
+            raise ValueError(f"candidate must set {field} explicitly; model defaults include old unit protections")
     for field, expected in rules["fixed_model_fields"].items():
         if model.get(field) != expected:
             raise ValueError(f"candidate changed fixed model field {field}")
+    if model.get("qk_norm_mode") in rules["excluded_qk_norm_modes"]:
+        raise ValueError("gain-free unit Q/K normalization was already tested; "
+                         "do not repeat unit_rms in this campaign")
     return model
 
 

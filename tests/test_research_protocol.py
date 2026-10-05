@@ -8,7 +8,8 @@ from pathlib import Path
 
 from research.loop import trial_config, trial_manifest
 from research.protocol import (compare_losses, grouped_losses, load_candidate,
-                               paired_batch_interval, policy, validate_task_manifest)
+                               paired_batch_interval, policy, validate_candidate,
+                               validate_task_manifest)
 
 
 class ResearchProtocolTests(unittest.TestCase):
@@ -17,6 +18,7 @@ class ResearchProtocolTests(unittest.TestCase):
 
     def test_baseline_candidate_and_fixed_training_policy(self):
         model = load_candidate(self.rules)
+        self.assertFalse(model["use_subln"])
         rendered = trial_config(model, self.rules)
         self.assertEqual(rendered["model"], model)
         self.assertEqual(rendered["training"]["warmup_tokens"], 250_000_000)
@@ -24,6 +26,14 @@ class ResearchProtocolTests(unittest.TestCase):
         self.assertEqual(rendered["training"]["gradient_accumulation_steps"], 3)
         self.assertEqual(rendered["optimizer"]["muon_lr"], 0.003)
         self.assertIsNone(rendered["training"]["time_limit_seconds"])
+
+    def test_rejects_repeat_of_gain_free_unit_qk_norm(self):
+        model = dict(load_candidate(self.rules), qk_norm_mode="unit_rms")
+        with self.assertRaisesRegex(ValueError, "already tested"):
+            validate_candidate(model, self.rules)
+        del model["qk_norm_mode"]
+        with self.assertRaisesRegex(ValueError, "must set qk_norm_mode explicitly"):
+            validate_candidate(model, self.rules)
 
     def test_trial_manifest_preserves_data_and_mix(self):
         source = {"config": {"seq_len": 4096, "batch_size": 48,

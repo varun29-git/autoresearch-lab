@@ -12,6 +12,12 @@ Each trial must remain within the stated parameter envelope. Compare candidates 
 
 The primary measurement is held-out next-token loss for English, seven Indic languages, code, and math. The protected scorer expresses each group's relative change from a matched-horizon baseline and applies predeclared group weights. Inspect every domain, not just the aggregate. The full stage also runs answer-only development tasks and fixed position-bucket diagnostics. Task accuracy at this proxy scale can be noisy; raw rationale imitation is not a success metric. A screen-only gain, one seed, or a tiny aggregate difference does not establish a final architecture. Stage one ends with a **shortlist and evidence**, not a claim that the eventual ternary model's architecture is solved.
 
+## Previously tried designs: do not repeat
+
+Do **not** spend a trial on `qk_norm_mode="unit_rms"`, the old gain-free Q/K RMS normalization with fixed attention scale. It has already been exercised in Terminus, including a 30B-token archived run. It bounded observed attention logits, but there is no matched evidence that removing learnable attention scale improved quality. Repeating that exact fixed-unit choice in this scarce overnight search would be **stupid use of GPU time**. The runner rejects that candidate setting. Do not hide the same operation inside `terminus/model.py` under another name.
+
+Do **not** restore the old parameter-free, forced-unit SubLN/branch-normalization stack or add more unit-scale protection layers merely because they appear safer. The baseline explicitly disables SubLN. Propose a genuinely different normalization mechanism only with a specific expressivity/stability hypothesis and a comparison against the current baseline. Standard learned-gain pre-attention, pre-FFN and final RMSNorm are **not** excluded; neither are learned-scale Q/K normalization or no Q/K normalization. Treat the old learned-affine Q/K gain runaway as a separate risk to monitor, not as evidence that fixed-unit Q/K is optimal. See the [prior-design evidence](docs/EXCLUDED_UNIT_NORMALIZATION.md).
+
 ## Research loop
 
 1. Establish the unmodified **screen** baseline. Create a fresh `autoresearch/<tag>` branch, run preparation, then run `python train.py --campaign /path/to/campaign.json --trial-id baseline --stage screen`. Read the validation trajectory and stability records, not only the final summary. Do not spend the baseline's remaining 2B tokens before seeing candidate screens.
