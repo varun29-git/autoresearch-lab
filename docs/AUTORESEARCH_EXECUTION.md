@@ -27,11 +27,10 @@ python prepare.py --campaign /absolute/path/to/campaign.json
 
 Preparation performs data/task hash and schema checks, validates every shard and the fixed tokenizer, checks model parameter count, and writes an immutable `campaign_lock.json` under `results_root/tag`. This can take time because full shard hashes are read. It uses CPU only and does not train. If it fails, fix the external input or make a new campaign version; do not edit the validator to pass.
 
-## 3. Establish baseline, then let Kimi iterate
+## 3. Screen the baseline, then let Kimi iterate
 
 ```bash
 python train.py --campaign /absolute/path/to/campaign.json --trial-id baseline --stage screen
-python train.py --campaign /absolute/path/to/campaign.json --trial-id baseline --stage full
 python -m research.loop status --campaign /absolute/path/to/campaign.json
 ```
 
@@ -40,10 +39,9 @@ For each researched, committed architecture candidate, Kimi runs:
 ```bash
 python train.py --campaign /absolute/path/to/campaign.json --trial-id trial-001 --stage screen
 python -m research.loop status --campaign /absolute/path/to/campaign.json
-python train.py --campaign /absolute/path/to/campaign.json --trial-id trial-001 --stage full
 ```
 
-The full stage resumes from the exact screen checkpoint and the same full-horizon WSD schedule. The `trial-001` branch must remain checked out at its recorded commit for continuation. A failed or timed-out trial remains in `ledger.jsonl` and may resume if a valid checkpoint exists; do not reuse the trial ID for different source. The runner rejects changes to protected code, task/data hashes, or the parameter envelope. It performs native numerical preflight before first training of each candidate. Its stdout is captured in per-step log files; `status` prints primary score, per-domain changes and a paired-batch interval. Inspect `run/events.jsonl`, `run/stability.jsonl`, `run/incidents.jsonl`, full-stage task records, and the actual commit diff before promoting a candidate.
+Only after a candidate screen warrants a longer comparison, return to the baseline commit and run `python train.py --campaign /absolute/path/to/campaign.json --trial-id baseline --stage full`; then return to the candidate commit and run its `--stage full`. If all screens are unpromising, the baseline need not consume its remaining 2B tokens. A full stage resumes from the exact screen checkpoint and the same full-horizon WSD schedule. The `trial-001` branch must remain checked out at its recorded commit for continuation. A failed or timed-out trial remains in `ledger.jsonl` and may resume if a valid checkpoint exists; do not reuse the trial ID for different source. The runner rejects changes to protected code, task/data hashes, or the parameter envelope. It performs native numerical preflight before first training of each candidate. Its stdout is captured in per-step log files; `status` prints primary score, per-domain changes and a paired-batch interval. Inspect `run/events.jsonl`, `run/stability.jsonl`, `run/incidents.jsonl`, full-stage task records, and the actual commit diff before promoting a candidate.
 
 The runner's 12-hour cap counts preflight, training and evaluation wall time on one GPU. Its per-trial timeout sends SIGTERM so Terminus can commit an interruption checkpoint. A result is **completed** only after the target tokens and protected checkpoint evaluation exist. Kimi must stop at the cap, the human's stop instruction, or a real readiness blocker. Results are append-only and branches are retained.
 

@@ -21,6 +21,8 @@ The Terminus adaptation deliberately changes four things:
 
 The baseline is the maintained 200M width-family dense-FP8 configuration. A candidate may change architecture and model code within a **190M–210M parameter envelope**. This prevents a trivial quality gain from simply adding many parameters. Width and total parameter count are researched separately in the later transfer stage. The exact parameter envelope can be changed **before** a campaign begins, but not mid-campaign.
 
+The baseline is first trained only to the 0.5B-token screen, so candidate screens can be compared without paying for a 2.5B baseline upfront. Its remaining 2B tokens are spent only when at least one candidate merits a full-horizon comparison. The 2.5B horizon is a proposed extension point, not a proven minimum training duration; it must be reviewed against measured learning curves and the overnight budget before locking a campaign.
+
 The primary score is the predeclared weighted relative improvement in held-out next-token loss at matched exposure:
 
 \[
