@@ -194,7 +194,8 @@ def latest_state(run_dir: Path) -> dict | None:
     return read_json(path)["state"] if path.exists() else None
 
 
-def trial(campaign_path: Path, trial_id: str, stage: str, *, qat_rationale: str | None = None) -> dict:
+def trial(campaign_path: Path, trial_id: str, stage: str, *,
+          qat_rationale: str | None = None, max_seconds: float | None = None) -> dict:
     """Serialize the whole preflight/train/eval transaction on the campaign GPU."""
     _, _, _, root = read_lock(campaign_path)
     with (root / ".active_trial.lock").open("a") as handle:
@@ -203,13 +204,15 @@ def trial(campaign_path: Path, trial_id: str, stage: str, *, qat_rationale: str 
         except BlockingIOError as exc:
             raise RuntimeError("another trial is active in this campaign") from exc
         try:
-            return _trial_locked(campaign_path, trial_id, stage, qat_rationale=qat_rationale)
+            return _trial_locked(campaign_path, trial_id, stage,
+                                 qat_rationale=qat_rationale, max_seconds=max_seconds)
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _trial_locked(campaign_path: Path, trial_id: str, stage: str,
-                  *, qat_rationale: str | None = None) -> dict:
+                  *, qat_rationale: str | None = None,
+                  max_seconds: float | None = None) -> dict:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", trial_id):
         raise ValueError("trial id must be a short filesystem-safe name")
     if stage not in {"screen", "full", "qat_probe"}:
@@ -236,7 +239,10 @@ def _trial_locked(campaign_path: Path, trial_id: str, stage: str,
     if remaining_seconds < 300:
         raise RuntimeError("campaign GPU-hour cap exhausted")
     # Leave room for SIGTERM, a final optimizer update and its checkpoint.
-    allowance = min(float(rules["max_trial_seconds"]), remaining_seconds - 150)
+    allowance = min(float(rules["max_trial_seconds"]), remaining_seconds - 150,
+                    float(max_seconds) if max_seconds is not None else float("inf"))
+    if allowance < 60:
+        raise RuntimeError("not enough trial time remains after the VM archive reserve")
     if stage == "qat_probe":
         return _qat_probe_locked(rules, settings, lock, root, trial_id, commit, model,
                                  params, ledger, allowance, qat_rationale)
