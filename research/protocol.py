@@ -48,6 +48,16 @@ def policy() -> dict:
         raise ValueError("quality group weights must sum to one")
     if not (0 < value["screen_tokens"] < value["full_tokens"]):
         raise ValueError("screen and full token horizons are invalid")
+    global_update_tokens = (value["microbatch"] * value["max_seq_len"] *
+                            value["gradient_accumulation_steps"])
+    if value["full_tokens"] % global_update_tokens:
+        raise ValueError("full horizon must end at a complete optimizer update for exact QAT continuation")
+    if value["qat_probe_tokens"] <= 0 or value["qat_probe_lr_multiplier"] <= 0:
+        raise ValueError("QAT probe tokens and LR multiplier must be positive")
+    if not (0 <= value["qat_probe_warmup_fraction"] < 1
+            and 0 <= value["qat_probe_decay_fraction"] < 1
+            and value["qat_probe_warmup_fraction"] + value["qat_probe_decay_fraction"] < 1):
+        raise ValueError("QAT probe warmup and decay fractions are invalid")
     if not (0 < value["min_parameters"] <= value["max_parameters"]):
         raise ValueError("parameter envelope is invalid")
     return value

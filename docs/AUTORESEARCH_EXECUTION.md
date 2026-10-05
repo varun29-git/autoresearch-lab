@@ -4,7 +4,7 @@ This is an **execution runbook**, not a record of a launched run. The owner supp
 
 ## 1. Stage external inputs
 
-Use the prepared ModelTunnelv2 65K-tokenizer stream and a manifest with the ten sources `en, hi, mr, kn, te, ta, gu, bn, code, math`, fixed train/validation splits, source provenance and a single fixed source mixture. The manifest's source paths must resolve under `data_root`, and its tokenizer path must point to the frozen JSON artifact with SHA-256 `c53e0e95cd19e2954a8c7114c0a580eeb16698b153fdf84c5d80a7187d778d29`. The training view must contain enough usable source tokens for a 2.5B-token trial. The [existing token-set build receipt](TOKENSET_LIVE_BUILD_20261001.md) describes the S3-packed set; it is a source lead, not a local file in this repo. Do not retokenize or copy full data into Git.
+Use the prepared ModelTunnelv2 65K-tokenizer stream and a manifest with the ten sources `en, hi, mr, kn, te, ta, gu, bn, code, math`, fixed train/validation splits, source provenance and a single fixed source mixture. The manifest's source paths must resolve under `data_root`, and its tokenizer path must point to the frozen JSON artifact with SHA-256 `c53e0e95cd19e2954a8c7114c0a580eeb16698b153fdf84c5d80a7187d778d29`. The training view must contain enough usable source tokens for a 2.5B-token dense trial, or about 2.6B if a conditional QAT probe is selected. The [existing token-set build receipt](TOKENSET_LIVE_BUILD_20261001.md) describes the S3-packed set; it is a source lead, not a local file in this repo. Do not retokenize or copy full data into Git.
 
 Prepare a **development-only** task manifest following [the example](../research/task_manifest.example.json). It needs at least one answer-only task for each domain. Each entry declares `domain`, `task`, `path`, SHA-256, `role=development`, `answer_only=true`, dataset `source` and `split`. Each JSONL row has a stable optional `id`, a `prompt`, and the short verified answer as `reference` (optional `choices`/`correct_choice` are recorded for a later accuracy adapter). Do not put generated rationales in `reference`. Hashes and all ten domains are checked before the campaign locks. Keep an untouched final task suite separately; it never enters the Kimi loop. Document the train/task contamination check in the prepared-data provenance.
 
@@ -45,6 +45,17 @@ Only after a candidate screen warrants a longer comparison, return to the baseli
 
 The runner's 12-hour cap counts preflight, training and evaluation wall time on one GPU. Its per-trial timeout sends SIGTERM so Terminus can commit an interruption checkpoint. A result is **completed** only after the target tokens and protected checkpoint evaluation exist. Kimi must stop at the cap, the human's stop instruction, or a real readiness blocker. Results are append-only and branches are retained.
 
+Most architecture trials end with dense FP8. Before each candidate Kimi writes a [mathematical and empirical proposal](../notes/TEMPLATE.md), including whether later ternary conversion could change the result. For a candidate with a specific quantization-sensitive mechanism and completed matched dense full runs, the optional diagnostic is:
+
+```bash
+# On the baseline commit, then repeat on the candidate's exact commit and trial ID.
+python train.py --campaign /absolute/path/to/campaign.json --trial-id baseline --stage qat_probe --qat-rationale "Specific quantization mechanism, evidence, and predicted conversion signal"
+python train.py --campaign /absolute/path/to/campaign.json --trial-id trial-001 --stage qat_probe --qat-rationale "Specific quantization mechanism, evidence, and predicted conversion signal"
+python -m research.loop status --campaign /absolute/path/to/campaign.json
+```
+
+The baseline probe must complete first. Both probes continue from their 2.5B-token dense checkpoints through about 100M matched extra tokens with the same source mixture and FP8 activations. The protected conversion carries compatible weights, optimizer state, RNG and data cursor; the probe saves its transition receipt, immediate zero-update evaluation, QAT logs and final evaluation. `status` reports both absolute QAT quality and the relative conversion/QAT penalty. This short, fixed recipe detects sensitivity but is not the final dense-to-ternary tuning campaign. If the candidate has no specific QAT-sensitive hypothesis, skip the probe and preserve the budget.
+
 ## 4. Verify remote archive before stopping the paid machine
 
 The local result tree includes every trial's metadata, config, data view, preflight receipt, logs, training events, stability/incident records, checkpoint files and hashes, evaluations, and ledger. Generate a whole-tree SHA-256 receipt:
@@ -63,4 +74,4 @@ python -m research.artifacts verify --root /verification/download/architecture-2
 
 ## 5. Decision boundary
 
-Kimi returns a reviewable shortlist with candidate commit hashes, source citations, completed token exposure, all ten held-out losses, task/position diagnostics, stability events, actual GPU-hours, and reasons to keep or discard. The stage-one output is a set of architecture hypotheses. Stage two must test larger-width transfer, LR/batch/μP interactions and matched dense-to-ternary QAT before the final model architecture is fixed. Stage three may then search kernels under numerical parity and full-update throughput measurement.
+Kimi returns a reviewable shortlist with candidate commit hashes, source citations, mathematical proposal notes, completed token exposure, all ten held-out losses, task/position diagnostics, stability events, actual GPU-hours, QAT-probe results or a reason for skipping them, and reasons to keep or discard. The stage-one output is a set of architecture hypotheses. Stage two must test larger-width transfer, LR/batch/μP interactions and longer matched dense-to-ternary QAT before the final model architecture is fixed. Stage three may then search kernels under numerical parity and full-update throughput measurement.

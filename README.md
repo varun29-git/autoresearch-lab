@@ -4,7 +4,7 @@ This is a **separate, private** Terminus architecture-research repository for a 
 
 The source snapshot and inspected autoresearch revision are recorded in [SOURCE_BASELINE.md](SOURCE_BASELINE.md). The rationale and readiness gaps are in [docs/AUTORESEARCH_DESIGN.md](docs/AUTORESEARCH_DESIGN.md); exact commands are in [docs/AUTORESEARCH_EXECUTION.md](docs/AUTORESEARCH_EXECUTION.md). Kimi's operating instructions are [program.md](program.md).
 
-The three intended campaigns are **architecture discovery**, then joint architecture confirmation with hyperparameter/μP transfer and dense-to-ternary QAT, then kernel optimization for the chosen computation. Only the first campaign is implemented here. Its result is a shortlist, because a 200M dense proxy cannot prove the final 1.5B ternary ranking.
+The three intended campaigns are **architecture discovery**, then joint architecture confirmation with hyperparameter/μP transfer and longer dense-to-ternary QAT, then kernel optimization for the chosen computation. Only the first campaign is implemented here. Its default trials use dense FP8; a budgeted, matched short QAT probe is available when a candidate has a specific quantization-sensitive mechanism. Its result is a shortlist, because a 200M proxy and short QAT probe cannot prove the final 1.5B ternary ranking.
 
 The editable architecture is [candidate.json](candidate.json) and the permitted model files. The [policy](research/policy.json), [preparation wrapper](prepare.py), [trial runner](train.py), and [scorer](research/protocol.py) are protected during a campaign. The runner uses the existing native DeepGEMM/FA3/Muon training stack and requires an H100-class SM90 GPU for paid trials. It does not create or stop cloud machines.
 

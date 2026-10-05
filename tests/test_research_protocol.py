@@ -6,7 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from research.loop import trial_config, trial_manifest
+from research.loop import (qat_probe_config, qat_probe_manifest, qat_probe_tokens,
+                           trial_config, trial_manifest)
 from research.protocol import (compare_losses, grouped_losses, load_candidate,
                                paired_batch_interval, policy, validate_candidate,
                                validate_task_manifest)
@@ -21,8 +22,8 @@ class ResearchProtocolTests(unittest.TestCase):
         self.assertFalse(model["use_subln"])
         rendered = trial_config(model, self.rules)
         self.assertEqual(rendered["model"], model)
-        self.assertEqual(rendered["training"]["warmup_tokens"], 250_000_000)
-        self.assertEqual(rendered["training"]["decay_tokens"], 500_000_000)
+        self.assertEqual(rendered["training"]["warmup_tokens"], int(self.rules["full_tokens"] * 0.10))
+        self.assertEqual(rendered["training"]["decay_tokens"], int(self.rules["full_tokens"] * 0.20))
         self.assertEqual(rendered["training"]["gradient_accumulation_steps"], 3)
         self.assertEqual(rendered["optimizer"]["muon_lr"], 0.003)
         self.assertIsNone(rendered["training"]["time_limit_seconds"])
@@ -43,11 +44,34 @@ class ResearchProtocolTests(unittest.TestCase):
                   "shards": [{"path": "a.bin", "sha256": "a" * 64}],
                   "tokenizer": {"sha256": "b" * 64}, "provenance": {"split": "fixed"}}
         narrowed = trial_manifest(source, self.rules)
-        self.assertEqual(narrowed["config"]["total_train_tokens"], 2_500_000_000)
+        self.assertEqual(narrowed["config"]["total_train_tokens"], self.rules["full_tokens"])
         self.assertEqual(narrowed["config"]["batch_size"], 32)
         self.assertEqual(narrowed["config"]["source_mix"], source["config"]["source_mix"])
         self.assertEqual(narrowed["shards"], source["shards"])
         self.assertEqual(source["config"]["batch_size"], 48)
+
+    def test_qat_probe_keeps_architecture_fp8_activations_and_continues_stream(self):
+        model = load_candidate(self.rules)
+        parent_tokens = (self.rules["full_tokens"] // self.rules["max_seq_len"]) * self.rules["max_seq_len"]
+        config = qat_probe_config(model, self.rules, parent_tokens)
+        self.assertEqual(config["model"], {**model, "weight_mode": "ternary"})
+        self.assertTrue(config["model"]["quantize_activations"])
+        self.assertEqual(config["optimizer"]["muon_lr"], 0.0015)
+        self.assertEqual(config["training"]["phase_start_tokens"], parent_tokens)
+        self.assertEqual(config["training"]["warmup_tokens"],
+                         int(qat_probe_tokens(self.rules) * self.rules["qat_probe_warmup_fraction"]))
+        self.assertEqual(qat_probe_tokens(self.rules) %
+                         (self.rules["microbatch"] * self.rules["max_seq_len"] *
+                          self.rules["gradient_accumulation_steps"]), 0)
+        source = {"config": {"seq_len": 4096, "batch_size": 48,
+                             "total_train_tokens": 3_000_000_000,
+                             "source_mix": {"en": 0.5, "hi": 0.5},
+                             "phase_source_mixes": []}, "shards": [{"path": "a.bin"}]}
+        narrowed = qat_probe_manifest(source, self.rules, parent_tokens)
+        self.assertEqual(narrowed["config"]["total_train_tokens"],
+                         parent_tokens + qat_probe_tokens(self.rules))
+        self.assertEqual(narrowed["config"]["source_mix"], source["config"]["source_mix"])
+        self.assertEqual(source["config"]["total_train_tokens"], 3_000_000_000)
 
     def test_grouped_score_and_regression_guardrail(self):
         baseline = {domain: 2.0 for domain in self.rules["domains"]}
