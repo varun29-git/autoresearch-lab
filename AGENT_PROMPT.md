@@ -1,4 +1,6 @@
-# Prompt for the Terminus coding agent
+# Historical ModelTunnel build prompt — not the autoresearch campaign prompt
+
+This file came from the pinned source snapshot. Kimi must follow `program.md` for the architecture campaign. The instructions below describe the already-built ModelTunnel pipeline and are retained only as historical context.
 
 You are working in this standalone GitHub repository, `/Users/varundaiya/terminus-modeltunnelv2`. Build a **complete, reproducible ModelTunnelv2-style research pipeline for the maintained `terminus/` model**, spanning dense-weight FP8 proxy pretraining, conversion to ternary QAT, data-mixture and hyperparameter search, task-aware evaluation, scale-transfer checks, and a final ready-to-launch campaign manifest. Implement code in this repository root. The maintained Terminus package is already at `terminus/`; `terminus_next/` is intentionally absent. Preserve existing work. Follow `AGENTS.md`: commit and push multiple reviewable milestones as you progress, rather than making one final bulk commit.
 

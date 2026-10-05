@@ -10,9 +10,50 @@ from pathlib import Path
 
 import torch
 
-from .protocol import INDIC, policy, read_json, resolve_from, validate_task_manifest, write_json
+from .protocol import policy, read_json, resolve_from, validate_task_manifest, write_json
 
 
+@torch.inference_mode()
+def heldout_batches(model, manifest, data_root: Path, device: torch.device,
+                    max_batches: int) -> dict:
+    """Use the trainer's fixed spaced-block selection, retaining paired batches."""
+    from terminus.data import TokenSpan
+    from terminus.integrity import manifest_scope
+
+    domains = set(manifest_scope(manifest)["domains"])
+    key_of = lambda spec: spec.source if spec.source in domains else spec.language
+    result = {}
+    for domain in sorted({key_of(spec) for spec in manifest.shards_for(split=manifest.config.val_split)}):
+        specs = [spec for spec in manifest.shards_for(split=manifest.config.val_split)
+                 if key_of(spec) == domain]
+        span = TokenSpan(specs, root=data_root)
+        blocks = (span.num_tokens - 1) // manifest.config.seq_len
+        selected = min(blocks, max_batches * manifest.config.batch_size)
+        if selected <= 0:
+            raise ValueError(f"no validation blocks for {domain}")
+        batches = []
+        for start in range(0, selected, manifest.config.batch_size):
+            ids = list(range(start, min(start + manifest.config.batch_size, selected)))
+            rows = [span.block((index * (blocks - 1)) // max(1, selected - 1),
+                               manifest.config.seq_len) for index in ids]
+            inputs = torch.stack([row[0] for row in rows]).to(device)
+            targets = torch.stack([row[1] for row in rows]).to(device)
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
+                                enabled=device.type == "cuda"):
+                output = model(inputs, targets, return_logits=False)
+            loss_sum, count = float(output["loss_sum"].double()), int(output["loss_tokens"])
+            if count <= 0 or not math.isfinite(loss_sum):
+                raise ValueError(f"nonfinite held-out loss for {domain}")
+            batches.append({"start": start, "examples": len(ids),
+                            "loss_sum": loss_sum, "tokens": count})
+        total_loss = sum(item["loss_sum"] for item in batches)
+        total_tokens = sum(item["tokens"] for item in batches)
+        result[domain] = {"loss": total_loss / total_tokens, "tokens": total_tokens,
+                          "batches": batches}
+    return result
+
+
+@torch.inference_mode()
 def context_position_losses(model, manifest, data_root: Path, device: torch.device,
                             batch_size: int) -> dict:
     """Score fixed position buckets; this diagnoses position effects, not retrieval ability."""
@@ -41,7 +82,8 @@ def context_position_losses(model, manifest, data_root: Path, device: torch.devi
             masked = targets.clone()
             masked[:, :start] = -100
             masked[:, end:] = -100
-            with torch.autocast("cuda", dtype=torch.bfloat16):
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
+                                enabled=device.type == "cuda"):
                 result = model(inputs, masked, return_logits=False)
             total, count = float(result["loss_sum"].double()), int(result["loss_tokens"])
             output[domain][name] = {"loss": total / count, "tokens": count}
@@ -71,9 +113,15 @@ def task_metrics(model, task_manifest_path: Path, device: torch.device,
                                       choices=tuple(row["choices"]) if row.get("choices") else None,
                                       correct_choice=row.get("correct_choice"),
                                       role="development"))
+    for item in items:
+        if len(tokenizer.encode(item.prompt)) + len(tokenizer.encode(item.reference)) > max_seq_len + 1:
+            raise ValueError(f"development item exceeds fixed context: {item.task}/{item.item_id}")
     with torch.autocast("cuda", dtype=torch.bfloat16):
         records = score_items(model, tokenizer, items, device=device, max_seq_len=max_seq_len)
     summary = aggregate(records)
+    if summary["truncated_items"]:
+        raise ValueError(f"development suite truncated {summary['truncated_items']} prompts; "
+                         "fix the benchmark before comparing candidates")
     return {"summary": summary, "records": records,
             "note": "answer-only reference loss; task accuracy requires separately defined scoring"}
 
@@ -83,7 +131,6 @@ def evaluate_run(run_dir: Path, manifest_path: Path, data_root: Path,
     from terminus.checkpoint import load_checkpoint
     from terminus.data import TokenManifest
     from terminus.model import BitNetLlama, BitNetLlamaConfig
-    from terminus.train import evaluate
 
     if not torch.cuda.is_available() or torch.cuda.get_device_capability(0) != (9, 0):
         raise RuntimeError("native Terminus architecture evaluation requires Hopper SM90")
@@ -100,8 +147,7 @@ def evaluate_run(run_dir: Path, manifest_path: Path, data_root: Path,
     manifest = TokenManifest.load(manifest_path)
     batches = rules["validation_batches_per_domain"]
     with torch.inference_mode():
-        heldout = evaluate(model, manifest, data_root, torch.device("cuda"),
-                           torch.bfloat16, batches, 0, 1)
+        heldout = heldout_batches(model, manifest, data_root, torch.device("cuda"), batches)
         positions = context_position_losses(model, manifest, data_root,
                                             torch.device("cuda"), min(rules["microbatch"], 8))
         tasks = task_metrics(model, task_manifest_path, torch.device("cuda"),

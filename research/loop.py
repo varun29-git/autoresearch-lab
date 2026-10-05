@@ -8,6 +8,7 @@ one bounded trial, and appends immutable results. It never creates a VM.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import math
 import os
@@ -19,8 +20,9 @@ import time
 from pathlib import Path
 
 from .protocol import (POLICY_PATH, ROOT, assert_clean_git, assert_edit_scope,
-                       campaign, compare_losses, count_candidate, git, load_candidate,
-                       policy, read_json, sha256, validate_task_manifest, write_json)
+                       campaign, compare_losses, count_candidate, load_candidate,
+                       paired_batch_interval, policy, read_json, sha256,
+                       validate_task_manifest, write_json)
 
 
 def trial_manifest(source: dict, rules: dict) -> dict:
@@ -159,6 +161,20 @@ def latest_state(run_dir: Path) -> dict | None:
 
 
 def trial(campaign_path: Path, trial_id: str, stage: str) -> dict:
+    """Serialize the whole preflight/train/eval transaction on the campaign GPU."""
+    _, _, _, root = read_lock(campaign_path)
+    with (root / ".active_trial.lock").open("a") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("another trial is active in this campaign") from exc
+        try:
+            return _trial_locked(campaign_path, trial_id, stage)
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _trial_locked(campaign_path: Path, trial_id: str, stage: str) -> dict:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", trial_id):
         raise ValueError("trial id must be a short filesystem-safe name")
     if stage not in {"screen", "full"}:
@@ -182,7 +198,8 @@ def trial(campaign_path: Path, trial_id: str, stage: str) -> dict:
     remaining_seconds = (rules["max_gpu_hours"] - spent_gpu_hours(ledger)) * 3600
     if remaining_seconds < 300:
         raise RuntimeError("campaign GPU-hour cap exhausted")
-    allowance = min(float(rules["max_trial_seconds"]), remaining_seconds)
+    # Leave room for SIGTERM, a final optimizer update and its checkpoint.
+    allowance = min(float(rules["max_trial_seconds"]), remaining_seconds - 150)
     if stage == "screen":
         if trial_dir.exists():
             metadata = read_json(trial_dir / "metadata.json")
@@ -258,7 +275,13 @@ def trial(campaign_path: Path, trial_id: str, stage: str) -> dict:
                   "elapsed_seconds": duration, "gpu_hours": duration / 3600,
                   "outcome": outcome, "failed_step": failed_step,
                   "tokens_seen": (latest_state(run_dir) or {}).get("tokens_seen", 0),
-                  "evaluation": str(evaluation_path) if evaluation_path.exists() else None}
+                  "evaluation": str(evaluation_path.relative_to(root)) if evaluation_path.exists() else None}
+        if outcome == "completed":
+            evaluated = read_json(evaluation_path)
+            record["evaluation_sha256"] = sha256(evaluation_path)
+            record["heldout_losses"] = {name: value["loss"] for name, value in evaluated["heldout"].items()}
+            if evaluated["tasks"]:
+                record["task_summary"] = evaluated["tasks"]["summary"]
         append_ledger(ledger_path, record)
     return record
 
@@ -269,14 +292,20 @@ def status(campaign_path: Path) -> dict:
     complete = [item for item in ledger if item["outcome"] == "completed"]
     comparisons = []
     for item in complete:
+        if item.get("evaluation_sha256") != sha256(root / item["evaluation"]):
+            raise ValueError(f"completed evaluation changed after ledger append: {item['trial_id']}/{item['stage']}")
+    for item in complete:
         stage = item["stage"]
         baseline_path = root / "trials" / settings["baseline_trial"] / f"eval_{stage}.json"
         if not baseline_path.exists():
             continue
-        baseline = {name: value["loss"] for name, value in read_json(baseline_path)["heldout"].items()}
-        candidate = {name: value["loss"] for name, value in read_json(Path(item["evaluation"]))["heldout"].items()}
+        baseline_eval = read_json(baseline_path)["heldout"]
+        candidate_eval = read_json(root / item["evaluation"])["heldout"]
+        baseline = {name: value["loss"] for name, value in baseline_eval.items()}
+        candidate = {name: value["loss"] for name, value in candidate_eval.items()}
         comparisons.append({"trial_id": item["trial_id"], "stage": stage,
-                            **compare_losses(candidate, baseline, rules)})
+                            **compare_losses(candidate, baseline, rules),
+                            "paired_interval": paired_batch_interval(candidate_eval, baseline_eval, rules)})
     return {"tag": settings["tag"], "attempts": len(ledger),
             "spent_gpu_hours": spent_gpu_hours(ledger),
             "remaining_gpu_hours": rules["max_gpu_hours"] - spent_gpu_hours(ledger),

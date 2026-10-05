@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import random
 import re
 import subprocess
 from pathlib import Path
@@ -176,3 +177,41 @@ def compare_losses(candidate_losses: dict[str, float], baseline_losses: dict[str
             "per_domain_improvement": per_domain, "material_regressions": regressions,
             "decision_band": "uncertain" if abs(score) < rules["indifference_band"]
                              else "better" if score > 0 else "worse"}
+
+
+def paired_batch_interval(candidate: dict, baseline: dict, rules: dict,
+                          *, resamples: int = 2000, seed: int = 1337) -> dict:
+    """Paired bootstrap over the evaluator's fixed spaced validation batches.
+
+    Batches are correlated within a source, so this interval is a screening
+    uncertainty estimate, not a substitute for new documents or new seeds.
+    """
+    if resamples < 1:
+        raise ValueError("resamples must be positive")
+    if set(candidate) != set(rules["domains"]) or set(baseline) != set(rules["domains"]):
+        raise ValueError("paired evaluation needs all ten domains")
+    pairs = {}
+    for domain in rules["domains"]:
+        a, b = candidate[domain]["batches"], baseline[domain]["batches"]
+        if len(a) != len(b) or not a:
+            raise ValueError(f"validation batches differ for {domain}")
+        for left, right in zip(a, b):
+            if (left["start"], left["examples"], left["tokens"]) != (
+                    right["start"], right["examples"], right["tokens"]):
+                raise ValueError(f"validation block selection differs for {domain}")
+        pairs[domain] = (a, b)
+    generator = random.Random(seed)
+    scores = []
+    for _ in range(resamples):
+        sampled_candidate, sampled_baseline = {}, {}
+        for domain, (a, b) in pairs.items():
+            indices = [generator.randrange(len(a)) for _ in a]
+            tokens = sum(a[index]["tokens"] for index in indices)
+            sampled_candidate[domain] = sum(a[index]["loss_sum"] for index in indices) / tokens
+            sampled_baseline[domain] = sum(b[index]["loss_sum"] for index in indices) / tokens
+        scores.append(compare_losses(sampled_candidate, sampled_baseline, rules)["relative_improvement"])
+    scores.sort()
+    return {"low": scores[int(.025 * (resamples - 1))],
+            "high": scores[int(.975 * (resamples - 1))],
+            "resamples": resamples,
+            "unit": "paired spaced validation batch; source/document dependence remains"}
