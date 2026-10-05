@@ -27,22 +27,20 @@
     "pad_token_id": 3,
     "weight_mode": "dense",
     "quantize_activations": true,
+    "weight_scale_layout": "blockwise",
     "linear_backend": "deepgemm",
     "fp8_backward": "full",
+    "fp8_cache_weights": true,
+    "fp8_quantizer": "triton_split",
+    "fp8_wgrad_splits": 0,
     "attention_backend": "fa3",
+    "loss_backend": "triton",
+    "loss_chunk_size": 4096,
     "residual_dtype": "bf16"
   },
   "editable_paths": [
     "candidate.json",
-    "terminus/model.py",
-    "terminus/kernels.py",
-    "terminus/quantization.py",
-    "terminus/pointwise.py",
-    "terminus/pointwise_kernels.py",
-    "terminus/mlp_kernels.py",
-    "terminus/qkv_kernels.py",
-    "terminus/fp8_kernels.py",
-    "terminus/wgrad_kernels.py"
+    "terminus/model.py"
   ],
   "editable_prefixes": ["terminus/architecture_", "tests/test_architecture_", "notes/"]
 }
