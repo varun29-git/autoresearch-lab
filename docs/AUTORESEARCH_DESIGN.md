@@ -15,7 +15,7 @@ The Terminus adaptation deliberately changes four things:
 | Five-minute wall-time training | Equal 2.5B-token full horizon; 0.5B interim screen; wall time is only a cap | The owner wants architecture quality first. Equal time would reward a faster candidate for seeing more data. |
 | One `val_bpb` on ClimbMix | English held-out loss plus learning, stability and cost signals; optional English tasks | Architecture screening can use English cheaply while keeping other axes visible. Multilingual/code/math transfer is checked for finalists later. |
 | One editable `train.py` | Editable model files and `candidate.json`; protected trainer, data and evaluator | Terminus's architecture spans several modules, but its training/evaluation contract must not drift between trials. |
-| Unbounded local loop | One-GPU 12-hour campaign cap, append-only receipts, no automatic VM creation | The search must respect the owner's cloud budget and preserve failed evidence. |
+| Unbounded local loop | One-GPU 12-hour campaign cap, append-only receipts, on-demand use of the existing H100 with verified per-trial shutdown | The search must respect VM-on cost and preserve failed evidence before offline analysis. |
 
 ## Objective and controls
 
@@ -47,7 +47,7 @@ The campaign lock stores the source commit, policy hash, tokenizer hash, English
 
 ## Readiness and later stages
 
-Before the first paid trial, stage at least 2.5B tokens of the prepared English 65K-tokenizer corpus on the GPU machine (about 2.6B if QAT probes may run), declare an English-only versioned scope with fixed train/validation splits and source provenance, install the pinned SM90 stack, and pass `prepare.py` plus baseline native preflight. An English task manifest may be supplied but is not required. This repo does not contain the full corpus. CPU tests do not certify H100 arithmetic.
+Before the first paid trial, stage at least 2.5B tokens of the prepared English 65K-tokenizer corpus on the VM's managed disk (about 2.6B if QAT probes may run), declare an English-only versioned scope with fixed train/validation splits and source provenance, and verify the pinned SM90 stack and [Azure cycle configuration](AZURE_EXPERIMENT_CYCLE.md). The first baseline cycle runs `prepare.py` and native preflight. An English task manifest may be supplied but is not required. This repo does not contain the full corpus. CPU tests do not certify H100 arithmetic.
 
 Stage two should tune hyperparameters and Muon/μP transfer **on a small architecture shortlist**, check at 700M/1.5B, and compare substantially longer matched dense-to-ternary continuations before fixing the final architecture. Stage three profiles that selected computation and autonomously proposes kernels under numerical parity and whole-step throughput tests. Neither later loop is implemented or authorized to run by this repository's stage-one program; the optional short QAT probe belongs to stage one only.
 

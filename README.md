@@ -6,7 +6,7 @@ The source snapshot and inspected autoresearch revision are recorded in [SOURCE_
 
 The three intended campaigns are **architecture discovery**, then joint architecture confirmation with hyperparameter/μP transfer and longer dense-to-ternary QAT, then kernel optimization for the chosen computation. Only the first campaign is implemented here. It uses English as a cheap architecture proxy and reports quality, learning efficiency, stability, throughput and memory separately. Default trials use dense FP8; a matched short QAT probe is optional for a specific quantization-sensitive mechanism. Its result is a shortlist, because a 200M English proxy and short QAT probe cannot prove the final 1.5B multilingual ternary ranking.
 
-The editable architecture is [candidate.json](candidate.json) and the permitted model files. The [policy](research/policy.json), [preparation wrapper](prepare.py), [trial runner](train.py), and [scorer](research/protocol.py) are protected during a campaign. The runner uses the existing native DeepGEMM/FA3/Muon training stack and requires an H100-class SM90 GPU for paid trials. It does not create or stop cloud machines.
+The editable architecture is [candidate.json](candidate.json) and the permitted model files. The [policy](research/policy.json), [preparation wrapper](prepare.py), [trial runner](train.py), and [scorer](research/protocol.py) are protected during a campaign. The runner uses the existing native DeepGEMM/FA3/Muon training stack and requires an H100-class SM90 GPU for paid trials. The [Azure cycle](docs/AZURE_EXPERIMENT_CYCLE.md) starts the existing H100 for one committed experiment and deallocates it only after Blob archival and independent hash verification.
 
 To inspect the interface without launching a run:
 

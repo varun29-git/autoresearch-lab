@@ -25,7 +25,7 @@ Write one copy for every screen, full continuation, QAT probe or failed attempt.
 
 ## Cost and transfer
 
-- Compare training tokens/s by phase, peak memory, total GPU-hours including failed attempts, parameter count, measured step cost and architectural complexity. Account for validation/preflight overhead separately when interpreting training speed.
+- Compare training tokens/s by phase, allocated/reserved memory, total GPU-hours and VM-on hours including failed attempts, parameter count, measured step cost and architectural complexity. Read sampled GPU utilization, power and clocks; investigate low duty or unexplained slowdown without treating sampled utilization as MFU. Account for validation, checkpoint, preflight and archive overhead separately. Compare quality at equal tokens and the time/cost to reach it.
 - Revisit proposal estimates for prefill/decode FLOPs and KV-cache bytes per token. Note that actual inference latency is not measured by this runner.
 - For a matched QAT probe: immediate conversion loss, recovery curve, new incidents and per-layer/parameter/FP8 changes. State whether 100M tokens are enough to support only a diagnosis or a real ranking.
 
