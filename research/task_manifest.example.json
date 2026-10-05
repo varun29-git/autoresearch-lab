@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "domain": "en",
+      "task": "english_qa",
+      "path": "/absolute/path/to/english_answer_only.jsonl",
+      "sha256": "replace-with-64-character-sha256",
+      "role": "development",
+      "answer_only": true,
+      "source": "replace-with-dataset-and-revision",
+      "split": "development"
+    },
+    {
+      "domain": "hi",
+      "task": "hindi_qa",
+      "path": "/absolute/path/to/hindi_answer_only.jsonl",
+      "sha256": "replace-with-64-character-sha256",
+      "role": "development",
+      "answer_only": true,
+      "source": "replace-with-dataset-and-revision",
+      "split": "development"
+    },
+    {
+      "domain": "mr",
+      "task": "marathi_qa",
+      "path": "/absolute/path/to/marathi_answer_only.jsonl",
+      "sha256": "replace-with-64-character-sha256",
+      "role": "development",
+      "answer_only": true,
+      "source": "replace-with-dataset-and-revision",
+      "split": "development"
+    },
+    {
+      "domain": "kn",
+      "task": "kannada_qa",
+      "path": "/absolute/path/to/kannada_answer_only.jsonl",
+      "sha256": "replace-with-64-character-sha256",
+      "role": "development",
+      "answer_only": true,
+      "source": "replace-with-dataset-and-revision",
+      "split": "development"
+    },
+    {
+      "domain": "te",
+      "task": "telugu_qa",
+      "path": "/absolute/path/to/telugu_answer_only.jsonl",
+      "sha256": "replace-with-64-character-sha256",
+      "role": "development",
+      "answer_only": true,
+      "source": "replace-with-dataset-and-revision",
+      "split": "development"
+    },
+    {
+      "domain": "ta",
+      "task": "tamil_qa",
+      "path": "/absolute/path/to/tamil_answer_only.jsonl",
+      "sha256": "replace-with-64-character-sha256",
+      "role": "development",
+      "answer_only": true,
+      "source": "replace-with-dataset-and-revision",
+      "split": "development"
+    },
+    {
+      "domain": "gu",
+      "task": "gujarati_qa",
+      "path": "/absolute/path/to/gujarati_answer_only.jsonl",
+      "sha256": "replace-with-64-character-sha256",
+      "role": "development",
+      "answer_only": true,
+      "source": "replace-with-dataset-and-revision",
+      "split": "development"
+    },
+    {
+      "domain": "bn",
+      "task": "bengali_qa",
+      "path": "/absolute/path/to/bengali_answer_only.jsonl",
+      "sha256": "replace-with-64-character-sha256",
+      "role": "development",
+      "answer_only": true,
+      "source": "replace-with-dataset-and-revision",
+      "split": "development"
+    },
+    {
+      "domain": "code",
+      "task": "code_completion",
+      "path": "/absolute/path/to/code_answer_only.jsonl",
+      "sha256": "replace-with-64-character-sha256",
+      "role": "development",
+      "answer_only": true,
+      "source": "replace-with-dataset-and-revision",
+      "split": "development"
+    },
+    {
+      "domain": "math",
+      "task": "math_answer",
+      "path": "/absolute/path/to/math_answer_only.jsonl",
+      "sha256": "replace-with-64-character-sha256",
+      "role": "development",
+      "answer_only": true,
+      "source": "replace-with-dataset-and-revision",
+      "split": "development"
+    }
+  ]
+}

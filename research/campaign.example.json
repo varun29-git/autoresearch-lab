@@ -1,0 +1,9 @@
+{
+  "tag": "architecture-20261005",
+  "manifest": "/absolute/path/to/prepared/manifest.json",
+  "data_root": "/absolute/path/to/prepared",
+  "task_manifest": "/absolute/path/to/development/task_manifest.json",
+  "results_root": "/absolute/path/to/private/results",
+  "baseline_trial": "baseline",
+  "gpu_count": 1
+}
