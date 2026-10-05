@@ -8,7 +8,7 @@ from pathlib import Path
 
 from research.loop import (qat_probe_config, qat_probe_manifest, qat_probe_tokens,
                            trial_config, trial_manifest)
-from research.protocol import (compare_losses, grouped_losses, load_candidate,
+from research.protocol import (campaign, compare_losses, grouped_losses, load_candidate,
                                paired_batch_interval, policy, validate_candidate,
                                validate_task_manifest)
 
@@ -36,10 +36,22 @@ class ResearchProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must set qk_norm_mode explicitly"):
             validate_candidate(model, self.rules)
 
+    def test_english_proxy_does_not_require_task_manifest(self):
+        self.assertEqual(self.rules["domains"], ["en"])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tokens").mkdir()
+            (root / "manifest.json").write_text("{}")
+            path = root / "campaign.json"
+            path.write_text(json.dumps({"tag": "en-proxy", "gpu_count": 1,
+                                        "manifest": "manifest.json", "data_root": "tokens",
+                                        "results_root": "results", "baseline_trial": "baseline"}))
+            self.assertIsNone(campaign(path)["task_manifest"])
+
     def test_trial_manifest_preserves_data_and_mix(self):
         source = {"config": {"seq_len": 4096, "batch_size": 48,
                              "total_train_tokens": 10_000_000_000,
-                             "source_mix": {"en": 0.5, "hi": 0.5},
+                             "source_mix": {"en": 1.0},
                              "phase_source_mixes": []},
                   "shards": [{"path": "a.bin", "sha256": "a" * 64}],
                   "tokenizer": {"sha256": "b" * 64}, "provenance": {"split": "fixed"}}
@@ -65,7 +77,7 @@ class ResearchProtocolTests(unittest.TestCase):
                           self.rules["gradient_accumulation_steps"]), 0)
         source = {"config": {"seq_len": 4096, "batch_size": 48,
                              "total_train_tokens": 3_000_000_000,
-                             "source_mix": {"en": 0.5, "hi": 0.5},
+                             "source_mix": {"en": 1.0},
                              "phase_source_mixes": []}, "shards": [{"path": "a.bin"}]}
         narrowed = qat_probe_manifest(source, self.rules, parent_tokens)
         self.assertEqual(narrowed["config"]["total_train_tokens"],
@@ -77,15 +89,15 @@ class ResearchProtocolTests(unittest.TestCase):
         baseline = {domain: 2.0 for domain in self.rules["domains"]}
         candidate = dict(baseline)
         candidate["en"] = 1.8
-        candidate["hi"] = 2.1
         result = compare_losses(candidate, baseline, self.rules)
         self.assertGreater(result["relative_improvement"], 0)
-        self.assertIn("hi", result["material_regressions"])
-        self.assertAlmostEqual(grouped_losses(baseline)["indic"], 2.0)
+        self.assertAlmostEqual(grouped_losses(baseline, self.rules)["en"], 2.0)
+        candidate["en"] = 2.1
+        self.assertIn("en", compare_losses(candidate, baseline, self.rules)["material_regressions"])
         with self.assertRaises(ValueError):
-            grouped_losses({"en": 2.0})
+            grouped_losses({"en": 2.0, "hi": 2.0}, self.rules)
 
-    def test_tasks_must_cover_ten_domains_and_keep_hashes(self):
+    def test_optional_english_tasks_keep_hashes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             entries = []
@@ -98,8 +110,8 @@ class ResearchProtocolTests(unittest.TestCase):
                                 "source": "test-source", "split": "dev"})
             manifest = root / "tasks.json"
             manifest.write_text(json.dumps({"version": 1, "tasks": entries}))
-            self.assertEqual(len(validate_task_manifest(manifest, self.rules["domains"])), 10)
-            (root / "hi.jsonl").write_text(json.dumps({"prompt": "Changed", "reference": "Answer"}) + "\n")
+            self.assertEqual(len(validate_task_manifest(manifest, self.rules["domains"])), 1)
+            (root / "en.jsonl").write_text(json.dumps({"prompt": "Changed", "reference": "Answer"}) + "\n")
             with self.assertRaisesRegex(ValueError, "checksum mismatch"):
                 validate_task_manifest(manifest, self.rules["domains"])
 
@@ -114,7 +126,7 @@ class ResearchProtocolTests(unittest.TestCase):
                      for domain, value in baseline.items()}
         interval = paired_batch_interval(candidate, baseline, self.rules, resamples=100)
         self.assertGreater(interval["low"], 0)
-        candidate["hi"]["batches"][0]["start"] = 1
+        candidate["en"]["batches"][0]["start"] = 1
         with self.assertRaisesRegex(ValueError, "selection differs"):
             paired_batch_interval(candidate, baseline, self.rules, resamples=10)
 

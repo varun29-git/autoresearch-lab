@@ -93,9 +93,10 @@ def prepare(campaign_path: Path) -> dict:
     tokenizer_path = ROOT / "tokenizer/tokenizer-65k.json"
     if sha256(tokenizer_path) != rules["tokenizer_sha256"]:
         raise ValueError("frozen 65K tokenizer checksum changed")
-    tasks = validate_task_manifest(Path(settings["task_manifest"]), rules["domains"])
+    tasks = (validate_task_manifest(Path(settings["task_manifest"]), rules["domains"])
+             if settings["task_manifest"] else {})
     from terminus.data import TokenDataConfig, TokenManifest, TokenShardSpec
-    from terminus.integrity import validate_manifest
+    from terminus.integrity import manifest_scope, validate_manifest
     from terminus.model import BitNetLlamaConfig
 
     source = read_json(Path(settings["manifest"]))
@@ -104,6 +105,9 @@ def prepare(campaign_path: Path) -> dict:
                              shards=[TokenShardSpec(**item) for item in narrowed["shards"]],
                              tokenizer=narrowed.get("tokenizer", {}),
                              provenance=narrowed.get("provenance", {}))
+    scope = manifest_scope(manifest)
+    if scope["languages"] != ["en"] or scope["domains"]:
+        raise ValueError("stage-one architecture manifest must declare an English-only scope")
     data_report = validate_manifest(manifest, settings["data_root"],
                                     BitNetLlamaConfig(**model), development_mode=False)
     root = Path(settings["results_root"]) / settings["tag"]
@@ -111,7 +115,8 @@ def prepare(campaign_path: Path) -> dict:
     lock = {"tag": settings["tag"], "base_commit": commit,
             "policy_sha256": sha256(POLICY_PATH),
             "manifest_sha256": sha256(Path(settings["manifest"])),
-            "task_manifest_sha256": sha256(Path(settings["task_manifest"])),
+            "task_manifest_sha256": (sha256(Path(settings["task_manifest"]))
+                                     if settings["task_manifest"] else None),
             "task_files": tasks, "tokenizer_sha256": rules["tokenizer_sha256"],
             "baseline_parameters": params, "data_report": data_report,
             "settings": settings}
@@ -134,9 +139,12 @@ def read_lock(campaign_path: Path) -> tuple[dict, dict, dict, Path]:
         raise ValueError("campaign settings or protected policy changed")
     if lock["manifest_sha256"] != sha256(Path(settings["manifest"])):
         raise ValueError("prepared data manifest changed")
-    if lock["task_manifest_sha256"] != sha256(Path(settings["task_manifest"])):
+    task_manifest_hash = (sha256(Path(settings["task_manifest"]))
+                          if settings["task_manifest"] else None)
+    if lock["task_manifest_sha256"] != task_manifest_hash:
         raise ValueError("development task manifest changed")
-    tasks = validate_task_manifest(Path(settings["task_manifest"]), rules["domains"])
+    tasks = (validate_task_manifest(Path(settings["task_manifest"]), rules["domains"])
+             if settings["task_manifest"] else {})
     if tasks != lock["task_files"]:
         raise ValueError("development task files changed")
     if sha256(ROOT / "tokenizer/tokenizer-65k.json") != lock["tokenizer_sha256"]:
@@ -278,7 +286,8 @@ def _trial_locked(campaign_path: Path, trial_id: str, stage: str,
     evaluation_path = trial_dir / f"eval_{stage}.json"
     commands.append(("evaluation", [sys.executable, "-m", "research.evaluate",
                      "--run-dir", str(run_dir), "--manifest", str(trial_dir / "manifest.json"),
-                     "--data-root", settings["data_root"], "--task-manifest", settings["task_manifest"],
+                     "--data-root", settings["data_root"],
+                     *(["--task-manifest", settings["task_manifest"]] if settings["task_manifest"] else []),
                      "--output", str(evaluation_path), *(["--full"] if stage == "full" else [])]))
     started = time.time()
     duration, outcome, failed_step = 0.0, "completed", None
@@ -387,7 +396,8 @@ def _qat_probe_locked(rules: dict, settings: dict, lock: dict, root: Path,
             raise ValueError("cannot recover missing zero-update conversion evaluation after QAT training")
         commands.append(("conversion_eval", [sys.executable, "-m", "research.evaluate",
                          "--run-dir", str(run_dir), "--manifest", str(probe_dir / "manifest.json"),
-                         "--data-root", settings["data_root"], "--task-manifest", settings["task_manifest"],
+                         "--data-root", settings["data_root"],
+                         *(["--task-manifest", settings["task_manifest"]] if settings["task_manifest"] else []),
                          "--output", str(conversion_eval)]))
     target_tokens = expected_manifest["config"]["total_train_tokens"]
     if not probe_state or probe_state["tokens_seen"] < target_tokens:
@@ -399,7 +409,8 @@ def _qat_probe_locked(rules: dict, settings: dict, lock: dict, root: Path,
                          "--preflight-report", str(report)]))
     commands.append(("evaluation", [sys.executable, "-m", "research.evaluate",
                      "--run-dir", str(run_dir), "--manifest", str(probe_dir / "manifest.json"),
-                     "--data-root", settings["data_root"], "--task-manifest", settings["task_manifest"],
+                     "--data-root", settings["data_root"],
+                     *(["--task-manifest", settings["task_manifest"]] if settings["task_manifest"] else []),
                      "--output", str(evaluation_path), "--full"]))
     started = time.time()
     duration, outcome, failed_step = 0.0, "completed", None
@@ -444,6 +455,8 @@ def _qat_probe_locked(rules: dict, settings: dict, lock: dict, root: Path,
 
 
 def status(campaign_path: Path) -> dict:
+    from .signals import compare_signals, summarize_run
+
     rules, settings, _, root = read_lock(campaign_path)
     ledger = read_ledger(root / "ledger.jsonl")
     complete = [item for item in ledger if item["outcome"] == "completed"]
@@ -455,16 +468,34 @@ def status(campaign_path: Path) -> dict:
             raise ValueError(f"completed conversion evaluation changed: {item['trial_id']}")
     for item in complete:
         stage = item["stage"]
-        baseline_path = root / "trials" / settings["baseline_trial"] / f"eval_{stage}.json"
+        baseline_dir = root / "trials" / settings["baseline_trial"]
+        candidate_dir = root / "trials" / item["trial_id"]
+        baseline_path = baseline_dir / f"eval_{stage}.json"
         if not baseline_path.exists():
             continue
-        baseline_eval = read_json(baseline_path)["heldout"]
-        candidate_eval = read_json(root / item["evaluation"])["heldout"]
+        baseline_result = read_json(baseline_path)
+        candidate_result = read_json(root / item["evaluation"])
+        baseline_eval = baseline_result["heldout"]
+        candidate_eval = candidate_result["heldout"]
         baseline = {name: value["loss"] for name, value in baseline_eval.items()}
         candidate = {name: value["loss"] for name, value in candidate_eval.items()}
+        run_suffix = Path("qat_probe/run") if stage == "qat_probe" else Path("run")
+        candidate_signals = summarize_run(candidate_dir / run_suffix,
+                                          through_tokens=candidate_result["tokens_seen"])
+        baseline_signals = summarize_run(baseline_dir / run_suffix,
+                                         through_tokens=baseline_result["tokens_seen"])
         comparison = {"trial_id": item["trial_id"], "stage": stage,
                       **compare_losses(candidate, baseline, rules),
-                      "paired_interval": paired_batch_interval(candidate_eval, baseline_eval, rules)}
+                      "paired_interval": paired_batch_interval(candidate_eval, baseline_eval, rules),
+                      "other_axes": compare_signals(candidate_signals, baseline_signals)}
+        candidate_hours = sum(float(row.get("gpu_hours", 0)) for row in ledger
+                              if row["trial_id"] == item["trial_id"] and row["stage"] == stage)
+        baseline_hours = sum(float(row.get("gpu_hours", 0)) for row in ledger
+                             if row["trial_id"] == settings["baseline_trial"] and row["stage"] == stage)
+        comparison["stage_gpu_hours_including_retries"] = candidate_hours
+        comparison["baseline_stage_gpu_hours_including_retries"] = baseline_hours
+        comparison["stage_cost_ratio"] = candidate_hours / baseline_hours if baseline_hours else None
+        comparison["parameters"] = item["parameters"]
         if stage == "qat_probe":
             candidate_dense = read_json(root / "trials" / item["trial_id"] / "eval_full.json")["heldout"]
             baseline_dense = read_json(root / "trials" / settings["baseline_trial"] / "eval_full.json")["heldout"]
@@ -483,11 +514,26 @@ def status(campaign_path: Path) -> dict:
                 for name in candidate}
             comparison["qat_note"] = "diagnostic short continuation; positive resilience means a smaller relative QAT loss increase, not proven final ternary quality"
         comparisons.append(comparison)
+    failures = []
+    for item in ledger:
+        if item["outcome"] == "completed":
+            continue
+        trial_dir = root / "trials" / item["trial_id"]
+        run_dir = trial_dir / ("qat_probe/run" if item["stage"] == "qat_probe" else "run")
+        signals = summarize_run(run_dir, through_tokens=item.get("tokens_seen"))
+        failures.append({"trial_id": item["trial_id"], "stage": item["stage"],
+                         "outcome": item["outcome"], "failed_step": item.get("failed_step"),
+                         "gpu_hours": item.get("gpu_hours"),
+                         "tokens_seen": item.get("tokens_seen"),
+                         "incidents": signals["incidents"],
+                         "numerical_failure_or_sampled_nonfinite": signals[
+                             "numerical_failure_or_sampled_nonfinite"]})
     return {"tag": settings["tag"], "attempts": len(ledger),
             "spent_gpu_hours": spent_gpu_hours(ledger),
             "remaining_gpu_hours": rules["max_gpu_hours"] - spent_gpu_hours(ledger),
             "comparisons": comparisons,
-            "note": "task outcomes, long-context diagnostics and near-ties require review; this is not an automatic final architecture selection"}
+            "failed_attempts": failures,
+            "note": "English quality, learning, stability and cost are separate; this is not an automatic final architecture selection"}
 
 
 def main(*, default_command: str | None = None) -> None:

@@ -42,10 +42,12 @@ def policy() -> dict:
     value = read_json(POLICY_PATH)
     if value.get("version") != 1:
         raise ValueError("unsupported architecture policy version")
-    if set(value["domains"]) != {"en", *INDIC, "math", "code"}:
-        raise ValueError("policy must cover all ten Terminus domains")
+    if value["domains"] != ["en"]:
+        raise ValueError("stage-one architecture screening uses an English-only proxy")
     if not math.isclose(sum(value["group_weights"].values()), 1.0, abs_tol=1e-12):
         raise ValueError("quality group weights must sum to one")
+    if set(value["group_weights"]) != {"en"}:
+        raise ValueError("English proxy score must have only an en weight")
     if not (0 < value["screen_tokens"] < value["full_tokens"]):
         raise ValueError("screen and full token horizons are invalid")
     global_update_tokens = (value["microbatch"] * value["max_seq_len"] *
@@ -75,13 +77,18 @@ def campaign(config_path: Path) -> dict:
         raise ValueError("campaign tag must be a short filesystem-safe name")
     if value.get("gpu_count") != 1:
         raise ValueError("architecture campaign currently supports exactly one GPU")
-    for key in ("manifest", "data_root", "task_manifest", "results_root"):
+    for key in ("manifest", "data_root", "results_root"):
         if not value.get(key):
             raise ValueError(f"campaign needs {key}")
         value[key] = str(resolve_from(config_path, value[key]))
-    for key in ("manifest", "task_manifest"):
-        if not Path(value[key]).is_file():
-            raise FileNotFoundError(f"campaign {key} is not staged: {value[key]}")
+    if value.get("task_manifest"):
+        value["task_manifest"] = str(resolve_from(config_path, value["task_manifest"]))
+    else:
+        value["task_manifest"] = None
+    if not Path(value["manifest"]).is_file():
+        raise FileNotFoundError(f"campaign manifest is not staged: {value['manifest']}")
+    if value["task_manifest"] and not Path(value["task_manifest"]).is_file():
+        raise FileNotFoundError(f"campaign task_manifest is not staged: {value['task_manifest']}")
     if not Path(value["data_root"]).is_dir():
         raise FileNotFoundError(f"campaign data_root is not staged: {value['data_root']}")
     if value.get("baseline_trial") != "baseline":
@@ -176,7 +183,13 @@ def validate_task_manifest(path: Path, required_domains: list[str]) -> dict:
     return hashes
 
 
-def grouped_losses(losses: dict[str, float]) -> dict[str, float]:
+def grouped_losses(losses: dict[str, float], rules: dict | None = None) -> dict[str, float]:
+    if rules is not None and rules["domains"] == ["en"]:
+        if set(losses) != {"en"}:
+            raise ValueError("English proxy evaluation must contain en only")
+        if not math.isfinite(float(losses["en"])) or float(losses["en"]) <= 0:
+            raise ValueError("held-out loss must be finite and positive")
+        return {"en": float(losses["en"])}
     if set(losses) != {"en", *INDIC, "math", "code"}:
         raise ValueError("held-out loss must cover each language/domain exactly once")
     if any(not math.isfinite(float(loss)) or float(loss) <= 0 for loss in losses.values()):
@@ -189,8 +202,8 @@ def grouped_losses(losses: dict[str, float]) -> dict[str, float]:
 def compare_losses(candidate_losses: dict[str, float], baseline_losses: dict[str, float],
                    rules: dict) -> dict:
     """Positive improvement is better; compare only matched-horizon evaluations."""
-    candidate = grouped_losses(candidate_losses)
-    baseline = grouped_losses(baseline_losses)
+    candidate = grouped_losses(candidate_losses, rules)
+    baseline = grouped_losses(baseline_losses, rules)
     relative = {group: (baseline[group] - candidate[group]) / baseline[group]
                 for group in baseline}
     score = sum(rules["group_weights"][group] * relative[group] for group in relative)
@@ -214,7 +227,7 @@ def paired_batch_interval(candidate: dict, baseline: dict, rules: dict,
     if resamples < 1:
         raise ValueError("resamples must be positive")
     if set(candidate) != set(rules["domains"]) or set(baseline) != set(rules["domains"]):
-        raise ValueError("paired evaluation needs all ten domains")
+        raise ValueError("paired evaluation needs exactly the policy domains")
     pairs = {}
     for domain in rules["domains"]:
         a, b = candidate[domain]["batches"], baseline[domain]["batches"]

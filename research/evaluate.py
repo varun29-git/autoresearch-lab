@@ -127,7 +127,7 @@ def task_metrics(model, task_manifest_path: Path, device: torch.device,
 
 
 def evaluate_run(run_dir: Path, manifest_path: Path, data_root: Path,
-                 task_manifest_path: Path, *, full: bool) -> dict:
+                 task_manifest_path: Path | None, *, full: bool) -> dict:
     from terminus.checkpoint import load_checkpoint
     from terminus.data import TokenManifest
     from terminus.model import BitNetLlama, BitNetLlamaConfig
@@ -135,7 +135,8 @@ def evaluate_run(run_dir: Path, manifest_path: Path, data_root: Path,
     if not torch.cuda.is_available() or torch.cuda.get_device_capability(0) != (9, 0):
         raise RuntimeError("native Terminus architecture evaluation requires Hopper SM90")
     rules = policy()
-    validate_task_manifest(task_manifest_path, rules["domains"])
+    if task_manifest_path is not None:
+        validate_task_manifest(task_manifest_path, rules["domains"])
     contract = read_json(run_dir / "run.json")["contract"]
     checkpoint = load_checkpoint(run_dir / "checkpoints", contract)
     model = BitNetLlama(BitNetLlamaConfig(**contract["model"])).to("cuda")
@@ -150,8 +151,9 @@ def evaluate_run(run_dir: Path, manifest_path: Path, data_root: Path,
         heldout = heldout_batches(model, manifest, data_root, torch.device("cuda"), batches)
         positions = context_position_losses(model, manifest, data_root,
                                             torch.device("cuda"), min(rules["microbatch"], 8))
-        tasks = task_metrics(model, task_manifest_path, torch.device("cuda"),
-                             rules["max_seq_len"], rules["max_task_items_per_task"]) if full else None
+        tasks = (task_metrics(model, task_manifest_path, torch.device("cuda"),
+                              rules["max_seq_len"], rules["max_task_items_per_task"])
+                 if full and task_manifest_path is not None else None)
     losses = {domain: value["loss"] for domain, value in heldout.items()}
     if set(losses) != set(rules["domains"]) or any(not math.isfinite(v) for v in losses.values()):
         raise ValueError("held-out evaluation missing domains or returned nonfinite loss")
@@ -164,7 +166,7 @@ def main() -> None:
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--data-root", type=Path, required=True)
-    parser.add_argument("--task-manifest", type=Path, required=True)
+    parser.add_argument("--task-manifest", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--full", action="store_true")
     args = parser.parse_args()
