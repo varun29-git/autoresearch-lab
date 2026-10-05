@@ -69,6 +69,11 @@ def campaign(config_path: Path) -> dict:
         if not value.get(key):
             raise ValueError(f"campaign needs {key}")
         value[key] = str(resolve_from(config_path, value[key]))
+    for key in ("manifest", "task_manifest"):
+        if not Path(value[key]).is_file():
+            raise FileNotFoundError(f"campaign {key} is not staged: {value[key]}")
+    if not Path(value["data_root"]).is_dir():
+        raise FileNotFoundError(f"campaign data_root is not staged: {value['data_root']}")
     if value.get("baseline_trial") != "baseline":
         raise ValueError("baseline trial id must be 'baseline'")
     return value

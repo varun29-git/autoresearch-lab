@@ -67,6 +67,7 @@ def prepare(campaign_path: Path) -> dict:
     tokenizer_path = ROOT / "tokenizer/tokenizer-65k.json"
     if sha256(tokenizer_path) != rules["tokenizer_sha256"]:
         raise ValueError("frozen 65K tokenizer checksum changed")
+    tasks = validate_task_manifest(Path(settings["task_manifest"]), rules["domains"])
     from terminus.data import TokenDataConfig, TokenManifest, TokenShardSpec
     from terminus.integrity import validate_manifest
     from terminus.model import BitNetLlamaConfig
@@ -79,7 +80,6 @@ def prepare(campaign_path: Path) -> dict:
                              provenance=narrowed.get("provenance", {}))
     data_report = validate_manifest(manifest, settings["data_root"],
                                     BitNetLlamaConfig(**model), development_mode=False)
-    tasks = validate_task_manifest(Path(settings["task_manifest"]), rules["domains"])
     root = Path(settings["results_root"]) / settings["tag"]
     root.mkdir(parents=True, exist_ok=True)
     lock = {"tag": settings["tag"], "base_commit": commit,
