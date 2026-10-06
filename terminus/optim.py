@@ -107,15 +107,18 @@ def build_optimizer(model, config=None):
             norms.append(parameter)
         else:
             adam_matrices.append(parameter)
+    qk_norm_group_index = None
     for parameters, learning_rate, decay in ((adam_matrices, config.adamw_lr, config.weight_decay),
                                             (norms, config.norm_lr, 0.0),
                                             (qk_norms, config.qk_norm_lr, 0.0)):
         if parameters:
             group = {"params": parameters, "lr": learning_rate, "weight_decay": decay, "betas": tuple(config.betas), "eps": config.eps}
-            if parameters is qk_norms:
-                group["name"] = "qk_norm"
             if config.kind == "muon":
                 group["use_muon"] = False
+            if parameters is qk_norms:
+                # The pinned Muon constructor asserts exact group keys; the
+                # telemetry label must be attached after construction.
+                qk_norm_group_index = len(groups)
             groups.append(group)
             logical_rows.append(None)
     grouped = [id(parameter) for group in groups for parameter in group["params"]]
@@ -136,4 +139,6 @@ def build_optimizer(model, config=None):
     for index, group in enumerate(optimizer.param_groups):
         group.setdefault("name", f"{config.kind}_{index}")
         group["base_lr"] = group["lr"]
+    if qk_norm_group_index is not None:
+        optimizer.param_groups[qk_norm_group_index]["name"] = "qk_norm"
     return optimizer

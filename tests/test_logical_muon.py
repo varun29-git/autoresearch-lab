@@ -60,5 +60,27 @@ class LogicalMuonTests(unittest.TestCase):
                         torch.testing.assert_close(resumed_weight, weight, rtol=0, atol=0)
 
 
+    def test_learned_qk_norm_group_builds_and_steps(self):
+        # Regression: the named qk_norm aux group must not reach the pinned Muon
+        # constructor with extra keys (baseline campaign config uses learned_rms).
+        model = BitNetLlama(tiny_config(qk_norm_mode="learned_rms"))
+        optimizer = build_optimizer(model, OptimizerConfig(kind="muon"))
+        named = {group.get("name"): group for group in optimizer.param_groups}
+        qk_group = named["qk_norm"]
+        self.assertFalse(qk_group["use_muon"])
+        self.assertEqual(qk_group["lr"], OptimizerConfig().qk_norm_lr)
+        self.assertEqual(qk_group["weight_decay"], 0.0)
+        self.assertEqual({id(parameter) for parameter in qk_group["params"]},
+                         {id(layer.attn.q_norm.weight) for layer in model.layers} |
+                         {id(layer.attn.k_norm.weight) for layer in model.layers})
+        ids = torch.randint(0, 32, (2, 16))
+        for _ in range(2):
+            optimizer.zero_grad()
+            model(ids, torch.randint(0, 32, (2, 16)))["loss"].backward()
+            optimizer.step()
+        for layer in model.layers:
+            self.assertTrue(torch.isfinite(layer.attn.q_norm.weight).all())
+
+
 if __name__ == "__main__":
     unittest.main()
