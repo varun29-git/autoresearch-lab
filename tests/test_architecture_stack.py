@@ -59,6 +59,27 @@ class TestStack:
             streamed, _ = model.forward_cached(ids[:, 9:], cache=cache)
         assert torch.allclose(full[:, 9:], streamed["logits"], atol=1e-4)
 
+    def test_gradient_checkpointing_parity(self):
+        from dataclasses import replace
+
+        torch.manual_seed(23)
+        retained = make_model()
+        torch.manual_seed(23)
+        checkpointed = BitNetLlama(replace(tiny_config(branch_norm="peri", value_residual="learned"),
+                                           gradient_checkpointing=True))
+        checkpointed.load_state_dict(retained.state_dict())
+        ids = torch.randint(0, 32, (2, 16))
+        targets = torch.randint(0, 32, (2, 16))
+        retained_loss = retained(ids, targets)["loss"]
+        checkpointed.train()
+        checkpointed_loss = checkpointed(ids, targets)["loss"]
+        assert torch.allclose(retained_loss, checkpointed_loss, atol=1e-6)
+        retained_loss.backward()
+        checkpointed_loss.backward()
+        for (name, parameter), (_, checkpointed_parameter) in zip(
+                retained.named_parameters(), checkpointed.named_parameters()):
+            assert torch.allclose(parameter.grad, checkpointed_parameter.grad, atol=1e-5), name
+
     def test_training_loop_with_stability_monitor(self):
         # Regression for the trial-002 screen crash, with both mechanisms on.
         import json
