@@ -124,3 +124,28 @@ class TestValueResidualForward:
         with torch.no_grad():
             _, cache = model.forward_cached(ids[:, :9])
         assert cache.value_residual_buffer is None
+
+    def test_training_loop_with_stability_monitor(self):
+        # Regression for the trial-002 screen crash: the protected StabilityMonitor
+        # hooks each attention module's output and requires a plain tensor return.
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from terminus.train import run_training
+
+        from tests.helpers import fixture
+
+        with tempfile.TemporaryDirectory() as directory:
+            fixture(directory)
+            config_path = Path(directory) / "config.json"
+            config = json.loads(config_path.read_text())
+            config["model"]["value_residual"] = "learned"
+            config["optimizer"]["kind"] = "muon"
+            config["training"]["stability_log_interval"] = 1
+            config_path.write_text(json.dumps(config))
+            run_training(config_path, Path(directory) / "manifest.json", directory,
+                         Path(directory) / "out")
+            stability = (Path(directory) / "out" / "stability.jsonl").read_text().strip()
+            assert stability, "stability monitor must have recorded probes"
+            assert "attention_output" in stability

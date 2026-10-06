@@ -58,3 +58,28 @@ class TestStack:
             _, cache = model.forward_cached(ids[:, :9])
             streamed, _ = model.forward_cached(ids[:, 9:], cache=cache)
         assert torch.allclose(full[:, 9:], streamed["logits"], atol=1e-4)
+
+    def test_training_loop_with_stability_monitor(self):
+        # Regression for the trial-002 screen crash, with both mechanisms on.
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from terminus.train import run_training
+
+        from tests.helpers import fixture
+
+        with tempfile.TemporaryDirectory() as directory:
+            fixture(directory)
+            config_path = Path(directory) / "config.json"
+            config = json.loads(config_path.read_text())
+            config["model"]["value_residual"] = "learned"
+            config["model"]["branch_norm"] = "peri"
+            config["optimizer"]["kind"] = "muon"
+            config["training"]["stability_log_interval"] = 1
+            config_path.write_text(json.dumps(config))
+            run_training(config_path, Path(directory) / "manifest.json", directory,
+                         Path(directory) / "out")
+            stability = (Path(directory) / "out" / "stability.jsonl").read_text().strip()
+            assert stability, "stability monitor must have recorded probes"
+            assert "attention_output" in stability
