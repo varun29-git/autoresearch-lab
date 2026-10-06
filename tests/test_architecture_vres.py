@@ -1,0 +1,126 @@
+"""Value residual learning (trial-002, ResFormer V1 skip): contract and numerics tests."""
+
+import torch
+
+from terminus.model import BitNetLlama
+
+from tests.helpers import tiny_config
+
+
+def make_model(**changes):
+    torch.manual_seed(7)
+    return BitNetLlama(tiny_config(**changes))
+
+
+class TestValueResidualConfig:
+    def test_default_off(self):
+        config = tiny_config()
+        assert config.value_residual == "none"
+        model = BitNetLlama(config)
+        for layer in model.layers:
+            assert not hasattr(layer.attn, "value_lambda")
+            hidden = torch.randn(1, 4, config.dim)
+            output = layer.attn(layer.attn_norm(hidden),
+                                *model.rotary(4, device=hidden.device, dtype=hidden.dtype))
+            assert isinstance(output, torch.Tensor)  # no tuple when disabled
+
+    def test_invalid_mode_rejected(self):
+        try:
+            tiny_config(value_residual="fixed")
+        except ValueError:
+            return
+        raise AssertionError("unknown value_residual must be rejected")
+
+    def test_learned_adds_lambda_from_layer_one(self):
+        model = make_model(value_residual="learned")
+        assert not hasattr(model.layers[0].attn, "value_lambda")
+        names = dict(model.named_parameters())
+        for index, layer in enumerate(model.layers):
+            if index == 0:
+                continue
+            assert layer.attn.value_lambda.shape == (2,)
+            assert torch.allclose(layer.attn.value_lambda.detach(), torch.tensor([0.5, 0.5]))
+            assert f"layers.{index}.attn.value_lambda" in names
+
+    def test_none_matches_baseline_bit_identical(self):
+        torch.manual_seed(11)
+        reference = BitNetLlama(tiny_config())
+        torch.manual_seed(11)
+        explicit = BitNetLlama(tiny_config(value_residual="none"))
+        assert list(reference.state_dict()) == list(explicit.state_dict())
+        ids = torch.randint(0, 32, (2, 16))
+        with torch.no_grad():
+            assert torch.equal(reference(ids)["logits"], explicit(ids)["logits"])
+
+
+class TestValueResidualForward:
+    def test_shapes_and_loss(self):
+        model = make_model(value_residual="learned")
+        ids = torch.randint(0, 32, (2, 16))
+        targets = torch.randint(0, 32, (2, 16))
+        out = model(ids, targets)
+        assert out["logits"].shape == (2, 16, 32)
+        assert torch.isfinite(out["loss"])
+
+    def test_causality(self):
+        model = make_model(value_residual="learned").eval()
+        ids = torch.randint(0, 32, (1, 16))
+        with torch.no_grad():
+            reference = model(ids)["logits"]
+            changed = ids.clone()
+            changed[0, 8:] = (changed[0, 8:] + 1) % 32
+            altered = model(changed)["logits"]
+        assert torch.allclose(reference[:, :8], altered[:, :8], atol=1e-5)
+
+    def test_gradients_reach_lambda_and_both_value_projections(self):
+        model = make_model(value_residual="learned")
+        ids = torch.randint(0, 32, (2, 16))
+        targets = torch.randint(0, 32, (2, 16))
+        model(ids, targets)["loss"].backward()
+        lambda_grad = model.layers[1].attn.value_lambda.grad
+        assert lambda_grad is not None and torch.isfinite(lambda_grad).all()
+        assert lambda_grad.abs().sum() > 0
+        # Multi-path: every layer's loss must reach layer 0's v_proj (no detach).
+        first = model.layers[0].attn.v_proj.weight.grad
+        later = model.layers[1].attn.v_proj.weight.grad
+        assert first is not None and first.abs().sum() > 0
+        assert later is not None and later.abs().sum() > 0
+
+    def test_lambda_zero_one_recovers_baseline(self):
+        model = make_model(value_residual="learned")
+        with torch.no_grad():
+            for layer in model.layers[1:]:
+                layer.attn.value_lambda.copy_(torch.tensor([0.0, 1.0]))
+        baseline = make_model()
+        ids = torch.randint(0, 32, (2, 16))
+        with torch.no_grad():
+            assert torch.equal(model(ids)["logits"], baseline(ids)["logits"])
+
+    def test_cached_matches_full_forward(self):
+        model = make_model(value_residual="learned").eval()
+        ids = torch.randint(0, 32, (1, 16))
+        with torch.no_grad():
+            full = model(ids)["logits"]
+            _, cache = model.forward_cached(ids[:, :9])
+            streamed, _ = model.forward_cached(ids[:, 9:], cache=cache)
+        assert torch.allclose(full[:, 9:], streamed["logits"], atol=1e-4)
+
+    def test_two_step_cached_decode_prefill9_decode7(self):
+        model = make_model(value_residual="learned").eval()
+        ids = torch.randint(0, 32, (1, 16))
+        with torch.no_grad():
+            full = model(ids)["logits"]
+            prefill, cache = model.forward_cached(ids[:, :9])
+            decode, cache = model.forward_cached(ids[:, 9:], cache=cache)
+        assert torch.allclose(full[:, :9], prefill["logits"], atol=1e-4)
+        assert torch.allclose(full[:, 9:], decode["logits"], atol=1e-4)
+        # Rolling V_1 buffer: capacity max_seq_len, raw layer-0 values, exact tail alignment.
+        assert cache.value_residual_buffer.shape == (1, 2, 16, 8)
+        assert cache.position == 16
+
+    def test_cached_without_value_residual_keeps_no_buffer(self):
+        model = make_model().eval()
+        ids = torch.randint(0, 32, (1, 16))
+        with torch.no_grad():
+            _, cache = model.forward_cached(ids[:, :9])
+        assert cache.value_residual_buffer is None
