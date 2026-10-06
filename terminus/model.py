@@ -64,6 +64,7 @@ class BitNetLlamaConfig:
     fused_mlp: bool = False
     fused_qkv: bool = False
     fp8_wgrad_splits: int = 0
+    attention_gate: bool = False
 
     def __post_init__(self):
         validate_fp8_options(self.fp8_backward, self.fp8_quantizer)
@@ -84,7 +85,7 @@ class BitNetLlamaConfig:
         if self.embedding_dim is not None and (isinstance(self.embedding_dim, bool)
                 or not isinstance(self.embedding_dim, int) or not 0 < self.embedding_dim <= self.dim):
             raise ValueError("embedding_dim must be a positive integer no larger than model width")
-        for name in ("use_subln", "use_embedding_projection", "quantize_activations", "gradient_checkpointing", "fp8_cache_weights", "fused_pointwise", "fuse_projections", "fused_mlp", "fused_qkv"):
+        for name in ("use_subln", "use_embedding_projection", "quantize_activations", "gradient_checkpointing", "fp8_cache_weights", "fused_pointwise", "fuse_projections", "fused_mlp", "fused_qkv", "attention_gate"):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"{name} must be a boolean")
         for name in ("use_attention_subln", "use_ffn_subln"):
@@ -345,6 +346,7 @@ class BitNetAttention(nn.Module):
             self.k_proj = make_linear(config, config.dim, config.n_kv_heads * config.head_dim)
             self.v_proj = make_linear(config, config.dim, config.n_kv_heads * config.head_dim)
         self.o_proj = make_linear(config, config.dim, config.dim, residual=True)
+        self.gate_proj = make_linear(config, config.dim, config.dim) if config.attention_gate else None
         norm_gain = "channel" if config.qk_norm_mode == "learned_rms" else "none"
         self.q_norm = RMSNorm(config.head_dim, config.rms_norm_eps, gain=norm_gain, fused=config.fused_pointwise) if config.qk_norm_mode != "none" else nn.Identity()
         self.k_norm = RMSNorm(config.head_dim, config.rms_norm_eps, gain=norm_gain, fused=config.fused_pointwise) if config.qk_norm_mode != "none" else nn.Identity()
@@ -386,6 +388,9 @@ class BitNetAttention(nn.Module):
         if cache is not None:
             cache.commit(key, value)
         output = output.transpose(1, 2).reshape(batch, length, self.config.dim)
+        if self.gate_proj is not None:
+            gate = torch.sigmoid(self.gate_proj(hidden))
+            output = output * gate
         return self.o_proj(self.attn_sub_norm(output))
 
 

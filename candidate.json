@@ -1,7 +1,8 @@
 {
   "attention_backend": "fa3",
+  "attention_gate": true,
   "dim": 768,
-  "ffn_dim": 1920,
+  "ffn_dim": 1664,
   "fp8_backward": "full",
   "fp8_cache_weights": true,
   "fp8_quantizer": "triton_split",
