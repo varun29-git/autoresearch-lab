@@ -116,6 +116,9 @@ class BitNetLlamaConfig:
             raise ValueError("Q/K normalization must be learned_rms, unit_rms or none")
         if self.value_residual not in {"none", "learned"}:
             raise ValueError("value_residual must be none or learned")
+        if self.value_residual != "none" and self.gradient_checkpointing:
+            raise ValueError("value_residual requires gradient_checkpointing=False: the cross-layer value path "
+                             "is stashed as a module attribute, which checkpoint recomputation would replace")
         if self.qk_norm_mode == "learned_rms" and self.fused_qkv:
             raise ValueError("learned Q/K gains require fused_qkv=False until the packed kernel supports gain gradients")
         if self.pad_token_id is not None and not 0 <= self.pad_token_id < self.vocab_size:
@@ -386,7 +389,11 @@ class BitNetAttention(nn.Module):
         if value_source is not None:
             # Mix only the new positions' values, before the cache window below.
             value = self.value_lambda[0] * value_source + self.value_lambda[1] * value
-        values_used = value
+        if self.value_residual:
+            # Exposed for BitNetLlama's cross-layer V1 plumbing; forward must keep
+            # returning a plain tensor because the protected stability monitor
+            # hooks module outputs.
+            self.values_used = value
         offset = 0
         if cache is not None:
             key, value, offset = cache.attention_inputs(key, value)
@@ -400,10 +407,7 @@ class BitNetAttention(nn.Module):
         if cache is not None:
             cache.commit(key, value)
         output = output.transpose(1, 2).reshape(batch, length, self.config.dim)
-        output = self.o_proj(self.attn_sub_norm(output))
-        if self.value_residual:
-            return output, values_used
-        return output
+        return self.o_proj(self.attn_sub_norm(output))
 
 
 class BitNetFeedForward(nn.Module):
@@ -452,12 +456,8 @@ class BitNetBlock(nn.Module):
         self.ffn = BitNetFeedForward(config)
 
     def forward(self, hidden, cos, sin, attention_mask=None, cache=None, *, value_source=None):
-        if self.attn.value_residual:
-            attention_output, values_used = self.attn(self.attn_norm(hidden), cos, sin, attention_mask, cache,
-                                                      value_source=value_source)
-            hidden = hidden + attention_output
-            return hidden + self.ffn(self.ffn_norm(hidden)), values_used
-        hidden = hidden + self.attn(self.attn_norm(hidden), cos, sin, attention_mask, cache)
+        hidden = hidden + self.attn(self.attn_norm(hidden), cos, sin, attention_mask, cache,
+                                    value_source=value_source)
         return hidden + self.ffn(self.ffn_norm(hidden))
 
 
@@ -518,17 +518,11 @@ class BitNetLlama(nn.Module):
         value_source = None
         for layer in self.layers:
             if self.config.gradient_checkpointing and self.training and torch.is_grad_enabled():
-                if self.config.value_residual != "none":
-                    hidden, values = checkpoint(layer, hidden, cos, sin, attention_mask,
-                                                use_reentrant=False, value_source=value_source)
-                    if value_source is None:
-                        value_source = values
-                else:
-                    hidden = checkpoint(layer, hidden, cos, sin, attention_mask, use_reentrant=False)
+                hidden = checkpoint(layer, hidden, cos, sin, attention_mask, use_reentrant=False)
             elif self.config.value_residual != "none":
-                hidden, values = layer(hidden, cos, sin, attention_mask, value_source=value_source)
+                hidden = layer(hidden, cos, sin, attention_mask, value_source=value_source)
                 if value_source is None:
-                    value_source = values
+                    value_source = layer.attn.values_used
             else:
                 hidden = layer(hidden, cos, sin, attention_mask)
         hidden = self.embed_rot_out(self.norm(hidden))
@@ -565,14 +559,15 @@ class BitNetLlama(nn.Module):
             new_tokens = input_ids.shape[1]
             for index, (layer, layer_cache) in enumerate(zip(self.layers, cache.layers)):
                 if index == 0:
-                    hidden, values = layer(hidden, cos, sin, cache=layer_cache, value_source=None)
+                    hidden = layer(hidden, cos, sin, cache=layer_cache, value_source=None)
+                    values = layer.attn.values_used
                     buffer = values if cache.value_residual_buffer is None else torch.cat(
                         (cache.value_residual_buffer, values), dim=2)
                     cache.value_residual_buffer = buffer[:, :, -self.config.max_seq_len:]
                 else:
                     # Tail of the rolling V_1 buffer aligned to the new positions.
                     value_source = cache.value_residual_buffer[:, :, -new_tokens:]
-                    hidden, _ = layer(hidden, cos, sin, cache=layer_cache, value_source=value_source)
+                    hidden = layer(hidden, cos, sin, cache=layer_cache, value_source=value_source)
         else:
             for layer, layer_cache in zip(self.layers, cache.layers):
                 hidden = layer(hidden, cos, sin, cache=layer_cache)
