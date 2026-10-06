@@ -64,6 +64,7 @@ class BitNetLlamaConfig:
     fused_mlp: bool = False
     fused_qkv: bool = False
     fp8_wgrad_splits: int = 0
+    branch_norm: str = "none"
 
     def __post_init__(self):
         validate_fp8_options(self.fp8_backward, self.fp8_quantizer)
@@ -113,6 +114,8 @@ class BitNetLlamaConfig:
             raise ValueError("unsupported initialization or FFN activation")
         if self.qk_norm_mode not in {"learned_rms", "unit_rms", "none"}:
             raise ValueError("Q/K normalization must be learned_rms, unit_rms or none")
+        if self.branch_norm not in {"none", "peri"}:
+            raise ValueError("branch_norm must be none or peri")
         if self.qk_norm_mode == "learned_rms" and self.fused_qkv:
             raise ValueError("learned Q/K gains require fused_qkv=False until the packed kernel supports gain gradients")
         if self.pad_token_id is not None and not 0 <= self.pad_token_id < self.vocab_size:
@@ -431,12 +434,17 @@ class BitNetBlock(nn.Module):
         super().__init__()
         self.attn_norm = RMSNorm(config.dim, config.rms_norm_eps, fused=config.fused_pointwise)
         self.ffn_norm = RMSNorm(config.dim, config.rms_norm_eps, fused=config.fused_pointwise)
+        peri = config.branch_norm == "peri"
+        self.attn_out_norm = (RMSNorm(config.dim, config.rms_norm_eps, fused=config.fused_pointwise)
+                              if peri else nn.Identity())
+        self.ffn_out_norm = (RMSNorm(config.dim, config.rms_norm_eps, fused=config.fused_pointwise)
+                             if peri else nn.Identity())
         self.attn = BitNetAttention(config, layer_index=layer_index)
         self.ffn = BitNetFeedForward(config)
 
     def forward(self, hidden, cos, sin, attention_mask=None, cache=None):
-        hidden = hidden + self.attn(self.attn_norm(hidden), cos, sin, attention_mask, cache)
-        return hidden + self.ffn(self.ffn_norm(hidden))
+        hidden = hidden + self.attn_out_norm(self.attn(self.attn_norm(hidden), cos, sin, attention_mask, cache))
+        return hidden + self.ffn_out_norm(self.ffn(self.ffn_norm(hidden)))
 
 
 def linear_cross_entropy_sum(hidden, weight, targets):

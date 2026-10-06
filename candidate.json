@@ -1,5 +1,6 @@
 {
   "attention_backend": "fa3",
+  "branch_norm": "peri",
   "dim": 768,
   "ffn_dim": 1920,
   "fp8_backward": "full",
