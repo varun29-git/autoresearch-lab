@@ -119,9 +119,6 @@ class BitNetLlamaConfig:
             raise ValueError("branch_norm must be none or peri")
         if self.value_residual not in {"none", "learned"}:
             raise ValueError("value_residual must be none or learned")
-        if self.value_residual != "none" and self.gradient_checkpointing:
-            raise ValueError("value_residual requires gradient_checkpointing=False: the cross-layer value path "
-                             "is stashed as a module attribute, which checkpoint recomputation would replace")
         if self.qk_norm_mode == "learned_rms" and self.fused_qkv:
             raise ValueError("learned Q/K gains require fused_qkv=False until the packed kernel supports gain gradients")
         if self.pad_token_id is not None and not 0 <= self.pad_token_id < self.vocab_size:
@@ -524,8 +521,18 @@ class BitNetLlama(nn.Module):
         hidden = hidden.to(torch.bfloat16 if self.config.residual_dtype == "bf16" else torch.float32)
         cos, sin = self.rotary(input_ids.shape[1], device=hidden.device, dtype=hidden.dtype)
         value_source = None
-        for layer in self.layers:
-            if self.config.gradient_checkpointing and self.training and torch.is_grad_enabled():
+        for index, layer in enumerate(self.layers):
+            # With value_residual, layer 0 stays uncheckpointed so its stashed V1
+            # carries gradients (a checkpointed stash would be a no-grad tensor
+            # and v_proj_0 would silently stop learning). V1 then enters later
+            # checkpointed regions as a grad-carrying input, which non-reentrant
+            # checkpoint tracks correctly.
+            use_checkpoint = (self.config.gradient_checkpointing and self.training and torch.is_grad_enabled()
+                              and not (self.config.value_residual != "none" and index == 0))
+            if use_checkpoint and self.config.value_residual != "none":
+                hidden = checkpoint(layer, hidden, cos, sin, attention_mask,
+                                    use_reentrant=False, value_source=value_source)
+            elif use_checkpoint:
                 hidden = checkpoint(layer, hidden, cos, sin, attention_mask, use_reentrant=False)
             elif self.config.value_residual != "none":
                 hidden = layer(hidden, cos, sin, attention_mask, value_source=value_source)

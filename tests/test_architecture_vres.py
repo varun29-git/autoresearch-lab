@@ -125,6 +125,34 @@ class TestValueResidualForward:
             _, cache = model.forward_cached(ids[:, :9])
         assert cache.value_residual_buffer is None
 
+    def test_gradient_checkpointing_parity(self):
+        # Mirrors the native preflight gate: checkpointed and retained executions
+        # of the same arithmetic must agree on loss and every parameter gradient.
+        # Layer 0 runs uncheckpointed by design so V1 keeps its gradient path.
+        from dataclasses import replace
+
+        torch.manual_seed(23)
+        retained = BitNetLlama(tiny_config(value_residual="learned"))
+        torch.manual_seed(23)
+        checkpointed = BitNetLlama(replace(tiny_config(value_residual="learned"),
+                                           gradient_checkpointing=True))
+        checkpointed.load_state_dict(retained.state_dict())
+        ids = torch.randint(0, 32, (2, 16))
+        targets = torch.randint(0, 32, (2, 16))
+        retained_loss = retained(ids, targets)["loss"]
+        checkpointed.train()
+        checkpointed_loss = checkpointed(ids, targets)["loss"]
+        assert torch.allclose(retained_loss, checkpointed_loss, atol=1e-6)
+        retained_loss.backward()
+        checkpointed_loss.backward()
+        for (name, parameter), (_, checkpointed_parameter) in zip(
+                retained.named_parameters(), checkpointed.named_parameters()):
+            assert parameter.grad is not None, name
+            assert checkpointed_parameter.grad is not None, name
+            assert torch.allclose(parameter.grad, checkpointed_parameter.grad, atol=1e-5), name
+        # The multi-path gradient must reach layer 0's value projection.
+        assert retained.layers[0].attn.v_proj.weight.grad.abs().sum() > 0
+
     def test_training_loop_with_stability_monitor(self):
         # Regression for the trial-002 screen crash: the protected StabilityMonitor
         # hooks each attention module's output and requires a plain tensor return.
