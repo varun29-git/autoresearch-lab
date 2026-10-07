@@ -247,21 +247,25 @@ def remote_preflight(settings: dict, host: str, trial_id: str, stage: str,
 def launch_worker(settings: dict, host: str, *, trial_id: str, stage: str,
                   cycle_id: str, qat_rationale: str | None,
                   trial_budget_seconds: float, archive_only: bool = False,
-                  run=command) -> str:
+                  benchmark: bool = False, run=command) -> str:
     unit = f"terminus-ar-{cycle_id}"
     args = [settings["remote_python"], "-m", "research.azure_worker",
-            "--campaign", settings["remote_campaign"], "--trial-id", trial_id,
-            "--stage", stage, "--cycle-id", cycle_id, "--unit", unit,
+            "--campaign", settings["remote_campaign"], "--stage", stage,
+            "--cycle-id", cycle_id, "--unit", unit,
             "--resource-group", settings["resource_group"], "--vm-name", settings["vm_name"],
             "--blob-account", settings["blob_account"],
             "--blob-container", settings["blob_container"],
             "--blob-prefix", f"{settings['blob_prefix'].strip('/')}/{cycle_id}",
             "--verification-parent", settings["verification_parent"],
             "--trial-budget-seconds", str(trial_budget_seconds)]
+    if trial_id:
+        args.extend(["--trial-id", trial_id])
     if qat_rationale:
         args.extend(["--qat-rationale", qat_rationale])
     if archive_only:
         args.append("--archive-only")
+    if benchmark:
+        args.append("--benchmark")
     script = shlex.join(["sudo", "-n", "systemd-run", f"--unit={unit}",
                          f"--uid={settings['ssh_user']}",
                          f"--working-directory={settings['remote_repo']}",
@@ -452,6 +456,138 @@ def reconcile_cycle(settings: dict, cycle_id: str, *, run=command) -> dict:
     return {"cycle_id": cycle_id, "archive_cycle_id": archive_id,
             **archive, "analysis": analysis, "deallocated": True,
             "note": "reconciled VM-on time is conservative if shutdown preceded this check"}
+
+
+def benchmark_preflight(settings: dict, host: str, *, run=command) -> None:
+    """Lighter gate for a synthetic-data benchmark: no campaign data checks."""
+    ssh(settings, host, "nvidia-smi --query-gpu=name --format=csv,noheader | grep -q H100",
+        run=run)
+    foreign = ssh(settings, host,
+                  "nvidia-smi --query-compute-apps=pid --format=csv,noheader "
+                  "| grep -E '^[0-9]+' || true", run=run)
+    if foreign.strip():
+        raise ForeignWorkloadError(f"other GPU processes started on H100: {foreign.strip()}")
+    services = ssh(settings, host,
+                   "systemctl list-units 'terminus-*' --state=running "
+                   "--plain --no-legend --no-pager", run=run)
+    if services.strip():
+        raise ForeignWorkloadError(f"older Terminus services started on H100: {services.strip()}")
+    checks = ["set -euo pipefail",
+              f"mountpoint -q {shlex.quote(settings['persistent_mount'])}",
+              f"test -d {shlex.quote(settings['remote_results_root'])}",
+              f"test -f {shlex.quote(settings['remote_campaign'])}",
+              f"test -x {shlex.quote(settings['remote_python'])}",
+              "command -v az >/dev/null", "sudo -n true",
+              "az login --identity --output none",
+              f"az storage container show --account-name {shlex.quote(settings['blob_account'])} "
+              f"--name {shlex.quote(settings['blob_container'])} --auth-mode login --output none"]
+    ssh(settings, host, "; ".join(checks), run=run)
+
+
+def _collect_cycle(settings: dict, host: str, unit: str, *, cycle_id: str, trial_id: str | None,
+                   started: float, log_path: Path, run=command) -> dict:
+    """Wait for the worker's verified self-deallocation, then fetch the archive."""
+    deadline = time.monotonic() + policy()["max_trial_seconds"] + 7200
+    while time.monotonic() < deadline:
+        time.sleep(20)
+        if power_state(settings, run=run) == "PowerState/deallocated":
+            stopped = time.time()
+            append_event(log_path, {"event": "vm_deallocated", "cycle_id": cycle_id,
+                                    "time_unix": stopped})
+            archive = confirm_archive(settings, cycle_id, trial_id, run=run)
+            append_event(log_path, {"event": "archive_confirmed", "cycle_id": cycle_id,
+                                    "time_unix": time.time(),
+                                    "receipt_sha256": archive["receipt_sha256"]})
+            try:
+                analysis = fetch_archive(settings, cycle_id, run=run)
+            except Exception as exc:
+                analysis = {"error": f"{type(exc).__name__}: {exc}",
+                            "retry": f"python -m research.azure_cycle fetch --config <config> --cycle-id {cycle_id}"}
+            return {"cycle_id": cycle_id, "trial_id": trial_id,
+                    "vm_on_hours_estimate": (stopped - started) / 3600,
+                    **archive, "analysis": analysis, "deallocated": True}
+        try:
+            state = ssh(settings, host, shlex.join(["sudo", "-n", "systemctl", "show", unit,
+                                                   "--property=ActiveState", "--property=Result",
+                                                   "--property=ExecMainStatus", "--no-pager"]), run=run)
+        except RuntimeError:
+            # SSH can disappear while Azure processes the worker's shutdown.
+            continue
+        if "ActiveState=failed" in state or ("ActiveState=inactive" in state and
+                                              "Result=success" not in state):
+            raise RuntimeError(f"worker stopped before verified shutdown: {state}")
+    raise TimeoutError("worker exceeded the trial + archive deadline; VM retained for recovery")
+
+
+def run_benchmark_cycle(settings: dict, *, run=command) -> dict:
+    """One committed throughput benchmark on the H100, with the trial lifecycle.
+
+    Same safety discipline as a campaign trial (clean commit, budget ledger,
+    no-takeover guard, verified archive before deallocation) but the worker runs
+    optimizations.h100_stack_benchmark on synthetic data instead of a trial.
+    """
+    if any("YOUR_PERSISTENT_DISK" in settings.get(field, "")
+           for field in ("remote_campaign", "remote_data_root", "remote_results_root",
+                         "persistent_mount", "verification_parent")) or \
+            settings.get("local_control_root", "").startswith("/absolute/path/"):
+        raise ValueError("replace Azure-cycle example paths before starting the H100")
+    commit = assert_clean_git()
+    root = Path(settings["local_control_root"])
+    log_path = root / "azure_cycles.jsonl"
+    budget = budget_state(ledger(log_path), float(settings["max_vm_hours"]))
+    if (budget["unresolved_start_requests"] or budget["unclosed_cycles"] or
+            budget["unconfirmed_archives"]):
+        raise RuntimeError(f"reconcile unfinished Azure cycles before starting: {budget}")
+    if budget["remaining_vm_hours_estimate"] <= 0.5:
+        raise RuntimeError("Azure VM-on budget is exhausted or lacks archive reserve")
+    if power_state(settings, run=run) != "PowerState/deallocated":
+        raise RuntimeError("refusing to take over an H100 that was already running")
+    cycle_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + secrets.token_hex(4)
+    requested = time.time()
+    append_event(log_path, {"event": "start_requested", "cycle_id": cycle_id,
+                            "trial_id": None, "stage": "benchmark", "commit": commit,
+                            "time_unix": requested})
+    try:
+        run("az", "vm", "start", "--resource-group", settings["resource_group"],
+            "--name", settings["vm_name"], "--output", "none")
+    except Exception:
+        if power_state(settings, run=run) == "PowerState/deallocated":
+            append_event(log_path, {"event": "start_aborted", "cycle_id": cycle_id,
+                                    "time_unix": time.time()})
+        raise
+    started = requested
+    append_event(log_path, {"event": "vm_started", "cycle_id": cycle_id,
+                            "time_unix": started, "ready_unix": time.time()})
+    worker_launched = False
+    try:
+        host = wait_for_ssh(settings, run=run)
+        stage_commit(settings, host, commit, run=run)
+        benchmark_preflight(settings, host, run=run)
+        archive_reserve = float(settings.get("archive_reserve_seconds", 1800))
+        trial_budget = (budget["remaining_vm_hours_estimate"] * 3600 -
+                        (time.time() - started) - archive_reserve)
+        if trial_budget < 300:
+            raise RuntimeError("VM budget cannot cover the benchmark plus verified archive")
+        unit = launch_worker(settings, host, trial_id=None, stage="screen",
+                             cycle_id=cycle_id, qat_rationale=None,
+                             trial_budget_seconds=trial_budget, benchmark=True, run=run)
+        worker_launched = True
+        append_event(log_path, {"event": "worker_started", "cycle_id": cycle_id,
+                                "unit": unit, "time_unix": time.time()})
+        return {**_collect_cycle(settings, host, unit, cycle_id=cycle_id, trial_id=None,
+                                 started=started, log_path=log_path, run=run),
+                "stage": "benchmark", "commit": commit}
+    except Exception as exc:
+        if isinstance(exc, ForeignWorkloadError):
+            append_event(log_path, {"event": "foreign_gpu_workload", "cycle_id": cycle_id,
+                                    "time_unix": time.time(), "note": str(exc)})
+        elif not worker_launched:
+            # No benchmark has begun. Avoid paying for an idle preflight VM.
+            run("az", "vm", "deallocate", "--resource-group", settings["resource_group"],
+                "--name", settings["vm_name"], "--output", "none")
+            append_event(log_path, {"event": "vm_deallocated", "cycle_id": cycle_id,
+                                    "time_unix": time.time(), "reason": "pretrial_failure"})
+        raise
 
 
 def run_cycle(settings: dict, *, trial_id: str, stage: str,

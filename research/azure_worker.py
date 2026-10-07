@@ -11,6 +11,7 @@ import argparse
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 import traceback
 from pathlib import Path, PurePosixPath
@@ -18,6 +19,9 @@ from pathlib import Path, PurePosixPath
 from .artifacts import create, verify
 from .loop import status, trial
 from .protocol import campaign, read_json, sha256, write_json
+
+
+BENCHMARK_MODULE = "optimizations.h100_stack_benchmark"
 
 
 def command(*args: str) -> str:
@@ -75,12 +79,31 @@ def archive_and_verify(root: Path, *, account: str, container: str,
     return {**result, "blob_prefix": prefix, "receipt_sha256": sha256(receipt_path)}
 
 
+def run_benchmark(args, archive_root: Path, *, run=command) -> dict:
+    """Run the stack throughput benchmark module inside the archived tree."""
+    report_path = archive_root / "benchmark_report.json"
+    process = subprocess.run(
+        [sys.executable, "-m", BENCHMARK_MODULE, "--output", str(report_path)],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+        timeout=args.trial_budget_seconds)
+    (archive_root / "benchmark_stdout.log").write_text(process.stdout or "", encoding="utf-8")
+    if process.returncode:
+        raise RuntimeError(f"benchmark exited {process.returncode}; see benchmark_stdout.log")
+    return read_json(report_path)
+
+
 def run_cycle(args, *, run=command, run_trial=trial,
               archive=archive_and_verify) -> dict:
     """The only successful path to deallocation goes through verified archive."""
+    benchmark_mode = getattr(args, "benchmark", False)
+    if not benchmark_mode and not args.trial_id:
+        raise ValueError("trial cycles need a trial id")
     settings = campaign(args.campaign)
     campaign_root = Path(settings["results_root"]) / settings["tag"]
-    trial_dir = campaign_root / "trials" / args.trial_id
+    trial_dir = campaign_root / "trials" / args.trial_id if args.trial_id else None
+    benchmark_root = campaign_root / "benchmarks" / args.cycle_id if benchmark_mode else None
+    if benchmark_root is not None:
+        benchmark_root.mkdir(parents=True, exist_ok=True)
     result = None
     failure = None
     run("az", "login", "--identity", "--output", "none")
@@ -102,9 +125,12 @@ def run_cycle(args, *, run=command, run_trial=trial,
     try:
         if not args.archive_only:
             try:
-                result = run_trial(args.campaign, args.trial_id, args.stage,
-                                   qat_rationale=args.qat_rationale,
-                                   max_seconds=args.trial_budget_seconds)
+                if benchmark_mode:
+                    result = run_benchmark(args, benchmark_root, run=run)
+                else:
+                    result = run_trial(args.campaign, args.trial_id, args.stage,
+                                       qat_rationale=args.qat_rationale,
+                                       max_seconds=args.trial_budget_seconds)
             except Exception as exc:
                 failure = {"type": type(exc).__name__, "message": str(exc),
                            "traceback": traceback.format_exc()}
@@ -118,7 +144,10 @@ def run_cycle(args, *, run=command, run_trial=trial,
                 telemetry_process.wait()
         if telemetry_handle is not None:
             telemetry_handle.close()
-    archive_root = trial_dir if trial_dir.is_dir() else campaign_root / "controller_failures" / args.cycle_id
+    if benchmark_root is not None:
+        archive_root = benchmark_root
+    else:
+        archive_root = trial_dir if trial_dir.is_dir() else campaign_root / "controller_failures" / args.cycle_id
     archive_root.mkdir(parents=True, exist_ok=True)
     if telemetry_path.is_file():
         shutil.copy2(telemetry_path, archive_root / f"gpu_dmon_{args.stage}.log")
@@ -150,6 +179,7 @@ def run_cycle(args, *, run=command, run_trial=trial,
             f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}", encoding="utf-8")
     write_json(archive_root / "cycle_result.json", {
         "cycle_id": args.cycle_id, "trial_id": args.trial_id, "stage": args.stage,
+        "benchmark": benchmark_mode,
         "trial_result": result, "worker_failure": failure,
         "archive_only_recovery": args.archive_only,
         "note": "VM self-deallocation follows only after independent Blob download and hash verification"})
@@ -168,8 +198,10 @@ def run_cycle(args, *, run=command, run_trial=trial,
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--campaign", type=Path, required=True)
-    parser.add_argument("--trial-id", required=True)
+    parser.add_argument("--trial-id")
     parser.add_argument("--stage", choices=("screen", "full", "qat_probe"), required=True)
+    parser.add_argument("--benchmark", action="store_true",
+                        help="run the stack throughput benchmark instead of a campaign trial")
     parser.add_argument("--qat-rationale")
     parser.add_argument("--trial-budget-seconds", type=float, required=True)
     parser.add_argument("--archive-only", action="store_true",
