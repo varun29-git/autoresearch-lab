@@ -1,6 +1,8 @@
 # Terminus autoresearch
 
-This is a **separate, private** Terminus architecture-research repository for a Kimi K3 autonomous loop. It adapts [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) to the maintained Terminus ModelTunnelv2 code. The agent researches and edits architecture candidates; a protected runner holds the data, tokenizer, training exposure, evaluation, and spending contract fixed. No architecture search has been launched from this repository.
+This is a **separate, private** Terminus architecture-research repository for a Kimi K3 autonomous loop. It adapts [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) to the maintained Terminus ModelTunnelv2 code. The agent researches and edits architecture candidates; a protected runner holds the data, tokenizer, training exposure, evaluation, and spending contract fixed.
+
+**First campaign: `architecture-20261006c` — COMPLETE (2026-10-06 → 2026-10-07).** The stack architecture (Peri-LN branch output norms + ResFormer value residual) beat the baseline by −1.15% at a matched 2.5B-token dense-FP8 horizon and by −0.55% after ternary-weight conversion + 500M-token QAT, while bounding the residual stream the baseline lets migrate. Full evidence: [notes/FINAL_REPORT_ARCHITECTURE_20261006.md](notes/FINAL_REPORT_ARCHITECTURE_20261006.md) and [notes/qat500-probe-comparison.md](notes/qat500-probe-comparison.md). Winner's branch: [`trial/stack/004`](https://github.com/varun29-git/terminus-autoresearch/tree/trial/stack/004).
 
 The source snapshot and inspected autoresearch revision are recorded in [SOURCE_BASELINE.md](SOURCE_BASELINE.md). The rationale and readiness gaps are in [docs/AUTORESEARCH_DESIGN.md](docs/AUTORESEARCH_DESIGN.md); exact commands are in [docs/AUTORESEARCH_EXECUTION.md](docs/AUTORESEARCH_EXECUTION.md). Kimi's operating instructions are [program.md](program.md).
 
