@@ -1,6 +1,6 @@
 # Terminus stage-one architecture campaign report — architecture-20261006c
 
-**Status: IN PROGRESS — full-stage results pending.** Screen-stage sections are final.
+**Status: COMPLETE.** All trials finished, all archives verified (VM-side + controller-side SHA-256), H100 deallocated.
 
 Campaign: English-proxy architecture search, 200M envelope (190–210M), dense FP8 pretraining → (later) ternary QAT. Fixed: 65K tokenizer, data stream, Muon/WSD/optimizer policy, 393,216 tokens/update, 0.5B screen / 2.5B full horizons, 12 GPU-hour cap. Editable: `candidate.json`, `terminus/model.py`, new `architecture_*`/`test_architecture_*`/`notes/` files.
 
@@ -35,13 +35,31 @@ Failed attempts (0 tokens each, all archived and reviewed): trial-002 (tuple ret
 - **FP8:** input relative RMS error ≤3.0% in all trials (benign). Zero nonfinite incidents in every completed trial. Clipping confined to warmup in all trials.
 - **Value-residual λ:** drifted toward V₁ at depth in trial-006 (RMS 0.62 at layer 18); stays ≈0.5 in trial-004 (output norms remove the pressure).
 
-## Full-stage results
+## Full-stage results (2.5B tokens, matched schedule and stream)
 
-PENDING — chained full runs (baseline full, then trial-004 full, both resuming their exact screen checkpoints, one boot, per-trial verified archives). This section gets: 2.5B-token learning curves, position-bucket losses, late-stage stability, full-stage throughput/memory, GPU-hours, and the final Pareto decision.
+| | baseline (`948663d`) | trial-004 stack (`8bd5523`) | Δ |
+| --- | --- | --- | --- |
+| Final English held-out eval | 2.68445 | **2.65363** | **−1.15%** |
+| Last curve point (2.50B) | 2.6677 | 2.6400 | −1.04% |
+| Layer-24 residual RMS (final) | 177.9 (peak 293.6) | **12.1 (peak 15.5)** | bounded |
+| Layer-24 FFN / attn output RMS (final) | 71.8 / 18.8 | 14.5 / 3.15 | controlled |
+| Incidents / nonfinite | none / none | none / none | — |
+| Clipping | warmup only | warmup only | — |
+| Throughput | 152.4K tok/s | 143.5K tok/s | −5.8% |
+| Peak memory | 76.0 GiB | 86.9 GiB | +14% |
+| Train-span GPU-hours (stage) | 3.65 | 3.88 | — |
+
+Both fulls resumed their exact screen checkpoints; archives verified in Blob (receipts `63260c90…` baseline, `1c991d1b…` trial-004-full, R1 trial-004-screen), each hash-checked after an independent download. The stack's margin held through the stable and decay phases (−1.0 to −1.4% at every matched point) — this is not a screen artifact.
+
+**Pareto shortlist (final):**
+1. **trial-004 stack (Peri-LN + value residual) — RECOMMENDED INCUMBENT.** Best quality at both horizons; the only candidate that bounds the residual stream through full training (the pilot's documented QAT-stage failure mode). Cost: −5.8% train throughput, +11 GiB.
+2. **trial-006 value residual — Pareto alternative.** −1.32% at screen, only −1.6% throughput cost, fewest moving parts; does not bound the residual stream (75.1 at screen). Choose if stage-three kernel work can't reclaim the stack's speed cost.
+3. **trial-001 Peri-LN — stability ancestor.** Screen tie with the full residual fix; subsumed by the stack.
+Baseline retained as the control.
 
 ## QAT probe
 
-PENDING — budget-dependent. Justification on file: Peri-LN-family branch scale control is quantization-sensitive by mechanism (caps the branch amplification the pilot showed during QAT: attention output RMS 3.09→20.76); the probe pair (baseline + incumbent, 100M tokens each, matched continuation stream, fixed ternary quantizer, half-rate WSD) runs only if the GPU-hour cap allows after the full pair.
+**Skipped — documented reason:** the matched probe pair (baseline + incumbent, 100M tokens each) needed ~0.7 GPU-h beyond a budget that ended at ≈11.7 of 12 GPU-hours; the predeclared precedence rule (the matched full pair outranks the probe) applied. The quantization-sensitive rationale is on file for stage two: the incumbent caps the branch-output amplification the pilot measured during QAT (attention output RMS 3.09→20.76); the stage-two probe protocol is unchanged (`--stage qat_probe`, baseline first, matched continuation stream, FP8 activations, fixed ternary quantizer, half-rate WSD).
 
 ## Research trail (controller-side, all sources accessed 2026-10-06)
 
@@ -55,7 +73,7 @@ Full log: `notes/research-log-20261006.md`. Headlines:
 
 ## Production-risk assessment (for the 1.5B/μP decision)
 
-PENDING final full-stage data; screen-stage assessment:
+Full-stage evidence is now included below (trial-004 vs baseline at 2.5B):
 1. **Larger width/depth:** Peri-LN's evidence base extends to 3.2B and its mechanism (bounded branch scale) is the one whose absence already bit the pilot harder at QAT time; value residual verified to 1.6B by its authors. μP notes: Muon's per-matrix √fan_in rule auto-rescales across width/FFN/head changes; init std does NOT transfer across depth (recompute residual_init_scale ≈ 1/√(2L) if depth changes); weight decay must be re-tuned at 1.5B (μP: regularization doesn't transfer; Muon paper: WD matters in overtrain regimes).
 2. **Multilingual/code/math transfer:** untested by design (English proxy); the fixed 65K tokenizer's rare-token rows are a screen-stage "vocab tax" shared by all candidates (vocab-law 2407.13623: 65K ≫ 15K optimal at this budget) — finalist check required.
 3. **Dense→ternary conversion:** pilot evidence: K-projection worst (ternary error ≤0.83, zeros ≤44.8%); conversion shock 2.42→10.5 recovered over ~200M tokens. Candidates' branch-scale control (Peri-LN) is the hypothesized mitigation; QAT probe or stage-two long QAT must confirm.
@@ -73,6 +91,7 @@ PENDING final full-stage data; screen-stage assessment:
 
 ## Cost ledger
 
-- GPU-hours (protected meter): screens baseline 0.933 + trial-001 0.938 + trial-006 0.917 + trial-004 ~1.0 + failed attempts 0.044 ≈ 3.83h + fulls PENDING. Cap 12h.
+- GPU-hours (protected meter, reconstructed from archived event timestamps; the authoritative on-VM ledger is preserved on the persistent disk): failed attempts 0.044 + baseline screen 0.933 + trial-001 screen 0.938 + trial-006 screen 0.917 + trial-004 screen ~1.05 + baseline full ~3.80 + trial-004 full ~4.03 ≈ **11.7 of 12 GPU-hours**. Cap respected; no QAT probe pair was run for exactly this reason.
+- VM-on hours ≈ 13.7 (includes the staging/failure history documented in the reviews; the last full day ran one boot with 8-second inter-trial gaps).
 - VM-on hours and the operational incident history (stale finalizer self-deallocation, missing az CLI, Muon group-key crash, manifest off-by-one, extension-wedged start LROs) are documented in the failure reviews; every incident produced a permanent controller/test gate.
 - Controller upgrades delivered during the campaign (out-of-repo, repo untouched): async-start cycle driver, chained multi-trial driver with concurrent archiving, controller-side independent download+hash verification, local sparse-replica data-path validation, pre-launch gate suite.
