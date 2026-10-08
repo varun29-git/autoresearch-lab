@@ -1,40 +1,47 @@
 """H100 throughput benchmark: 1.5B stack config, baseline vs the optimizations.
 
 Remote entry point for the Azure benchmark cycle (research.azure_cycle
-benchmark). Runs the optimizations/gpu_check.py parity gates first — a broken
-fused kernel fails the cycle before any timing — then measures synthetic-step
-training throughput of configs/terminus_25l_2304d_64k_h100_stack.json through
-terminus.benchmark.training_benchmark in these variants:
+benchmark). Runs the optimizations/gpu_check.py parity gates before timing,
+then measures baseline, single-component ablations, and combined variants of
+configs/terminus_25l_2304d_64k_h100_stack.json through
+terminus.benchmark.training_benchmark. Each patch is scoped to one run so
+variant order cannot leak an optimization into the next measurement.
 
-- baseline: the committed stack config, unchanged.
-- fused: BitNetBlock runs block_boundary (Peri-LN out-norm + residual + FFN
-  in-norm) and out_norm_residual (FFN side), attention uses value_mix for the
-  V' = l0*V1 + l1*Vn mix, the head loss is optimizations.fused_head_loss, and
-  the Muon step batches equal-shaped Newton-Schulz slices.
-- fused_graphs: fused + captured CUDA-graph microsteps.
-- fused_fp8_head: fused + FP8 E4M3 head tiles (numerics experiment; reported,
-  not adopted).
-
-Patches are monkeypatches applied inside this process only; terminus/ is not
-modified. development_mode is forced on in the derived configs because the
-benchmark feeds synthetic tokens and must not require a campaign preflight
-report or data manifest.
+development_mode is forced on in derived configs because the benchmark feeds
+synthetic tokens and must not require a campaign preflight report or data
+manifest. No variant is wired into terminus/ by this script.
 
     python -m optimizations.h100_stack_benchmark --output report.json
 """
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import sys
 import tempfile
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STACK_CONFIG = REPO_ROOT / "configs" / "terminus_25l_2304d_64k_h100_stack.json"
+COMPONENTS = frozenset({"output_norm", "block_boundary", "value_mix", "head_loss", "batched_muon"})
+VARIANTS = {
+    "baseline": (frozenset(), False, False),
+    "output_norm": (frozenset({"output_norm"}), False, False),
+    "block_boundary": (frozenset({"block_boundary"}), False, False),
+    "value_mix": (frozenset({"value_mix"}), False, False),
+    "head_loss": (frozenset({"head_loss"}), False, False),
+    "batched_muon": (frozenset({"batched_muon"}), False, False),
+    "graphs": (frozenset(), True, False),
+    "fused": (COMPONENTS, False, False),
+    "fused_graphs": (COMPONENTS, True, False),
+    "fused_fp8_head": (COMPONENTS, False, True),
+}
+DEFAULT_VARIANTS = ("baseline", "output_norm", "block_boundary", "value_mix",
+                    "head_loss", "batched_muon", "graphs", "fused")
 
 
 def _derived_config(directory, *changes):
@@ -47,7 +54,13 @@ def _derived_config(directory, *changes):
     return path
 
 
-def _patch_fused(fp8_head=False):
+@contextmanager
+def _patch_fused(*, components=frozenset(), fp8_head=False):
+    components = frozenset(components)
+    if not components <= COMPONENTS:
+        raise ValueError(f"unknown benchmark components: {sorted(components - COMPONENTS)}")
+    if fp8_head and "head_loss" not in components:
+        raise ValueError("FP8 head requires the head_loss component")
     from terminus import loss as loss_module
     from terminus import model as model_module
     from terminus.kernels import attention
@@ -115,6 +128,22 @@ def _patch_fused(fp8_head=False):
         branch = self.ffn(ffn_input)
         return out_norm_residual(hidden, branch, self.ffn_out_norm.weight, self.ffn_norm.eps)
 
+    def output_norm_block_forward(self, hidden, cos, sin, attention_mask=None, cache=None, *,
+                                  value_source=None):
+        branch = self.attn(self.attn_norm(hidden), cos, sin, attention_mask, cache,
+                           value_source=value_source)
+        hidden = out_norm_residual(hidden, branch, self.attn_out_norm.weight, self.attn_norm.eps)
+        branch = self.ffn(self.ffn_norm(hidden))
+        return out_norm_residual(hidden, branch, self.ffn_out_norm.weight, self.ffn_norm.eps)
+
+    def boundary_block_forward(self, hidden, cos, sin, attention_mask=None, cache=None, *,
+                               value_source=None):
+        branch = self.attn(self.attn_norm(hidden), cos, sin, attention_mask, cache,
+                           value_source=value_source)
+        hidden, ffn_input = block_boundary(hidden, branch, self.attn_out_norm.weight,
+                                           self.ffn_norm.weight, self.attn_norm.eps)
+        return hidden + self.ffn_out_norm(self.ffn(ffn_input))
+
     def fused_loss(hidden, weight, targets, chunk_size, *, backend="torch"):
         return fused_head_loss(hidden, weight, targets, tile_size=max(int(chunk_size), 8192),
                                fp8_head=fp8_head)
@@ -174,10 +203,19 @@ def _patch_fused(fp8_head=False):
                 parameter.add_(update, alpha=-group["lr"])
         return loss
 
-    model_module.BitNetAttention.forward = fused_attention_forward
-    model_module.BitNetBlock.forward = fused_block_forward
-    loss_module.streaming_cross_entropy_sum = fused_loss
-    LogicalMuonWithAuxAdam.step = batched_muon_step
+    with ExitStack() as stack:
+        if "value_mix" in components:
+            stack.enter_context(patch.object(model_module.BitNetAttention, "forward", fused_attention_forward))
+        if "block_boundary" in components:
+            block_forward = fused_block_forward if "output_norm" in components else boundary_block_forward
+            stack.enter_context(patch.object(model_module.BitNetBlock, "forward", block_forward))
+        elif "output_norm" in components:
+            stack.enter_context(patch.object(model_module.BitNetBlock, "forward", output_norm_block_forward))
+        if "head_loss" in components:
+            stack.enter_context(patch.object(loss_module, "streaming_cross_entropy_sum", fused_loss))
+        if "batched_muon" in components:
+            stack.enter_context(patch.object(LogicalMuonWithAuxAdam, "step", batched_muon_step))
+        yield
 
 
 def run_parity_gates():
@@ -192,40 +230,54 @@ def run_parity_gates():
     return {name: gate(device, True) for name, gate in gates}
 
 
-def run_benchmark(*, batch_size, warmup_steps, measured_steps, skip_gates=False):
+def parse_variants(names):
+    selected = tuple(names)
+    if not selected or len(selected) != len(set(selected)):
+        raise ValueError("choose at least one benchmark variant, without duplicates")
+    unknown = sorted(set(selected) - VARIANTS.keys())
+    if unknown:
+        raise ValueError(f"unknown benchmark variants: {unknown}")
+    if "baseline" not in selected:
+        raise ValueError("baseline must be included for a matched comparison")
+    return selected
+
+
+def run_benchmark(*, batch_size, warmup_steps, measured_steps, skip_gates=False,
+                  variants=DEFAULT_VARIANTS, profile_dir=None, event_profile=False):
     from terminus.benchmark import training_benchmark
 
+    variants = parse_variants(variants)
+    if event_profile and any(VARIANTS[name][1] for name in variants):
+        raise ValueError("event profiling does not support CUDA graph variants")
     report = {"stack_config": STACK_CONFIG.name, "batch_size": batch_size,
-              "warmup_steps": warmup_steps, "measured_steps": measured_steps}
+              "warmup_steps": warmup_steps, "measured_steps": measured_steps,
+              "variant_order": variants}
     if not skip_gates:
         report["parity_gates"] = run_parity_gates()
-    variants = {}
+    measurements = {}
     with tempfile.TemporaryDirectory(prefix="stack-benchmark-") as directory:
-        baseline_path = _derived_config(directory)
-        variants["baseline"] = training_benchmark(baseline_path, batch_size=batch_size,
-                                                  warmup_steps=warmup_steps,
-                                                  measured_steps=measured_steps)
-        _patch_fused()
-        fused_path = _derived_config(directory)
-        variants["fused"] = training_benchmark(fused_path, batch_size=batch_size,
-                                               warmup_steps=warmup_steps,
-                                               measured_steps=measured_steps)
-        graphs_path = _derived_config(directory, ("training", "cuda_graphs", True))
-        variants["fused_graphs"] = training_benchmark(graphs_path, batch_size=batch_size,
-                                                      warmup_steps=warmup_steps,
-                                                      measured_steps=measured_steps)
-        _patch_fused(fp8_head=True)
-        fp8_path = _derived_config(directory)
-        variants["fused_fp8_head"] = training_benchmark(fp8_path, batch_size=batch_size,
-                                                        warmup_steps=warmup_steps,
-                                                        measured_steps=measured_steps)
+        for name in variants:
+            components, graphs, fp8_head = VARIANTS[name]
+            changes = (("training", "cuda_graphs", True),) if graphs else ()
+            config_path = _derived_config(directory, *changes)
+            candidate_profile = Path(profile_dir) / name if profile_dir else None
+            with _patch_fused(components=components, fp8_head=fp8_head):
+                measurements[name] = training_benchmark(
+                    config_path, batch_size=batch_size, warmup_steps=warmup_steps,
+                    measured_steps=measured_steps, profile_dir=candidate_profile,
+                    event_profile=event_profile)
     report["variants"] = {
         name: {"tokens_per_second": value["tokens_per_second"],
                "median_step_seconds": value["median_step_seconds"],
                "peak_allocated_bytes": value["peak_allocated_bytes"],
+               "peak_reserved_bytes": value["peak_reserved_bytes"],
+               "step_seconds": value["step_seconds"],
                "losses": value["losses"], "gradient_norms": value["gradient_norms"],
-               "physics": value["physics"]}
-        for name, value in variants.items()}
+               "profile_dir": value["profile_dir"], "event_profile": value["event_profile"],
+               "runtime": value["runtime"], "physics": value["physics"],
+               "components": sorted(VARIANTS[name][0]), "cuda_graphs": VARIANTS[name][1],
+               "fp8_head": VARIANTS[name][2]}
+        for name, value in measurements.items()}
     base = report["variants"]["baseline"]["tokens_per_second"]
     for name, value in report["variants"].items():
         value["speedup_vs_baseline"] = value["tokens_per_second"] / base
@@ -238,6 +290,12 @@ def main():
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--warmup-steps", type=int, default=2)
     parser.add_argument("--steps", type=int, default=4)
+    parser.add_argument("--variants", default=",".join(DEFAULT_VARIANTS),
+                        help="comma-separated variants; baseline is required")
+    parser.add_argument("--profile-dir", type=Path,
+                        help="write an untimed operator trace under this directory per variant")
+    parser.add_argument("--event-profile", action="store_true",
+                        help="add CUDA-event phase timings; graph variants must be excluded")
     parser.add_argument("--skip-gates", action="store_true",
                         help="skip parity gates (only for local debugging)")
     args = parser.parse_args()
@@ -245,7 +303,9 @@ def main():
         print("CUDA unavailable: the stack benchmark must run on the H100")
         return 2
     report = run_benchmark(batch_size=args.batch_size, warmup_steps=args.warmup_steps,
-                           measured_steps=args.steps, skip_gates=args.skip_gates)
+                           measured_steps=args.steps, skip_gates=args.skip_gates,
+                           variants=(name.strip() for name in args.variants.split(",")),
+                           profile_dir=args.profile_dir, event_profile=args.event_profile)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, indent=2))

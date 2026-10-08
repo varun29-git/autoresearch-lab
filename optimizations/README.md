@@ -32,6 +32,32 @@ physics headroom (147K tok/s ceiling) is unchanged.
 Nothing here is wired into `terminus/`; wiring a certified optimization into
 the training harness is a campaign-version change, per AGENTS.md.
 
+## Next H100 pass: isolate the regression
+
+`optimizations/h100_stack_benchmark.py` now scopes each candidate patch to one
+full training benchmark, so the existing combined result can be decomposed.
+Its default queue is `baseline,output_norm,block_boundary,value_mix,head_loss,
+batched_muon,graphs,fused`. The `fused` row reproduces the previous combined
+bundle; `fused_graphs` and `fused_fp8_head` remain selectable separately. The
+report keeps individual step times, allocated/reserved memory, runtime
+metadata, and variant order. Optional `--event-profile` records phase times;
+optional `--profile-dir` writes operator traces. Event profiling requires a
+variant list without CUDA graphs. For example, after the owner starts the H100
+validation session:
+
+```
+python -m optimizations.h100_stack_benchmark \
+  --variants baseline,output_norm,block_boundary,value_mix,head_loss,batched_muon,fused \
+  --event-profile --output /external/stack-ablation.json
+```
+
+Keep `--output` and `--profile-dir` outside Git. This is a synthetic-step
+performance probe; it has **not** been rerun on H100 after the ablation change.
+Compare each component against a matched baseline, then use the GPU trace to
+redesign only a measured bottleneck. Do not wire the slower combined path into
+training. Follow the numerical and real-token gates in the HPO planning branch
+before adopting a faster candidate.
+
 ## Why: the physics accounting
 
 The H100 NVL's FP8 tensor-core floor for this model is ~5.9 µs/token
