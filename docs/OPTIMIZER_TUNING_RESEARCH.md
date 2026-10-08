@@ -1,6 +1,6 @@
 # Optimizer tuning for the 200M → 700M → 1.5B Terminus scale family
 
-**Research date:** 2026-10-08. **Status:** proposed `hpo/v1` protocol; no paid training authorized or run. This is a companion to [the HPO campaign plan](HYPERPARAMETER_AUTORESEARCH_PLAN.md), [the 32-GPU scale-transfer note](OPTIMIZER_SCALE_TRANSFER_32GPU.md), and [the public group-implementation review](HPO_OPTIMIZER_GROUPS_RESEARCH.md). Every number below is either a measured Terminus control, a published result with its own optimizer convention, or a **proposed test point**. None is a measured 1.5B optimum.
+**Research date:** 2026-10-08. **Status:** proposed `hpo/v1` protocol; no paid training authorized or run. This is a companion to [the HPO campaign plan](HYPERPARAMETER_AUTORESEARCH_PLAN.md), [the concrete 25-layer / 32-GPU test matrix](HPO_TEST_MATRIX_32GPU.md), [the 32-GPU scale-transfer note](OPTIMIZER_SCALE_TRANSFER_32GPU.md), and [the public group-implementation review](HPO_OPTIMIZER_GROUPS_RESEARCH.md). Every number below is either a measured Terminus control, a published result with its own optimizer convention, or a **proposed test point**. None is a measured 1.5B optimum.
 
 ## Answer and the evidence behind it
 
