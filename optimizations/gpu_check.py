@@ -190,7 +190,7 @@ def check_cuda_graph_microstep(device):
     captured = CapturedMicrostep(model, inputs, targets)
     first = captured.run(inputs, targets, 1.0)
     replay = captured.run(inputs, targets, 1.0)
-    torch.testing.assert_close(first, replay, atol=0)
+    torch.testing.assert_close(first, replay, rtol=0, atol=0)
     return {"cuda_graph_stack_microstep": True}
 
 
