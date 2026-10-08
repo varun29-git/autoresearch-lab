@@ -9,7 +9,7 @@ import os
 import random
 import signal
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import timedelta
 from functools import lru_cache
 from pathlib import Path
@@ -256,10 +256,151 @@ def collective_checkpoint(directory, model, optimizer, state, contract, rank, wo
         raise RuntimeError(f"checkpoint transaction failed: {error[0]}")
 
 
-def run_training(config_path, manifest_path, data_root, output_dir, *, resume=None, stop_after_updates=None, preflight_report=None):
+OPERATIONAL_TRAINING_FIELDS = ("checkpoint_interval", "validation_interval",
+                               "validation_batches_per_language", "log_interval",
+                               "stability_log_interval", "prefetch_batches", "time_limit_seconds")
+
+
+class PreparedTraining:
+    """A prepared run exposing the complete-update measurement boundary.
+
+    complete_update() performs exactly one full optimizer update: scheduled
+    LR/phase/quantization setup and gradient clearing; loading the next real
+    batches with H2D transfer and all accumulation microsteps; forward, full
+    loss, backward and gradient synchronization; nonfinite detection, global
+    clipping and all optimizer group updates; FP8 cache invalidation and
+    committed data/update counters. It returns the host-side valid-target
+    count derived from manifest arithmetic. cadence() performs the post-update
+    logging/checkpoint/validation/stop work, which is production cadence
+    overhead outside the measured callback.
+    """
+
+    def __init__(self):
+        self.stop_after_updates = None
+        self.monitor = None
+        self.captured = None
+        self.should_stop = [False]
+
+    def complete_update(self):
+        training, state = self.training, self.state
+        sampled = self.monitor is not None and (state["updates"] == 0 or
+                   (state["updates"] + 1) % training.stability_log_interval == 0 or
+                   self.stop_after_updates == state["updates"] + 1 or
+                   state["next_micro_step"] + training.gradient_accumulation_steps >= self.total_micro_steps)
+        if sampled:
+            self.monitor.active = True
+        micro_steps = min(training.gradient_accumulation_steps, self.total_micro_steps - state["next_micro_step"])
+        update_tokens = min(micro_steps * self.micro_tokens, self.total_tokens - state["tokens_seen"])
+        scale = schedule_scale(state["tokens_seen"] + update_tokens - self.phase_offset,
+                               self.total_tokens - self.phase_offset, training.warmup_tokens,
+                               training.final_lr_fraction, schedule=training.schedule,
+                               decay_tokens=training.decay_tokens, decay_style=training.decay_style)
+        for group in self.optimizer.param_groups:
+            group["lr"] = group["base_lr"] * scale
+        strength = self.model_config.quantization_strength
+        if training.quantization_warmup_tokens:
+            progress = min(1.0, (state["tokens_seen"] + update_tokens - self.phase_offset) / training.quantization_warmup_tokens)
+            strength = training.quantization_start_strength + (strength - training.quantization_start_strength) * progress
+        self.model.set_quantization_strength_(strength)
+        self.optimizer.zero_grad(set_to_none=not training.cuda_graphs)
+        local_loss_sum = torch.zeros((), dtype=torch.float64, device=self.device)
+        for micro_index in range(micro_steps):
+            batch_index, inputs, targets = next(self.iterator)
+            if batch_index != state["next_micro_step"] + micro_index:
+                raise RuntimeError("prefetch cursor drift")
+            if training.cuda_graphs and self.captured is None:
+                from .cuda_graph import CapturedMicrostep
+
+                self.captured = CapturedMicrostep(self.model, inputs, targets, amp_dtype=self.amp_dtype)
+            if self.captured is not None and self.captured.matches(inputs, targets):
+                local_loss_sum += self.captured.run(inputs, targets, self.world_size / update_tokens).detach().double()
+                continue
+            sync_context = self.forward_model.no_sync() if self.world_size > 1 and micro_index + 1 < micro_steps else contextlib.nullcontext()
+            with sync_context:
+                with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype, enabled=self.amp_dtype != torch.float32):
+                    output = self.forward_model(inputs, targets, return_logits=False)
+                    loss = output["loss_sum"] * (self.world_size / update_tokens)
+                local_loss_sum += output["loss_sum"].detach().double()
+                loss.backward()
+            if self.monitor is not None:
+                self.monitor.active = False
+        elapsed = time.monotonic() - self.started
+        stop = self.should_stop[0] or (training.time_limit_seconds is not None and elapsed >= training.time_limit_seconds)
+        summary = torch.stack((local_loss_sum, local_loss_sum.new_tensor(float(stop))))
+        if self.world_size > 1:
+            distributed.all_reduce(summary)
+        loss_sum, stop_requests = summary.tolist()
+        if not math.isfinite(loss_sum):
+            if self.rank == 0:
+                append_record(self.output_dir / "incidents.jsonl", {"event": "nonfinite_loss", "state": state})
+            raise FloatingPointError("nonfinite global training loss; optimizer update was not applied")
+        if sampled:
+            self.monitor.gradients_before_clip()
+        try:
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), training.grad_clip or float("inf"), error_if_nonfinite=True, foreach=True)
+        except Exception as exc:
+            if self.rank == 0:
+                append_record(self.output_dir / "incidents.jsonl", {"event": "gradient_failure", "state": state,
+                              "error": f"{type(exc).__name__}: {exc}"})
+            raise
+        if sampled:
+            self.monitor.before_step()
+        self.optimizer.step()
+        if sampled:
+            self.monitor.after_step()
+        self.model.clear_fp8_weight_cache()
+        self.state = {"next_micro_step": state["next_micro_step"] + micro_steps,
+                      "tokens_seen": state["tokens_seen"] + update_tokens, "updates": state["updates"] + 1}
+        self.sampled = sampled
+        self.update_tokens = update_tokens
+        self.loss_sum = loss_sum
+        self.stop_requests = stop_requests
+        self.scale = scale
+        self.strength = strength
+        self.grad_norm = grad_norm
+        return update_tokens
+
+    def cadence(self):
+        training, state = self.training, self.state
+        stopped = self.stop_requests > 0 or (self.stop_after_updates is not None and state["updates"] >= self.stop_after_updates)
+        complete = state["tokens_seen"] == self.total_tokens
+        if self.sampled:
+            append_record(self.output_dir / "stability.jsonl", {"event": "stability", **state, **self.monitor.finish()})
+        if self.rank == 0 and (state["updates"] % training.log_interval == 0 or stopped or complete):
+            now = time.monotonic()
+            append_event(self.output_dir / "events.jsonl", {"event": "train", **state, "loss": self.loss_sum / self.update_tokens,
+                         "loss_tokens": self.update_tokens, "grad_norm_before_clip": float(self.grad_norm), "lr_scale": self.scale,
+                         "grad_clip_coefficient": min(1.0, training.grad_clip / (float(self.grad_norm) + 1e-6)) if training.grad_clip else 1.0,
+                         "optimizer_group_lr_min": min(group["lr"] for group in self.optimizer.param_groups),
+                         "optimizer_group_lr_max": max(group["lr"] for group in self.optimizer.param_groups),
+                         "quantization_strength": self.strength, "tokens_per_second": (state["tokens_seen"] - self.last_log_tokens) / (now - self.last_log),
+                         "peak_memory_bytes": torch.cuda.max_memory_allocated(self.device) if self.device.type == "cuda" else None,
+                         "allocated_memory_bytes": torch.cuda.memory_allocated(self.device) if self.device.type == "cuda" else None,
+                         "reserved_memory_bytes": torch.cuda.memory_reserved(self.device) if self.device.type == "cuda" else None})
+            self.last_log, self.last_log_tokens = now, state["tokens_seen"]
+        if state["updates"] % training.checkpoint_interval == 0 or stopped or complete:
+            collective_checkpoint(self.output_dir / "checkpoints", self.model, self.optimizer, state, self.contract, self.rank, self.world_size)
+        if state["updates"] % training.validation_interval == 0 or stopped or complete:
+            results = evaluate(self.model, self.manifest, self.data_root, self.device, self.amp_dtype, training.validation_batches_per_language, self.rank, self.world_size)
+            if self.rank == 0:
+                append_event(self.output_dir / "events.jsonl", {"event": "validation", **state, "languages": results})
+        if stopped or complete:
+            if self.rank == 0:
+                append_event(self.output_dir / "events.jsonl", {"event": "complete" if complete else "stopped", **state,
+                             "tokens_this_invocation": state["tokens_seen"] - self.tokens_at_start})
+            return True
+        return False
+
+
+@contextlib.contextmanager
+def prepare_training(config_path, manifest_path, data_root, output_dir, *, resume=None,
+                     preflight_report=None, operational_overrides=None):
     model_config, training, optimizer_config = load_config(config_path)
-    if stop_after_updates is not None and stop_after_updates <= 0:
-        raise ValueError("stop_after_updates must be positive")
+    if operational_overrides is not None:
+        unknown = set(operational_overrides) - set(OPERATIONAL_TRAINING_FIELDS)
+        if unknown:
+            raise ValueError("not operational training fields: " + ", ".join(sorted(unknown)))
+        training = replace(training, **operational_overrides)
     world_size, rank = int(os.environ.get("WORLD_SIZE", "1")), int(os.environ.get("RANK", "0"))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     if world_size <= 0 or not 0 <= rank < world_size:
@@ -281,6 +422,7 @@ def run_training(config_path, manifest_path, data_root, output_dir, *, resume=No
         validate_preflight_report(preflight_report, model_config, device, cuda_graphs=training.cuda_graphs)
     if world_size > 1:
         distributed.init_process_group("nccl" if device.type == "cuda" else "gloo", timeout=timedelta(minutes=5))
+    workload = PreparedTraining()
     lock_handle = None
     iterator = None
     monitor = None
@@ -385,110 +527,39 @@ def run_training(config_path, manifest_path, data_root, output_dir, *, resume=No
             append_event(output_dir / "events.jsonl", {"event": "startup", "counts": model.count_parameters(),
                          "world_size": world_size, "state": state, "unused_tail_tokens": manifest.config.total_train_tokens - total_tokens})
         model.train()
-        captured = None
-        while state["next_micro_step"] < total_micro_steps:
-            sampled = monitor is not None and (state["updates"] == 0 or
-                       (state["updates"] + 1) % training.stability_log_interval == 0 or
-                       stop_after_updates == state["updates"] + 1 or
-                       state["next_micro_step"] + training.gradient_accumulation_steps >= total_micro_steps)
-            if sampled:
-                monitor.active = True
-            micro_steps = min(training.gradient_accumulation_steps, total_micro_steps - state["next_micro_step"])
-            update_tokens = min(micro_steps * micro_tokens, total_tokens - state["tokens_seen"])
-            scale = schedule_scale(state["tokens_seen"] + update_tokens - phase_offset,
-                                   total_tokens - phase_offset, training.warmup_tokens,
-                                   training.final_lr_fraction, schedule=training.schedule,
-                                   decay_tokens=training.decay_tokens, decay_style=training.decay_style)
-            for group in optimizer.param_groups:
-                group["lr"] = group["base_lr"] * scale
-            strength = model_config.quantization_strength
-            if training.quantization_warmup_tokens:
-                progress = min(1.0, (state["tokens_seen"] + update_tokens - phase_offset) / training.quantization_warmup_tokens)
-                strength = training.quantization_start_strength + (strength - training.quantization_start_strength) * progress
-            model.set_quantization_strength_(strength)
-            optimizer.zero_grad(set_to_none=not training.cuda_graphs)
-            local_loss_sum = torch.zeros((), dtype=torch.float64, device=device)
-            for micro_index in range(micro_steps):
-                batch_index, inputs, targets = next(iterator)
-                if batch_index != state["next_micro_step"] + micro_index:
-                    raise RuntimeError("prefetch cursor drift")
-                if training.cuda_graphs and captured is None:
-                    from .cuda_graph import CapturedMicrostep
-
-                    captured = CapturedMicrostep(model, inputs, targets, amp_dtype=amp_dtype)
-                if captured is not None and captured.matches(inputs, targets):
-                    local_loss_sum += captured.run(inputs, targets, world_size / update_tokens).detach().double()
-                    continue
-                sync_context = forward_model.no_sync() if world_size > 1 and micro_index + 1 < micro_steps else contextlib.nullcontext()
-                with sync_context:
-                    with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_dtype != torch.float32):
-                        output = forward_model(inputs, targets, return_logits=False)
-                        loss = output["loss_sum"] * (world_size / update_tokens)
-                    local_loss_sum += output["loss_sum"].detach().double()
-                    loss.backward()
-                if monitor is not None:
-                    monitor.active = False
-            elapsed = time.monotonic() - started
-            stop = should_stop[0] or (training.time_limit_seconds is not None and elapsed >= training.time_limit_seconds)
-            summary = torch.stack((local_loss_sum, local_loss_sum.new_tensor(float(stop))))
-            if world_size > 1:
-                distributed.all_reduce(summary)
-            loss_sum, stop_requests = summary.tolist()
-            if not math.isfinite(loss_sum):
-                if rank == 0:
-                    append_record(output_dir / "incidents.jsonl", {"event": "nonfinite_loss", "state": state})
-                raise FloatingPointError("nonfinite global training loss; optimizer update was not applied")
-            if sampled:
-                monitor.gradients_before_clip()
-            try:
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), training.grad_clip or float("inf"), error_if_nonfinite=True, foreach=True)
-            except Exception as exc:
-                if rank == 0:
-                    append_record(output_dir / "incidents.jsonl", {"event": "gradient_failure", "state": state,
-                                  "error": f"{type(exc).__name__}: {exc}"})
-                raise
-            if sampled:
-                monitor.before_step()
-            optimizer.step()
-            if sampled:
-                monitor.after_step()
-            model.clear_fp8_weight_cache()
-            state = {"next_micro_step": state["next_micro_step"] + micro_steps,
-                     "tokens_seen": state["tokens_seen"] + update_tokens, "updates": state["updates"] + 1}
-            stopped = stop_requests > 0 or (stop_after_updates is not None and state["updates"] >= stop_after_updates)
-            complete = state["tokens_seen"] == total_tokens
-            if sampled:
-                append_record(output_dir / "stability.jsonl", {"event": "stability", **state, **monitor.finish()})
-            if rank == 0 and (state["updates"] % training.log_interval == 0 or stopped or complete):
-                now = time.monotonic()
-                append_event(output_dir / "events.jsonl", {"event": "train", **state, "loss": loss_sum / update_tokens,
-                             "loss_tokens": update_tokens, "grad_norm_before_clip": float(grad_norm), "lr_scale": scale,
-                             "grad_clip_coefficient": min(1.0, training.grad_clip / (float(grad_norm) + 1e-6)) if training.grad_clip else 1.0,
-                             "optimizer_group_lr_min": min(group["lr"] for group in optimizer.param_groups),
-                             "optimizer_group_lr_max": max(group["lr"] for group in optimizer.param_groups),
-                             "quantization_strength": strength, "tokens_per_second": (state["tokens_seen"] - last_log_tokens) / (now - last_log),
-                             "peak_memory_bytes": torch.cuda.max_memory_allocated(device) if device.type == "cuda" else None,
-                             "allocated_memory_bytes": torch.cuda.memory_allocated(device) if device.type == "cuda" else None,
-                             "reserved_memory_bytes": torch.cuda.memory_reserved(device) if device.type == "cuda" else None})
-                last_log, last_log_tokens = now, state["tokens_seen"]
-            if state["updates"] % training.checkpoint_interval == 0 or stopped or complete:
-                collective_checkpoint(output_dir / "checkpoints", model, optimizer, state, contract, rank, world_size)
-            if state["updates"] % training.validation_interval == 0 or stopped or complete:
-                results = evaluate(model, manifest, data_root, device, amp_dtype, training.validation_batches_per_language, rank, world_size)
-                if rank == 0:
-                    append_event(output_dir / "events.jsonl", {"event": "validation", **state, "languages": results})
-            if stopped or complete:
-                if rank == 0:
-                    append_event(output_dir / "events.jsonl", {"event": "complete" if complete else "stopped", **state,
-                                 "tokens_this_invocation": state["tokens_seen"] - tokens_at_start})
-                break
-        return state
+        workload.model_config = model_config
+        workload.training = training
+        workload.optimizer_config = optimizer_config
+        workload.world_size = world_size
+        workload.rank = rank
+        workload.device = device
+        workload.manifest = manifest
+        workload.data_root = data_root
+        workload.total_tokens = total_tokens
+        workload.contract = contract
+        workload.output_dir = output_dir
+        workload.model = model
+        workload.monitor = monitor
+        workload.optimizer = optimizer
+        workload.state = state
+        workload.amp_dtype = amp_dtype
+        workload.forward_model = forward_model
+        workload.micro_tokens = micro_tokens
+        workload.total_micro_steps = total_micro_steps
+        workload.phase_offset = phase_offset
+        workload.iterator = iterator
+        workload.should_stop = should_stop
+        workload.started = started
+        workload.last_log = last_log
+        workload.tokens_at_start = tokens_at_start
+        workload.last_log_tokens = last_log_tokens
+        yield workload
     except Exception as exc:
         candidate = Path(output_dir)
         if rank == 0 and (candidate / "run.json").exists():
             try:
                 append_record(candidate / "incidents.jsonl", {
-                    "event": "run_failure", "state": locals().get("state"),
+                    "event": "run_failure", "state": getattr(workload, "state", None),
                     "error_type": type(exc).__name__, "error": str(exc),
                     "cuda_oom": isinstance(exc, torch.cuda.OutOfMemoryError),
                 })
@@ -506,6 +577,19 @@ def run_training(config_path, manifest_path, data_root, output_dir, *, resume=No
             lock_handle.close()
         if world_size > 1 and distributed.is_initialized():
             distributed.destroy_process_group()
+
+
+def run_training(config_path, manifest_path, data_root, output_dir, *, resume=None, stop_after_updates=None, preflight_report=None):
+    if stop_after_updates is not None and stop_after_updates <= 0:
+        raise ValueError("stop_after_updates must be positive")
+    with prepare_training(config_path, manifest_path, data_root, output_dir,
+                          resume=resume, preflight_report=preflight_report) as workload:
+        workload.stop_after_updates = stop_after_updates
+        while workload.state["next_micro_step"] < workload.total_micro_steps:
+            workload.complete_update()
+            if workload.cadence():
+                break
+        return workload.state
 
 
 def main():
