@@ -32,7 +32,7 @@ import torch
 
 from speed_research.measurement import measure_block
 from terminus.integrity import file_sha256, fingerprint, source_hashes, write_json_atomic
-from terminus.train import collective_checkpoint, prepare_training, runtime_contract
+from terminus.train import collective_checkpoint, load_config, prepare_training, runtime_contract
 
 CADENCE_FREE = {"log_interval": 10**9, "checkpoint_interval": 10**9,
                 "validation_interval": 10**9, "stability_log_interval": 0}
@@ -67,6 +67,8 @@ def main():
     parser.add_argument("--measured-updates", type=int, required=True)
     parser.add_argument("--profile-updates", type=int, default=0,
                         help="extra predeclared updates under torch.profiler between warmup and the measured block")
+    parser.add_argument("--save-checkpoint", action="store_true",
+                        help="opt in to a full model/optimizer checkpoint after the block")
     parser.add_argument("--label", default="full_update")
     parser.add_argument("--out", required=True, help="raw block record path; must be outside Git")
     args = parser.parse_args()
@@ -77,9 +79,13 @@ def main():
     if out_path.resolve().is_relative_to(repo):
         raise ValueError("the raw block record must be written outside the Git checkout")
 
+    _, training_config, _ = load_config(args.config)
+    quick_native_timing = (training_config.device == "cuda" and not training_config.development_mode
+                           and args.preflight_report is None)
     with prepare_training(args.config, args.manifest, args.data_root, args.output_dir,
                           resume=args.resume, preflight_report=args.preflight_report,
-                          operational_overrides=CADENCE_FREE) as workload:
+                          operational_overrides=CADENCE_FREE,
+                          research_timing_only=quick_native_timing) as workload:
         state = workload.state
         needed = (args.warmup_updates + args.profile_updates + args.measured_updates) * workload.training.gradient_accumulation_steps
         remaining = workload.total_micro_steps - state["next_micro_step"]
@@ -118,9 +124,12 @@ def main():
             raise RuntimeError("valid target count disagrees with committed trainer counters")
         if incident_count(workload.output_dir) != incidents_before:
             raise RuntimeError("incidents were recorded during the measured block; refusing a finite attestation")
-        collective_checkpoint(workload.output_dir / "checkpoints", workload.model, workload.optimizer,
-                              state, workload.contract, workload.rank, workload.world_size)
-        receipt = json.loads((workload.output_dir / "checkpoints/latest.json").read_text())
+        checkpoint = None
+        if args.save_checkpoint:
+            collective_checkpoint(workload.output_dir / "checkpoints", workload.model, workload.optimizer,
+                                  state, workload.contract, workload.rank, workload.world_size)
+            receipt = json.loads((workload.output_dir / "checkpoints/latest.json").read_text())
+            checkpoint = {"file": receipt["file"], "sha256": receipt["sha256"]}
         record = {
             "schema": 1,
             "kind": "s0_raw_block",
@@ -139,8 +148,11 @@ def main():
             "block": {**raw, "finite": True},
             "counters_before": {"updates": updates_before, "tokens_seen": tokens_before},
             "counters_after": dict(state),
-            "final_checkpoint": {"file": receipt["file"], "sha256": receipt["sha256"]},
+            "final_checkpoint": checkpoint,
             "memory_source": memory_source,
+            "native_preflight": ("validated" if args.preflight_report else
+                                 "omitted_for_research_timing" if quick_native_timing else
+                                 "development_reference"),
             "finished_unix": finished,
             "note": "throughput measurement only; billed GPU/VM time is recorded by the external supervisor",
         }

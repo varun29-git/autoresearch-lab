@@ -26,7 +26,7 @@ def main():
     lock = sub.add_parser("lock", help="freeze a completed campaign template outside Git")
     lock.add_argument("--campaign", required=True)
     lock.add_argument("--output", required=True)
-    analyze = sub.add_parser("analyze", help="analyze paired native full-update screen records")
+    analyze = sub.add_parser("analyze", help="optional longer paired confirmation; not the quick screen")
     analyze.add_argument("--lock", required=True)
     analyze.add_argument("--evidence", required=True)
     append = sub.add_parser("append", help="append an external trial receipt without rewriting history")

@@ -394,7 +394,8 @@ class PreparedTraining:
 
 @contextlib.contextmanager
 def prepare_training(config_path, manifest_path, data_root, output_dir, *, resume=None,
-                     preflight_report=None, operational_overrides=None):
+                     preflight_report=None, operational_overrides=None,
+                     research_timing_only=False):
     model_config, training, optimizer_config = load_config(config_path)
     if operational_overrides is not None:
         unknown = set(operational_overrides) - set(OPERATIONAL_TRAINING_FIELDS)
@@ -416,7 +417,9 @@ def prepare_training(config_path, manifest_path, data_root, output_dir, *, resum
     device = torch.device("cuda", local_rank) if training.device == "cuda" else torch.device("cpu")
     if not training.development_mode and (device.type != "cuda" or training.dtype != "bf16" or model_config.attention_backend == "sdpa_reference"):
         raise ValueError("production requires BF16 autocast and an explicit CUDA attention backend")
-    if not training.development_mode:
+    if research_timing_only and (world_size != 1 or device.type != "cuda"):
+        raise ValueError("research timing without native preflight requires one CUDA GPU")
+    if not training.development_mode and not research_timing_only:
         from .preflight import validate_preflight_report
 
         validate_preflight_report(preflight_report, model_config, device, cuda_graphs=training.cuda_graphs)

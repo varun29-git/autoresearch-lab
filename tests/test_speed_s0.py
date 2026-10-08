@@ -2,9 +2,12 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from research.speed_s0 import (load_hashed_json, load_lock, phase_model_config,
-                               phase_training_config, validate_plan, verify_manifest_identity)
+                               phase_training_config, run_plan, validate_plan, verify_manifest_identity)
+from research.azure_speed_worker import run_cycle
 from speed_research.protocol import file_digest, make_lock, read_json
 from tests.helpers import fixture
 
@@ -39,7 +42,8 @@ class PlanTests(unittest.TestCase):
     def test_validate_plan(self):
         self.assertEqual(validate_plan({"warmup_updates": 2, "measured_updates": 6,
                                         "phases": ["dense", "qat"]}),
-                         {"warmup_updates": 2, "measured_updates": 6, "phases": ["dense", "qat"]})
+                         {"warmup_updates": 2, "measured_updates": 6,
+                          "profile_updates": 0, "phases": ["dense", "qat"]})
         for bad in ({"warmup_updates": -1, "measured_updates": 6, "phases": ["dense"]},
                     {"warmup_updates": 1, "measured_updates": 0, "phases": ["dense"]},
                     {"warmup_updates": 1, "measured_updates": 6, "phases": []},
@@ -48,6 +52,70 @@ class PlanTests(unittest.TestCase):
                     {"warmup_updates": 1, "measured_updates": 6, "phases": ["dense"], "extra": 1}):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 validate_plan(bad)
+
+    def test_short_trial_starts_without_ten_minute_reserve_or_preflight(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture(root / "dataset")
+            speed_root = root / "speed"
+            speed_root.mkdir()
+            (speed_root / "manifest.json").write_bytes((root / "dataset/manifest.json").read_bytes())
+            (speed_root / "campaign.lock.sha256").write_text('{"sha256":"stub"}')
+            plan = speed_root / "plan.json"
+            plan.write_text('{"warmup_updates":1,"measured_updates":2,"phases":["dense"]}')
+            recipe = {"kind": "adamw"}
+            schedule = {"seed": 1337, "warmup_tokens": 0, "final_lr_fraction": .1,
+                        "schedule": "cosine", "decay_tokens": None, "decay_style": "cosine",
+                        "grad_clip": 1.0}
+            calls = []
+
+            def pretend_run(argv, **kwargs):
+                calls.append((argv, kwargs))
+                out = Path(argv[argv.index("--out") + 1])
+                out.write_text('{"block":{"valid_tokens":32,"seconds":1}}')
+
+            with patch("research.speed_s0.load_lock", return_value=draft_campaign(root)), \
+                    patch("research.speed_s0.load_hashed_json", side_effect=[recipe, schedule]), \
+                    patch("research.speed_s0.verify_manifest_identity",
+                          return_value=verify_manifest_identity(
+                              speed_root / "manifest.json", file_digest(speed_root / "manifest.json"))):
+                result = run_plan(speed_root=speed_root, data_root=root / "dataset",
+                                  results_root=root / "results", cycle_id="quick", plan_path=plan,
+                                  budget_seconds=60, command=pretend_run)
+            self.assertEqual(result["phases"]["dense"]["status"], "completed")
+            self.assertEqual(len(calls), 1)
+            self.assertNotIn("preflight", " ".join(calls[0][0]))
+            self.assertIn("--measured-updates", calls[0][0])
+
+
+class WorkerShutdownTests(unittest.TestCase):
+    def test_deallocation_follows_verified_archive_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = root / "plan.json"
+            plan.write_text('{"warmup_updates":1,"measured_updates":2,"phases":["dense"]}')
+            args = SimpleNamespace(results_root=str(root / "results"), cycle_id="quick",
+                archive_only=False, speed_root=str(root), data_root=str(root), s0_plan=str(plan),
+                trial_budget_seconds=60, blob_account="test", blob_container="test",
+                blob_prefix="speed/test", verification_parent=str(root / "verify"),
+                unit="", resource_group="test", vm_name="test")
+            calls = []
+            def fake_run(*parts):
+                calls.append(parts)
+                return ""
+            with patch("research.azure_speed_worker.shutil.which", return_value=None), \
+                    patch("research.azure_speed_worker.run_plan", return_value={"status": "completed"}):
+                result = run_cycle(args, run=fake_run, archive=lambda *a, **k: {"verified": True})
+            self.assertTrue(result["deallocation_requested"])
+            self.assertEqual(sum(parts[:3] == ("az", "vm", "deallocate") for parts in calls), 1)
+
+            calls.clear()
+            with patch("research.azure_speed_worker.shutil.which", return_value=None), \
+                    patch("research.azure_speed_worker.run_plan", return_value={"status": "completed"}):
+                with self.assertRaisesRegex(RuntimeError, "archive failed"):
+                    run_cycle(args, run=fake_run,
+                              archive=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("archive failed")))
+            self.assertFalse(any(parts[:3] == ("az", "vm", "deallocate") for parts in calls))
 
 
 class LockTests(unittest.TestCase):

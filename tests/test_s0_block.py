@@ -31,6 +31,7 @@ class S0BlockTests(unittest.TestCase):
                             "--config", str(arguments[0]), "--manifest", str(arguments[1]),
                             "--data-root", str(arguments[2]), "--output-dir", str(root / "run_b"),
                             "--warmup-updates", "1", "--measured-updates", "1",
+                            "--save-checkpoint",
                             "--out", str(block_path)],
                            check=True, capture_output=True, text=True, timeout=300)
             block = json.loads(block_path.read_text())
@@ -69,6 +70,8 @@ class S0BlockTests(unittest.TestCase):
             self.assertEqual(record["counters_after"]["updates"], 3)
             self.assertEqual(record["block"]["valid_tokens"], 32)
             self.assertGreater(Path(record["profile_trace"]).stat().st_size, 0)
+            self.assertIsNone(record["final_checkpoint"])
+            self.assertFalse((root / "run" / "checkpoints").exists())
 
     def test_nonfinite_update_fails_the_block(self):
         with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
@@ -99,6 +102,15 @@ class S0BlockTests(unittest.TestCase):
                 with prepare_training(root / "dataset/config.json", root / "dataset/manifest.json",
                                       root / "dataset", root / "run",
                                       operational_overrides={"warmup_tokens": 5}):
+                    pass
+
+    def test_quick_timing_override_is_restricted_to_single_cuda_gpu(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture(root / "dataset")
+            with self.assertRaisesRegex(ValueError, "one CUDA GPU"):
+                with prepare_training(root / "dataset/config.json", root / "dataset/manifest.json",
+                                      root / "dataset", root / "run", research_timing_only=True):
                     pass
 
 

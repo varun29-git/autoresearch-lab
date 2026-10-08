@@ -1,11 +1,7 @@
-"""Native S0 pipeline for the stack-004 speed campaign (runs on the research H100).
+"""Short native full-update timing session on the research H100.
 
-Sequence per predeclared plan: verify the external campaign lock and its hashed
-recipe/schedule/manifest identities, run the trainer's own native preflight,
-create a deterministic externally-hashed initialization checkpoint per phase
-(initialization-only diagnostic state), then invoke scripts/s0_block.py for the
-locked dense/QAT measurement profiles. Every artifact lands in the trial
-directory the worker archives and hash-verifies before VM deallocation.
+The broad production preflight is intentionally outside the quick timing path.
+Failures still leave a trial artifact for the worker to archive and shut down.
 """
 
 from __future__ import annotations
@@ -112,8 +108,8 @@ def run_plan(*, speed_root, data_root, results_root, cycle_id, plan_path,
     summary = {"cycle_id": cycle_id, "plan": plan, "campaign_id": campaign["campaign_id"],
                "phases": {}, "deadline_seconds": budget_seconds}
     for phase in plan["phases"]:
-        if time.monotonic() > deadline - 600:
-            summary["phases"][phase] = {"status": "skipped", "reason": "trial budget reserve reached"}
+        if time.monotonic() >= deadline:
+            summary["phases"][phase] = {"status": "skipped", "reason": "trial time limit reached"}
             continue
         phase_dir = trial_dir / phase
         phase_dir.mkdir()
@@ -122,19 +118,15 @@ def run_plan(*, speed_root, data_root, results_root, cycle_id, plan_path,
                           "optimizer": recipe}
         config_path = phase_dir / "config.json"
         config_path.write_text(json.dumps(config_payload, indent=1, sort_keys=True) + "\n")
-        preflight_path = phase_dir / "preflight.json"
-        command([sys.executable, "-m", "terminus.preflight", "--config", str(config_path),
-                 "--output", str(preflight_path)], check=True, cwd=REPO)
         record_path = phase_dir / "block.json"
         command([sys.executable, str(REPO / "scripts/s0_block.py"),
                  "--config", str(config_path), "--manifest", str(speed_root / "manifest.json"),
                  "--data-root", str(data_root), "--output-dir", str(phase_dir / "run"),
-                 "--preflight-report", str(preflight_path),
                  "--warmup-updates", str(plan["warmup_updates"]),
                  "--measured-updates", str(plan["measured_updates"]),
                  "--profile-updates", str(plan["profile_updates"]),
                  "--label", f"s0_{phase}", "--out", str(record_path)],
-                check=True, cwd=REPO)
+                check=True, cwd=REPO, timeout=max(1, deadline - time.monotonic()))
         summary["phases"][phase] = {"status": "completed",
                                     "block": json.loads(record_path.read_text())}
     summary_path = trial_dir / "s0_summary.json"
