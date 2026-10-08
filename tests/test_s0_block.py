@@ -52,6 +52,24 @@ class S0BlockTests(unittest.TestCase):
                     else:
                         self.assertEqual(restored, value)
 
+    def test_profiled_updates_produce_trace_and_count_tokens(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            root = Path(directory)
+            fixture(root / "dataset", examples=13, batch_size=2, accumulation=2)
+            block_path = root / "block.json"
+            subprocess.run([sys.executable, str(ROOT / "scripts/s0_block.py"),
+                            "--config", str(root / "dataset/config.json"),
+                            "--manifest", str(root / "dataset/manifest.json"),
+                            "--data-root", str(root / "dataset"), "--output-dir", str(root / "run"),
+                            "--warmup-updates", "1", "--profile-updates", "1",
+                            "--measured-updates", "1", "--out", str(block_path)],
+                           check=True, capture_output=True, text=True, timeout=300)
+            record = json.loads(block_path.read_text())
+            self.assertEqual(record["profile_updates"], 1)
+            self.assertEqual(record["counters_after"]["updates"], 3)
+            self.assertEqual(record["block"]["valid_tokens"], 32)
+            self.assertGreater(Path(record["profile_trace"]).stat().st_size, 0)
+
     def test_nonfinite_update_fails_the_block(self):
         with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
             root = Path(directory)

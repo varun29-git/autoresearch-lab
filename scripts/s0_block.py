@@ -65,11 +65,13 @@ def main():
     parser.add_argument("--preflight-report")
     parser.add_argument("--warmup-updates", type=int, required=True)
     parser.add_argument("--measured-updates", type=int, required=True)
+    parser.add_argument("--profile-updates", type=int, default=0,
+                        help="extra predeclared updates under torch.profiler between warmup and the measured block")
     parser.add_argument("--label", default="full_update")
     parser.add_argument("--out", required=True, help="raw block record path; must be outside Git")
     args = parser.parse_args()
-    if args.warmup_updates < 0 or args.measured_updates <= 0:
-        raise ValueError("warmup must be nonnegative and measured updates positive")
+    if args.warmup_updates < 0 or args.profile_updates < 0 or args.measured_updates <= 0:
+        raise ValueError("warmup/profile must be nonnegative and measured updates positive")
     out_path = Path(args.out)
     repo = Path(__file__).resolve().parent.parent
     if out_path.resolve().is_relative_to(repo):
@@ -79,15 +81,27 @@ def main():
                           resume=args.resume, preflight_report=args.preflight_report,
                           operational_overrides=CADENCE_FREE) as workload:
         state = workload.state
-        needed = (args.warmup_updates + args.measured_updates) * workload.training.gradient_accumulation_steps
+        needed = (args.warmup_updates + args.profile_updates + args.measured_updates) * workload.training.gradient_accumulation_steps
         remaining = workload.total_micro_steps - state["next_micro_step"]
         if remaining < needed:
             raise ValueError(f"remaining budget {remaining} micro steps cannot cover "
-                             f"{args.warmup_updates}+{args.measured_updates} updates ({needed})")
+                             f"{args.warmup_updates}+{args.profile_updates}+{args.measured_updates} updates ({needed})")
         for _ in range(args.warmup_updates):
             workload.complete_update()
             if workload.cadence():
                 raise RuntimeError("training budget exhausted or stopped during warmup")
+        trace_path = None
+        if args.profile_updates:
+            activities = [torch.profiler.ProfilerActivity.CPU]
+            if workload.device.type == "cuda":
+                activities.append(torch.profiler.ProfilerActivity.CUDA)
+            trace_path = workload.output_dir / "s0_trace.json.gz"
+            with torch.profiler.profile(activities=activities) as profiler:
+                for _ in range(args.profile_updates):
+                    workload.complete_update()
+                if workload.cadence():
+                    raise RuntimeError("training budget exhausted or stopped during profiling")
+            profiler.export_chrome_trace(str(trace_path))
         commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
         incidents_before = incident_count(workload.output_dir)
         updates_before, tokens_before = workload.state["updates"], workload.state["tokens_seen"]
@@ -119,6 +133,8 @@ def main():
             "source_hashes": source_hashes(),
             "runtime": runtime_contract(workload.device),
             "resume_from": str(args.resume) if args.resume else None,
+            "profile_trace": str(trace_path) if trace_path else None,
+            "profile_updates": args.profile_updates,
             "warmup_updates": args.warmup_updates,
             "block": {**raw, "finite": True},
             "counters_before": {"updates": updates_before, "tokens_seen": tokens_before},
