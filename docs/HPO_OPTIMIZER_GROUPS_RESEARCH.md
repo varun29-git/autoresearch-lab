@@ -16,3 +16,5 @@ Checked 2026-10-08. This note informs the proposed `hpo/v1` campaign; it does no
 3. **Compare effective updates, not literal LRs across repositories.** Record optimizer kind, actual parameter-group LR, shape correction, momentum/betas, update frequency, post-normalization RMS, decay product, and update-to-weight or update-to-activation ratio for every role. The public examples use `0.02`, `0.015`, and `4.2e-4` for different Muon variants/horizons; none validates a universal Terminus LR range. A lower long-horizon optimum remains plausible even if `0.012` wins the short proxy.
 
 The source comparison supports a richer role schema and targeted tests. It does not prove that splitting a role improves Terminus loss; that requires matched dense and QAT experiments under a locked campaign.
+
+The opt-in [`build_hpo_optimizer`](../terminus/hpo_optimizer.py) implements the role schema with architecture-control defaults and optional per-role LR overrides. It does not alter the existing architecture-campaign trainer. The new group layout requires fresh HPO checkpoints or a separately tested optimizer-state migration before resuming an archived run.
