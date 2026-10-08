@@ -4,11 +4,33 @@ Target: the trial-004 stack — 25 × 2304 (1.5B), Peri-LN branch output norms +
 learnable value residual (`configs/terminus_25l_2304d_64k_h100_stack.json`).
 The layer count is fixed at 25; nothing here changes the model's depth.
 
-**Status: CPU parity tests pass (`tests/test_optimizations_*.py`, 39 tests).
-No throughput or GPU-numerics claim in this folder is verified yet — that is
-what `python -m optimizations.gpu_check` on the H100 is for. Nothing here is
-wired into `terminus/`; wiring a certified optimization into the training
-harness is a campaign-version change, per AGENTS.md.**
+**Status: measured on the H100 NVL, 2026-10-08 (1.5B stack config, batch 2,
+synthetic steps, 64×4096-token updates). All parity gates passed — every fused
+op matches the eager math on GPU — but the first-cut implementations are
+SLOWER than the existing tuned path:**
+
+| variant | tok/s | vs baseline |
+|---|---|---|
+| baseline (committed stack config) | 36,048 | 1.000× |
+| fused (boundary + value mix + fused head loss + batched NS) | 32,643 | 0.906× |
+| fused + CUDA graphs | 31,179 | 0.865× |
+| fused + FP8 head | 31,096 | 0.863× |
+
+Baseline 36K tok/s ≈ 27.7 µs/token matches the quoted ~26 µs measurement, so
+the harness is faithful; the regressions are real implementation gaps, not
+numerics: the tiled head loss recomputes logits in backward (4 head-GEMM
+passes vs the baseline's 3) and runs a Python tile loop per microstep; the
+boundary kernels are unswept first cuts next to the repo's tuned norm kernels;
+the batched Muon stacks pay extra memory traffic at only ~100 matrices. The
+FP8 head's numerics are fine (0.03% relative loss delta) but its reference
+path pays quantize+dequantize without the DeepGEMM FP8 GEMM swap. Report:
+`~/terminus-architecture-control/benchmark-20261008-stack-h100.json` (kept out
+of Git per repo rules). Next step before any wiring: profile the fused step
+(`--event-profile`/torch profiler) and tune or redesign the slow pieces; the
+physics headroom (147K tok/s ceiling) is unchanged.
+
+Nothing here is wired into `terminus/`; wiring a certified optimization into
+the training harness is a campaign-version change, per AGENTS.md.
 
 ## Why: the physics accounting
 
