@@ -2,6 +2,8 @@
 
 **Planning date:** 2026-10-08. **Status:** proposed; no new GPU work authorized or started. The human launches and stops paid GPU work. This gate precedes the [single-GPU optimizer matrix](HPO_TEST_MATRIX_32GPU.md). It changes implementation only in a separately versioned campaign; the selected 25-layer Peri-LN plus learned value-residual model, data, and scoring stay fixed for comparisons.
 
+**Implementation progress:** `kernel/pre-hpo-v1` commit `bba7def` creates isolated full-step benchmark variants, scoped patches, optional GPU profiling, and CPU checks; local relevant tests passed (**38 passed, 2 CUDA-only skipped**). K0's branch setup and K2's measurement harness are prepared. Baseline reproduction, profiling, GPU timings, K3/K4 checks, and the K5 runtime choice are **unrun**.
+
 ## Why this gate comes first
 
 Kernel choices determine memory fit and measured GPU-hours per token. They can also alter BF16/FP8 rounding, backward gradients, and optimizer updates. Changing the implementation midway through an LR sweep would make cost comparisons inconsistent and might require numerical recertification. A frozen, measured runtime is therefore an input to the HPO budget and trial lock.
