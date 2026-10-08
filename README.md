@@ -1,5 +1,7 @@
 # Terminus autoresearch
 
+**Stack-004 speed research:** the new [Kimi K3 program](speed_program.md) and [framework](docs/speed/README.md) target 1.5T–2T tokens within 6,000 production H100-hours, including QAT, on 32 GPUs. Research uses one GPU and a separate budget. This framework pins the winning architecture, provides physics-based targets and an experiment/validation loop, and does not adopt the later HPO/kernel plans. Start there for speed work; the architecture program below remains historical.
+
 This is a **separate, private** Terminus architecture-research repository for a Kimi K3 autonomous loop. It adapts [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) to the maintained Terminus ModelTunnelv2 code. The agent researches and edits architecture candidates; a protected runner holds the data, tokenizer, training exposure, evaluation, and spending contract fixed.
 
 **First campaign: `architecture-20261006c` — COMPLETE (2026-10-06 → 2026-10-07).** The stack architecture (Peri-LN branch output norms + ResFormer value residual) beat the baseline by −1.15% at a matched 2.5B-token dense-FP8 horizon and by −0.55% after ternary-weight conversion + 500M-token QAT, while bounding the residual stream the baseline lets migrate. Full evidence: [notes/FINAL_REPORT_ARCHITECTURE_20261006.md](notes/FINAL_REPORT_ARCHITECTURE_20261006.md) and [notes/qat500-probe-comparison.md](notes/qat500-probe-comparison.md). Winner's branch: [`trial/stack/004`](https://github.com/varun29-git/terminus-autoresearch/tree/trial/stack/004).
