@@ -1,21 +1,10 @@
 # Experiment atlas: preserve the model, change its execution
 
-These are **hypotheses**, ordered by likely information value before profiling, not promised speedups. Reorder using S0 measurements. Class E preserves the mathematical computation/optimizer and the frozen precision recipe, with checked floating-point evaluation differences. Class N changes numerical representation and needs a separately locked subcampaign plus stronger quality evidence. Reusing an existing feature is not an experiment. Sources are in [SOURCES.md](SOURCES.md); all repository observations below refer to the winner commit.
+These are **hypotheses**, not a required queue or a reason to keep the H100 running while reading. Start with the short full-update baseline in [speed_program.md](../../speed_program.md). Class E preserves the mathematical computation/optimizer and the frozen precision recipe; class N changes numerical representation and needs a later quality comparison. Sources are in [SOURCES.md](SOURCES.md); all repository observations below refer to the winner commit.
 
 ## S0 — Establish the cost map and prove the instruments
 
-**First question:** is the 800B projection caused by tensor-core service time, memory/recomputation, optimizer frequency, host gaps, an unexpected fallback, or a distributed assumption? Baseline on the actual research H100, at the full target width/depth/context and both dense/QAT states. Do not extrapolate the 200M 143.5K tok/s result. Record six separate views:
-
-1. Clean end-to-end updates with real staged inputs and the production-local microbatch/accumulation profile.
-2. Same updates with inputs already resident, as a diagnostic only: this difference bounds data-path opportunity.
-3. Short profiler capture, forward/backward/optimizer annotated; never use profiler timing as the headline rate.
-4. Tensor/storage lifetime ledger and allocator/device peaks, with FP8 weights cached and optimizer initialized.
-5. Exact-shape forward, dgrad and wgrad GEMMs including quantization/layout costs, plus norm/attention/head components.
-6. A saved reference checkpoint/update and schema for every parameter, optimizer buffer and gradient; scalar gains and V₁ must be included.
-
-Add NVTX ranges without per-kernel synchronization. Reconcile component times with update elapsed, including unaccounted gaps. Characterize cold JIT/cache/graph setup separately. Run a reference/reference AB/BA null comparison to calibrate drift. Verify configured backend names against executed kernel symbols and operand dtypes. Obtain a memory-safe baseline on both the research board and the production memory envelope before chasing larger microbatches.
-
-**Stop condition:** if the native reference does not reproduce its reference semantics, or a fallback/measurement issue explains the gap, fix the instrumented baseline and version it before any speed claim. The old report's predicted attribution is not a substitute for this map.
+**First question:** which part of the full update explains the 800B projection? Time a few real updates at the target width/depth/context and record memory. Use one short profiler capture only if the bottleneck is unclear. More detailed tensor, kernel and input-path analysis should follow a measured question. The old 200M speed does not predict the 1.5B speed.
 
 ## E1 — Tensor ownership and selective rematerialization
 

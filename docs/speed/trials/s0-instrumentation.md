@@ -1,5 +1,7 @@
 # S0 — instrumented reference: complete-update timing boundary
 
+**2026-10-09 amendment:** The initial S0 measurement now uses 1–2 warmup and 2–5 measured full updates, with the broad native production preflight and full checkpoint omitted. The six-view diagnostic and multiple paired runs below are optional follow-ups for a promising or unclear result. This change was made before any native GPU measurement; the original proposal remains below as historical context.
+
 Trial ID: **S0** (baseline instrumentation; not a speed candidate).
 Reference/incumbent: winner `8bd552314470586f589d94bdaa6d7e8bc3c0c101`; framework commit `d3b3a083000bbe359b58ffdf6dd74859ed4b44d3`.
 Campaign lock: **pending human launch inputs** (draft at external `stack-004/campaign/campaign.draft.json`).
