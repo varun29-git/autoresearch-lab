@@ -187,8 +187,8 @@ def run_parity_gates():
     gates = [("stack_fusion", gpu_check.check_stack_fusion),
              ("head_loss", gpu_check.check_head_loss),
              ("batched_muon", gpu_check.check_batched_muon),
-             ("owner_optimizer", lambda d: gpu_check.check_owner_optimizer(d)),
-             ("cuda_graph_microstep", lambda d: gpu_check.check_cuda_graph_microstep(d))]
+             ("owner_optimizer", lambda d, quick: gpu_check.check_owner_optimizer(d)),
+             ("cuda_graph_microstep", lambda d, quick: gpu_check.check_cuda_graph_microstep(d))]
     return {name: gate(device, True) for name, gate in gates}
 
 
