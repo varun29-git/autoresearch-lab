@@ -65,9 +65,12 @@ class FusedHeadLoss(torch.autograd.Function):
                 new_max = torch.maximum(running_max, tile_max)
                 running_sum = running_sum * torch.exp(running_max - new_max) + tile_sum * torch.exp(tile_max - new_max)
                 running_max = new_max
+                # Capture-safe target gather: no boolean indexing or .any()
+                # host readbacks (both are illegal under CUDA graph capture).
                 in_tile = valid & labels.ge(start) & labels.lt(stop)
-                if in_tile.any():
-                    target_logits[in_tile] = logits[in_tile, labels[in_tile] - start]
+                clamped = (labels - start).clamp(0, stop - start - 1)
+                gathered = logits.gather(1, clamped[:, None]).squeeze(1)
+                target_logits = torch.where(in_tile, gathered, target_logits)
         lse = running_max + torch.log(running_sum)
         loss = torch.where(valid, lse - target_logits, torch.zeros_like(lse)).sum()
         ctx.save_for_backward(flat, weight, labels, lse, valid)
@@ -92,8 +95,8 @@ class FusedHeadLoss(torch.autograd.Function):
                 logits = (flat @ head.T).float()
                 dz = torch.exp(logits - lse[:, None])
                 in_tile = valid & labels.ge(start) & labels.lt(stop)
-                if in_tile.any():
-                    dz[in_tile, labels[in_tile] - start] -= 1.0
+                clamped = (labels - start).clamp(0, stop - start - 1)
+                dz.scatter_add_(1, clamped[:, None], (-in_tile.to(dz.dtype))[:, None])
                 dz.mul_(valid[:, None])
                 if d_hidden is not None:
                     if fast:
