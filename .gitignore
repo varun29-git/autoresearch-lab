@@ -26,6 +26,7 @@ openevolve_output/
 prepared_data/
 eval_cache/
 search_runs/
+speed_runs/
 
 # Cloud credentials and local configuration
 .env
