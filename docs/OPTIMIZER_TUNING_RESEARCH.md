@@ -1,6 +1,6 @@
 # Optimizer tuning for the 200M → 700M → 1.5B Terminus scale family
 
-**Research date:** 2026-10-08. **Status:** proposed `hpo/v1` protocol; no paid training authorized or run. This is a companion to [the HPO campaign plan](HYPERPARAMETER_AUTORESEARCH_PLAN.md), [the concrete 25-layer / 32-GPU test matrix](HPO_TEST_MATRIX_32GPU.md), [the 32-GPU scale-transfer note](OPTIMIZER_SCALE_TRANSFER_32GPU.md), and [the public group-implementation review](HPO_OPTIMIZER_GROUPS_RESEARCH.md). Every number below is either a measured Terminus control, a published result with its own optimizer convention, or a **proposed test point**. None is a measured 1.5B optimum.
+**Research date:** 2026-10-08. **Status:** proposed `hpo/v1` protocol; no paid training authorized or run. This is a companion to [the HPO campaign plan](HYPERPARAMETER_AUTORESEARCH_PLAN.md), [the single-GPU test matrix for eventual 32-GPU production](HPO_TEST_MATRIX_32GPU.md), [the 32-GPU scale-transfer note](OPTIMIZER_SCALE_TRANSFER_32GPU.md), and [the public group-implementation review](HPO_OPTIMIZER_GROUPS_RESEARCH.md). Every number below is either a measured Terminus control, a published result with its own optimizer convention, or a **proposed test point**. None is a measured 1.5B optimum.
 
 ## Answer and the evidence behind it
 
@@ -53,7 +53,7 @@ The rates above are **proposed brackets**, including potentially unstable high e
 
 ## Versioned search and token budget
 
-**Reference workload for all first-wave comparisons:** 200M, 25 layers unless the separately locked geometry check changes the family, `d=768`, 4,096 context, English architecture data, FP8 dense, effective batch `393,216` tokens/update, one **2.5B-token** WSD schedule (250M warmup, 1.75B stable, 500M cosine decay, final fraction 0.1). The 0.5B checkpoint is ~1,272 updates; completing 2.5B is ~6,358 updates. Continue a checkpoint on *its original 2.5B schedule*; do not compare a freshly decayed 0.5B run against it. Use the same held-out examples and paired data stream. All extra trial counts below are incremental to [the existing twelve-run geometry queue](HYPERPARAMETER_AUTORESEARCH_PLAN.md#exact-first-proxy-queue-if-depth-is-open).
+**Earlier English diagnostic workload:** 200M, 25 layers unless the separately locked geometry check changes the family, `d=768`, 4,096 context, English architecture data, FP8 dense, effective batch `393,216` tokens/update, one **2.5B-token** WSD schedule (250M warmup, 1.75B stable, 500M cosine decay, final fraction 0.1). The [concrete single-GPU matrix](HPO_TEST_MATRIX_32GPU.md) uses a frozen, representative multilingual manifest for **recipe ranking** and prices its runs separately. The 0.5B checkpoint is ~1,272 updates; completing 2.5B is ~6,358 updates. Continue a checkpoint on *its original 2.5B schedule*; do not compare a freshly decayed 0.5B run against it. Use the same held-out examples and paired data stream. All extra trial counts below are incremental to [the existing twelve-run geometry queue](HYPERPARAMETER_AUTORESEARCH_PLAN.md#exact-first-proxy-queue-if-depth-is-open).
 
 | Gate | Concrete first queue per surviving geometry/arm | Tokens per **new** branch | Promotion rule and cost |
 | --- | --- | --- | --- |
