@@ -1,0 +1,14 @@
+{
+  "resource_group": "H100_GROUP",
+  "vm_name": "h100",
+  "ssh_user": "azureuserboss",
+  "ssh_identity_file": "/absolute/path/to/existing/key",
+  "remote_repo": "/home/azureuserboss/terminus-autoresearch",
+  "remote_python": "/home/azureuserboss/terminus-results/runtime/venv/bin/python",
+  "persistent_mount": "/srv/YOUR_PERSISTENT_DISK",
+  "remote_data_root": "/srv/YOUR_PERSISTENT_DISK/speed/data",
+  "remote_manifest": "/srv/YOUR_PERSISTENT_DISK/speed/manifest.json",
+  "remote_model_config": "/srv/YOUR_PERSISTENT_DISK/speed/config.json",
+  "remote_results_root": "/srv/YOUR_PERSISTENT_DISK/speed/results",
+  "local_control_root": "/absolute/path/outside/git/speed-control"
+}
