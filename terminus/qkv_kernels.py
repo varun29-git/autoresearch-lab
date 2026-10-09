@@ -80,12 +80,15 @@ def _packed_rope(X, Cos, Sin, R, Y, DQ, DK, DV, DX, GQ, GK,
 @triton.jit
 def _packed_gain_backward(X, Cos, Sin, R, DQ, DK, GQ, GK, DW,
                           Q: tl.constexpr, KV: tl.constexpr, D: tl.constexpr, L: tl.constexpr,
+                          QB: tl.constexpr, QH: tl.constexpr, QL: tl.constexpr,
+                          KB: tl.constexpr, KH: tl.constexpr, KL: tl.constexpr,
                           ROWS: tl.constexpr, PROGRAMS: tl.constexpr):
     """Deterministic bounded-program reduction of the shared Q/K gain gradients.
 
     Recomputes the rotary inverse of the incoming gradients and accumulates
     dy (pre-gain) against the ungained normalized activations, matching
-    rms_norm backward's dw = sum_rows(dy * x_hat)."""
+    rms_norm backward's dw = sum_rows(dy * x_hat). DQ/DK keep the stride layout
+    autograd delivered, exactly like the main packed backward kernel."""
     program = tl.program_id(0)
     c = tl.arange(0, D // 2)
     dw_qa = tl.zeros((D // 2,), tl.float32)
@@ -103,12 +106,14 @@ def _packed_gain_backward(X, Cos, Sin, R, DQ, DK, GQ, GK, DW,
         inverse = tl.load(R + row * (Q + KV) + h)
         co = tl.load(Cos + pos * (D // 2) + c).to(X.dtype.element_ty).to(tl.float32)
         si = tl.load(Sin + pos * (D // 2) + c).to(X.dtype.element_ty).to(tl.float32)
-        base = DQ if h < Q else DK
-        hh = h if h < Q else h - Q
-        # DQ/DK arrive in the (batch, heads, length, D) contiguous gradient layout.
-        go = (row // L) * (Q if h < Q else KV) * L * D + hh * L * D + pos * D + c
-        da = tl.load(base + go).to(tl.float32)
-        db = tl.load(base + go + D // 2).to(tl.float32)
+        if h < Q:
+            go = (row // L) * QB + h * QH + pos * QL + c
+            da = tl.load(DQ + go).to(tl.float32)
+            db = tl.load(DQ + go + D // 2).to(tl.float32)
+        else:
+            go = (row // L) * KB + (h - Q) * KH + pos * KL + c
+            da = tl.load(DK + go).to(tl.float32)
+            db = tl.load(DK + go + D // 2).to(tl.float32)
         na = ((da * co).to(X.dtype.element_ty).to(tl.float32)
               + (db * si).to(X.dtype.element_ty).to(tl.float32)).to(X.dtype.element_ty).to(tl.float32)
         nb = ((db * co).to(X.dtype.element_ty).to(tl.float32)
@@ -156,11 +161,12 @@ def packed_qkv_backward(dq, dk, dv, packed, cos, sin, inverse, q, kv, normalize_
         normalize_qk, gain, num_warps=4, enable_fp_fusion=False)
     if not gain:
         return output, None, None
-    # Gain gradients: bounded deterministic reduction over row/head pairs.
-    # The reduction kernel indexes the (made contiguous above) DQ/DK layouts.
+    # Gain gradients: bounded deterministic reduction over row/head pairs,
+    # indexing DQ/DK with the same stride contract as the main kernel.
     programs = min(batch * length * (q + kv), 512)
     partial = torch.empty((programs, 2 * dim), device=packed.device, dtype=torch.float32)
     _packed_gain_backward[(programs,)](packed, cos, sin, inverse, dq, dk, q_gain, k_gain, partial,
-        q, kv, dim, length, batch * length, programs, num_warps=4, enable_fp_fusion=False)
+        q, kv, dim, length, *dq.stride()[:3], *dk.stride()[:3], batch * length, programs,
+        num_warps=4, enable_fp_fusion=False)
     reduced = partial.sum(0)
     return output, reduced[:dim].to(q_gain.dtype), reduced[dim:].to(k_gain.dtype)
