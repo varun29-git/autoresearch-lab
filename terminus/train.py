@@ -50,6 +50,7 @@ class TrainConfig:
     stability_log_interval: int = 0
     compile: bool = False
     cuda_graphs: bool = False
+    wavefront_pipeline: bool = False
     time_limit_seconds: float | None = None
 
     def __post_init__(self):
@@ -62,6 +63,10 @@ class TrainConfig:
             raise ValueError("CPU training is an FP32 correctness reference")
         if self.cuda_graphs and (self.device != "cuda" or self.compile):
             raise ValueError("CUDA graphs require CUDA and cannot be combined with full-model compile")
+        if not isinstance(self.wavefront_pipeline, bool):
+            raise ValueError("wavefront_pipeline must be a boolean")
+        if self.wavefront_pipeline and (self.device != "cuda" or self.cuda_graphs or self.compile):
+            raise ValueError("the wavefront pipeline requires eager CUDA training without CUDA graphs")
         for name in ("gradient_accumulation_steps", "prefetch_batches", "checkpoint_interval", "validation_interval", "validation_batches_per_language", "log_interval"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -281,6 +286,57 @@ class PreparedTraining:
         self.captured = None
         self.should_stop = [False]
 
+    def _wavefront_accumulation(self, micro_steps, update_tokens, local_loss_sum):
+        """Overlap forward(i+1) with backward(i) across the accumulation loop.
+
+        Weights and FP8 weight caches are read-only between zero_grad and
+        optimizer.step, so microstep i+1's forward is independent of
+        microstep i's backward. The forward runs on a side stream; the loss
+        backward runs on the main stream. Exactness is structural: identical
+        kernels, identical per-microstep order, identical gradient
+        accumulation order (backward(i) always precedes backward(i+1) on the
+        main stream).
+
+        Memory safety: each side-stream forward allocates inside one of two
+        alternating MemPools. Pool p's blocks are last read by backward(i-1)
+        on the main stream, which is GPU-complete before backward(i) starts
+        (same stream) — and forward(i+1) on the side stream is only queued
+        while backward(i) runs. Hence a pool's blocks are never reused while
+        still in flight. The main stream waits on the forward event before
+        consuming a microstep's outputs.
+        """
+        side = torch.cuda.Stream(self.device)
+        pools = (torch.cuda.MemPool(), torch.cuda.MemPool())
+        fwd_model = self.forward_model
+        scale = self.world_size / update_tokens
+
+        def queue_forward(micro_index):
+            batch_index, inputs, targets = next(self.iterator)
+            if batch_index != self.state["next_micro_step"] + micro_index:
+                raise RuntimeError("prefetch cursor drift")
+            with torch.cuda.stream(side), torch.cuda.use_mem_pool(pools[micro_index % 2]):
+                with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype,
+                                    enabled=self.amp_dtype != torch.float32):
+                    output = fwd_model(inputs, targets, return_logits=False)
+                    loss = output["loss_sum"] * scale
+                    loss_sum_detached = output["loss_sum"].detach()
+            done = torch.cuda.Event()
+            done.record(side)
+            return loss_sum_detached, loss, done
+
+        main = torch.cuda.current_stream(self.device)
+        pending = queue_forward(0)
+        for micro_index in range(micro_steps):
+            loss_sum_i, loss_i, done = pending
+            main.wait_event(done)
+            local_loss_sum += loss_sum_i.double()
+            loss_i.backward()
+            if self.monitor is not None:
+                self.monitor.active = False
+            if micro_index + 1 < micro_steps:
+                pending = queue_forward(micro_index + 1)
+        return local_loss_sum
+
     def complete_update(self):
         training, state = self.training, self.state
         sampled = self.monitor is not None and (state["updates"] == 0 or
@@ -304,26 +360,33 @@ class PreparedTraining:
         self.model.set_quantization_strength_(strength)
         self.optimizer.zero_grad(set_to_none=not training.cuda_graphs)
         local_loss_sum = torch.zeros((), dtype=torch.float64, device=self.device)
-        for micro_index in range(micro_steps):
-            batch_index, inputs, targets = next(self.iterator)
-            if batch_index != state["next_micro_step"] + micro_index:
-                raise RuntimeError("prefetch cursor drift")
-            if training.cuda_graphs and self.captured is None:
-                from .cuda_graph import CapturedMicrostep
+        wavefront = (training.wavefront_pipeline and micro_steps > 1 and self.world_size == 1
+                     and self.captured is None and self.device.type == "cuda")
+        if wavefront and sampled:
+            raise ValueError("the wavefront pipeline does not support stability sampling; disable stability_log_interval")
+        if wavefront:
+            local_loss_sum = self._wavefront_accumulation(micro_steps, update_tokens, local_loss_sum)
+        else:
+            for micro_index in range(micro_steps):
+                batch_index, inputs, targets = next(self.iterator)
+                if batch_index != state["next_micro_step"] + micro_index:
+                    raise RuntimeError("prefetch cursor drift")
+                if training.cuda_graphs and self.captured is None:
+                    from .cuda_graph import CapturedMicrostep
 
-                self.captured = CapturedMicrostep(self.model, inputs, targets, amp_dtype=self.amp_dtype)
-            if self.captured is not None and self.captured.matches(inputs, targets):
-                local_loss_sum += self.captured.run(inputs, targets, self.world_size / update_tokens).detach().double()
-                continue
-            sync_context = self.forward_model.no_sync() if self.world_size > 1 and micro_index + 1 < micro_steps else contextlib.nullcontext()
-            with sync_context:
-                with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype, enabled=self.amp_dtype != torch.float32):
-                    output = self.forward_model(inputs, targets, return_logits=False)
-                    loss = output["loss_sum"] * (self.world_size / update_tokens)
-                local_loss_sum += output["loss_sum"].detach().double()
-                loss.backward()
-            if self.monitor is not None:
-                self.monitor.active = False
+                    self.captured = CapturedMicrostep(self.model, inputs, targets, amp_dtype=self.amp_dtype)
+                if self.captured is not None and self.captured.matches(inputs, targets):
+                    local_loss_sum += self.captured.run(inputs, targets, self.world_size / update_tokens).detach().double()
+                    continue
+                sync_context = self.forward_model.no_sync() if self.world_size > 1 and micro_index + 1 < micro_steps else contextlib.nullcontext()
+                with sync_context:
+                    with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype, enabled=self.amp_dtype != torch.float32):
+                        output = self.forward_model(inputs, targets, return_logits=False)
+                        loss = output["loss_sum"] * (self.world_size / update_tokens)
+                    local_loss_sum += output["loss_sum"].detach().double()
+                    loss.backward()
+                if self.monitor is not None:
+                    self.monitor.active = False
         elapsed = time.monotonic() - self.started
         stop = self.should_stop[0] or (training.time_limit_seconds is not None and elapsed >= training.time_limit_seconds)
         summary = torch.stack((local_loss_sum, local_loss_sum.new_tensor(float(stop))))
