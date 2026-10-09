@@ -51,11 +51,12 @@ class StreamingLinearCrossEntropyFP8(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, hidden, weight, targets, chunk_size, backend):
+    def forward(ctx, hidden, weight, targets, chunk_size, backend, wgrad_recipe="1d1d"):
         from .kernels import deep_gemm_fp8_gemm_nt
         from .loss_kernels import cross_entropy_inplace
-        from .quantization import quantize_fp8_directions
+        from .quantization import quantize_fp8_directions, validate_wgrad_recipe
 
+        validate_wgrad_recipe(wgrad_recipe)
         ctx.hidden_dtype, ctx.weight_dtype = hidden.dtype, weight.dtype
         ctx.hidden_shape = hidden.shape
         need_hidden, need_weight = ctx.needs_input_grad[:2]
@@ -73,7 +74,13 @@ class StreamingLinearCrossEntropyFP8(torch.autograd.Function):
             for start in range(0, targets.numel(), chunk_size):
                 inputs = flat[start:start + chunk_size]
                 labels = targets[start:start + chunk_size]
-                x_rows, x_cols = quantize_fp8_directions(inputs, transposed=need_weight, backend="triton_split")
+                if need_weight and wgrad_recipe == "1d2d_bf16":
+                    x_rows, _ = quantize_fp8_directions(inputs, transposed=False, backend="triton_split")
+                    from .fp8_kernels import quantize_blockwise_t
+
+                    x_cols = quantize_blockwise_t(inputs)
+                else:
+                    x_rows, x_cols = quantize_fp8_directions(inputs, transposed=need_weight, backend="triton_split")
                 logits = deep_gemm_fp8_gemm_nt(x_rows, codes)
                 loss, gradient = cross_entropy_inplace(logits, labels, need_hidden or need_weight, normalizer=normalizer)
                 total.add_(loss)
@@ -83,8 +90,14 @@ class StreamingLinearCrossEntropyFP8(torch.autograd.Function):
                     if need_hidden:
                         dh[start:start + inputs.shape[0]] = deep_gemm_fp8_gemm_nt(g_rows, codes_t)
                     if need_weight:
-                        deep_gemm_fp8_gemm_nt(g_cols, x_cols, rhs_group_size=1, out_dtype=accumulation_dtype,
-                                              accumulate=dw)
+                        if wgrad_recipe == "1d2d_bf16":
+                            # Same recipe as the block linears: blockwise rhs scales,
+                            # BF16 output rounded once per chunk, FP32 accumulate.
+                            dw.add_(deep_gemm_fp8_gemm_nt(g_cols, x_cols, rhs_group_size=128,
+                                                          out_dtype=torch.bfloat16).to(accumulation_dtype))
+                        else:
+                            deep_gemm_fp8_gemm_nt(g_cols, x_cols, rhs_group_size=1, out_dtype=accumulation_dtype,
+                                                  accumulate=dw)
         ctx.save_for_backward(dh, dw, normalizer)
         return total
 
@@ -94,7 +107,7 @@ class StreamingLinearCrossEntropyFP8(torch.autograd.Function):
         dh, dw, normalizer = ctx.saved_tensors
         multiplier = grad_output * normalizer
         return ((dh.to(multiplier.dtype) * multiplier).to(ctx.hidden_dtype).reshape(ctx.hidden_shape) if dh is not None else None,
-                (dw * multiplier).to(ctx.weight_dtype) if dw is not None else None, None, None, None)
+                (dw * multiplier).to(ctx.weight_dtype) if dw is not None else None, None, None, None, None)
 
 
 class StreamingLinearCrossEntropy(torch.autograd.Function):
@@ -151,7 +164,7 @@ class StreamingLinearCrossEntropy(torch.autograd.Function):
                 (dw * multiplier).to(ctx.weight_dtype) if dw is not None else None, None, None, None)
 
 
-def streaming_cross_entropy_sum(hidden, weight, targets, chunk_size, *, backend="torch"):
+def streaming_cross_entropy_sum(hidden, weight, targets, chunk_size, *, backend="torch", wgrad_recipe="1d1d"):
     if backend not in {"torch", "triton", "triton_fp8"} or chunk_size <= 0:
         raise ValueError("invalid streaming loss backend or chunk size")
     if hidden.ndim < 2 or weight.ndim != 2 or hidden.shape[-1] != weight.shape[1]:
@@ -165,5 +178,5 @@ def streaming_cross_entropy_sum(hidden, weight, targets, chunk_size, *, backend=
     if not torch.is_grad_enabled():
         hidden, weight = hidden.detach(), weight.detach()
     if backend == "triton_fp8":
-        return StreamingLinearCrossEntropyFP8.apply(hidden, weight, targets, chunk_size, backend)
+        return StreamingLinearCrossEntropyFP8.apply(hidden, weight, targets, chunk_size, backend, wgrad_recipe)
     return StreamingLinearCrossEntropy.apply(hidden, weight, targets, chunk_size, backend)

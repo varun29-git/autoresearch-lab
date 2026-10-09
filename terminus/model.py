@@ -603,7 +603,8 @@ class BitNetLlama(nn.Module):
 
                     loss_sum = streaming_cross_entropy_sum(hidden, self.tok_embeddings.weight, targets,
                         self.config.loss_chunk_size,
-                        backend=self.config.loss_backend if self.config.loss_backend in {"triton", "triton_fp8"} else "torch")
+                        backend=self.config.loss_backend if self.config.loss_backend in {"triton", "triton_fp8"} else "torch",
+                        wgrad_recipe=self.config.fp8_wgrad_recipe)
             else:
                 loss_sum = functional.cross_entropy(logits.reshape(-1, self.config.vocab_size).float(), targets.reshape(-1), ignore_index=-100, reduction="sum")
             loss = loss_sum / loss_tokens.clamp_min(1)

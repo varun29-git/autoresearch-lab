@@ -104,6 +104,14 @@ class HopperCandidateTests(unittest.TestCase):
             gb = torch.autograd.grad(reference, (hidden, weight), torch.ones((), device="cuda"))
             for a, b in zip(ga, gb):
                 self.assertLess(error_ratio(a, b), 3e-2)
+        # 1D2D head wgrad: same forward/dgrad path; only the weight gradient changes.
+        one = streaming_cross_entropy_sum(hidden, weight, targets, 4096, backend="triton_fp8", wgrad_recipe="1d1d")
+        two = streaming_cross_entropy_sum(hidden, weight, targets, 4096, backend="triton_fp8", wgrad_recipe="1d2d_bf16")
+        self.assertTrue(torch.equal(one, two))
+        g1 = torch.autograd.grad(one, (hidden, weight), torch.ones((), device="cuda"), retain_graph=True)
+        g2 = torch.autograd.grad(two, (hidden, weight), torch.ones((), device="cuda"))
+        self.assertTrue(torch.equal(g1[0], g2[0]))
+        self.assertLess(error_ratio(g2[1], g1[1]), 3e-2)
 
     def test_wgrad_1d2d_bf16_branch(self):
         from terminus.fp8_kernels import quantize_blockwise_t
