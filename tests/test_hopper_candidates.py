@@ -25,7 +25,8 @@ class CandidatePolicyTests(unittest.TestCase):
                        {"local_attention_backend": "fa3", "attention_backend": "sdpa_reference", "dropout": 0.1},
                        {"fp8_wgrad_recipe": "2d2d"},
                        {"fp8_wgrad_recipe": "1d2d_bf16"},  # requires deepgemm+full; tiny_config is torch backend
-                       {"fused_fp8_producers": True}):  # requires fused_pointwise + deepgemm
+                       {"fused_fp8_producers": True},  # requires fused_pointwise + deepgemm
+                       {"loss_backend": "triton_fp8_quack"}):  # requires the FP8 activation recipe
             with self.assertRaises(ValueError):
                 replace(base, **policy)
 
@@ -112,6 +113,16 @@ class HopperCandidateTests(unittest.TestCase):
         g2 = torch.autograd.grad(two, (hidden, weight), torch.ones((), device="cuda"))
         self.assertTrue(torch.equal(g1[0], g2[0]))
         self.assertLess(error_ratio(g2[1], g1[1]), 5e-2)  # same bound as the block-linear 1D2D gate
+        try:
+            import quack.cross_entropy  # noqa: F401
+        except ImportError:
+            self.skipTest("quack-kernels not installed")
+        # QuACK CE: same math, FP32 reduction-order/approx-reciprocal differences only.
+        three = streaming_cross_entropy_sum(hidden, weight, targets, 4096, backend="triton_fp8_quack")
+        self.assertLess(error_ratio(three, one), 1e-5)
+        g3 = torch.autograd.grad(three, (hidden, weight), torch.ones((), device="cuda"))
+        for a, b in zip(g3, g1):
+            self.assertLess(error_ratio(a, b), 1e-3)
 
     def test_wgrad_1d2d_bf16_branch(self):
         from terminus.fp8_kernels import quantize_blockwise_t

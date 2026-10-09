@@ -48,15 +48,27 @@ class StreamingLinearCrossEntropyFP8(torch.autograd.Function):
     Same exact chunked online-LSE cross entropy on the (FP8-produced) BF16
     logits; dgrad/wgrad run as DeepGEMM FP8 with FP32 wgrad accumulation.
     Class N: logits/gradients differ from the BF16 head within FP8 error.
+    ce_kernel="quack" swaps the CE pass for QuACK's warp-specialized kernel
+    (class E: same softmax-onehot math, FP32 reduction-order differences only).
+    The QuACK path skips the in-kernel 1/normalizer division (scale-invariant
+    under the downstream FP8 rowwise quantization); backward compensates.
     """
 
     @staticmethod
-    def forward(ctx, hidden, weight, targets, chunk_size, backend, wgrad_recipe="1d1d"):
+    def forward(ctx, hidden, weight, targets, chunk_size, backend, wgrad_recipe="1d1d", ce_kernel="triton"):
         from .kernels import deep_gemm_fp8_gemm_nt
         from .loss_kernels import cross_entropy_inplace
         from .quantization import quantize_fp8_directions, validate_wgrad_recipe
 
         validate_wgrad_recipe(wgrad_recipe)
+        if ce_kernel not in {"triton", "quack"}:
+            raise ValueError("ce_kernel must be triton or quack")
+        if ce_kernel == "quack":
+            try:
+                from quack.cross_entropy import cross_entropy_fwd
+            except ImportError as exc:
+                raise RuntimeError("the quack CE kernel requires the quack-kernels package") from exc
+        ctx.ce_prescaled = ce_kernel == "triton"
         ctx.hidden_dtype, ctx.weight_dtype = hidden.dtype, weight.dtype
         ctx.hidden_shape = hidden.shape
         need_hidden, need_weight = ctx.needs_input_grad[:2]
@@ -82,7 +94,17 @@ class StreamingLinearCrossEntropyFP8(torch.autograd.Function):
                 else:
                     x_rows, x_cols = quantize_fp8_directions(inputs, transposed=need_weight, backend="triton_split")
                 logits = deep_gemm_fp8_gemm_nt(x_rows, codes)
-                loss, gradient = cross_entropy_inplace(logits, labels, need_hidden or need_weight, normalizer=normalizer)
+                if ce_kernel == "quack":
+                    # dx written in place into the BF16 logits buffer, exactly like
+                    # cross_entropy_inplace; per-row losses sum to the same raw total.
+                    if need_hidden or need_weight:
+                        row_losses, gradient = cross_entropy_fwd(logits, labels, return_dx=True,
+                                                                 inplace_backward=True, ignore_index=-100)
+                    else:
+                        row_losses, gradient = cross_entropy_fwd(logits, labels, ignore_index=-100), None
+                    loss = row_losses.sum()
+                else:
+                    loss, gradient = cross_entropy_inplace(logits, labels, need_hidden or need_weight, normalizer=normalizer)
                 total.add_(loss)
                 if need_hidden or need_weight:
                     g_rows, g_cols = quantize_fp8_directions(gradient, rowwise=need_hidden, transposed=need_weight,
@@ -105,9 +127,11 @@ class StreamingLinearCrossEntropyFP8(torch.autograd.Function):
     @torch.autograd.function.once_differentiable
     def backward(ctx, grad_output):
         dh, dw, normalizer = ctx.saved_tensors
-        multiplier = grad_output * normalizer
+        # The triton CE pre-divides dlogits by the normalizer; quack emits raw
+        # softmax-onehot. Compensate so both return d(total)/d(.) * grad_output.
+        multiplier = grad_output * normalizer if ctx.ce_prescaled else grad_output
         return ((dh.to(multiplier.dtype) * multiplier).to(ctx.hidden_dtype).reshape(ctx.hidden_shape) if dh is not None else None,
-                (dw * multiplier).to(ctx.weight_dtype) if dw is not None else None, None, None, None, None)
+                (dw * multiplier).to(ctx.weight_dtype) if dw is not None else None, None, None, None, None, None)
 
 
 class StreamingLinearCrossEntropy(torch.autograd.Function):
@@ -165,7 +189,7 @@ class StreamingLinearCrossEntropy(torch.autograd.Function):
 
 
 def streaming_cross_entropy_sum(hidden, weight, targets, chunk_size, *, backend="torch", wgrad_recipe="1d1d"):
-    if backend not in {"torch", "triton", "triton_fp8"} or chunk_size <= 0:
+    if backend not in {"torch", "triton", "triton_fp8", "triton_fp8_quack"} or chunk_size <= 0:
         raise ValueError("invalid streaming loss backend or chunk size")
     if hidden.ndim < 2 or weight.ndim != 2 or hidden.shape[-1] != weight.shape[1]:
         raise ValueError("linear loss requires matching hidden/head widths")
@@ -173,10 +197,12 @@ def streaming_cross_entropy_sum(hidden, weight, targets, chunk_size, *, backend=
         raise ValueError("linear loss requires nonempty int64 targets matching hidden rows")
     if hidden.device != weight.device or hidden.device != targets.device:
         raise ValueError("linear loss operands must share a device")
-    if backend in {"triton", "triton_fp8"} and not hidden.is_cuda:
+    if backend in {"triton", "triton_fp8", "triton_fp8_quack"} and not hidden.is_cuda:
         raise RuntimeError("Triton linear cross entropy requires CUDA")
     if not torch.is_grad_enabled():
         hidden, weight = hidden.detach(), weight.detach()
     if backend == "triton_fp8":
         return StreamingLinearCrossEntropyFP8.apply(hidden, weight, targets, chunk_size, backend, wgrad_recipe)
+    if backend == "triton_fp8_quack":
+        return StreamingLinearCrossEntropyFP8.apply(hidden, weight, targets, chunk_size, "triton_fp8", wgrad_recipe, "quack")
     return StreamingLinearCrossEntropy.apply(hidden, weight, targets, chunk_size, backend)

@@ -138,7 +138,7 @@ def native_source_contract():
 
     result = {}
     suffixes = {".py", ".so", ".pyd", ".dll", ".h", ".hpp", ".cu", ".cuh", ".cpp", ".cubin", ".ptx"}
-    for name in ("flash_attn_interface", "flash_attn_3_cuda", "flash_attn_3", "deep_gemm", "triton", "muon"):
+    for name in ("flash_attn_interface", "flash_attn_3_cuda", "flash_attn_3", "deep_gemm", "triton", "muon", "quack"):
         spec = importlib.util.find_spec(name)
         if spec is None or (spec.origin is None and not spec.submodule_search_locations):
             result[name] = None
@@ -158,7 +158,7 @@ def runtime_contract(device):
     import platform
 
     packages = {}
-    for name in ("numpy", "sentencepiece", "triton", "flash-attn", "muon-optimizer", "deep-gemm"):
+    for name in ("numpy", "sentencepiece", "triton", "flash-attn", "muon-optimizer", "deep-gemm", "quack-kernels"):
         try:
             packages[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:

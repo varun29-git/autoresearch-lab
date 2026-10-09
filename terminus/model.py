@@ -86,9 +86,9 @@ class BitNetLlamaConfig:
             raise ValueError("fused_qkv requires fused pointwise and fused projections")
         if self.linear_backend != "deepgemm" and (self.fp8_backward != "bf16" or self.fp8_quantizer != "torch" or self.fp8_cache_weights):
             raise ValueError("FP8 backward and fused quantizers require the explicit DeepGEMM backend")
-        if self.loss_backend not in {"checkpoint", "streaming", "triton", "triton_fp8"}:
+        if self.loss_backend not in {"checkpoint", "streaming", "triton", "triton_fp8", "triton_fp8_quack"}:
             raise ValueError("unknown linear cross entropy backend")
-        if self.loss_backend == "triton_fp8" and not self.quantize_activations:
+        if self.loss_backend.startswith("triton_fp8") and not self.quantize_activations:
             raise ValueError("the FP8 head branch requires the FP8 activation recipe")
         if self.fused_fp8_producers and not (self.fused_pointwise and self.linear_backend == "deepgemm" and self.quantize_activations):
             raise ValueError("producer FP8 fusion requires fused pointwise kernels and the DeepGEMM FP8 recipe")
@@ -603,7 +603,7 @@ class BitNetLlama(nn.Module):
 
                     loss_sum = streaming_cross_entropy_sum(hidden, self.tok_embeddings.weight, targets,
                         self.config.loss_chunk_size,
-                        backend=self.config.loss_backend if self.config.loss_backend in {"triton", "triton_fp8"} else "torch",
+                        backend=self.config.loss_backend if self.config.loss_backend.startswith("triton") else "torch",
                         wgrad_recipe=self.config.fp8_wgrad_recipe)
             else:
                 loss_sum = functional.cross_entropy(logits.reshape(-1, self.config.vocab_size).float(), targets.reshape(-1), ignore_index=-100, reduction="sum")
