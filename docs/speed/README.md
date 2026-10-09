@@ -1,31 +1,27 @@
-# Stack-004 speed research
+# Stack-004 speed autoresearch, five-hour continuation
 
-The operating instructions are in [speed_program.md](../../speed_program.md). Kimi's branch is `speed/stack-004-20261008`, based on the winning architecture commit `8bd552314470586f589d94bdaa6d7e8bc3c0c101`.
+This dedicated worktree starts from the measured E3/E4/E9 dense stack on commit `1e8c0a4`. The candidate model remains 25 layers and 1,500,456,496 parameters. [speed_program.md](../../speed_program.md) is Kimi's operating program; [PENDING_5H.md](PENDING_5H.md) inventories every unfinished experiment and the largest measured costs. [EXPERIMENTS.md](EXPERIMENTS.md) supplies the full hypothesis atlas, and [PHYSICS.md](PHYSICS.md) derives the H100 and production budget bounds. [KIMI_START.md](../../KIMI_START.md) is the copyable paid-run prompt.
 
-The user has one research H100 for a **three cumulative GPU-hour, dense-only** optimization run. Production later uses 32 H100s and 6,000 aggregate GPU-hours including QAT. After one explicit authorization, Kimi starts the VM and runs a continuous series of dense experiments to maximize validated one-GPU speed. QAT is a later stage. Kimi models what the dense gains would require to carry over to 32 GPUs; one GPU cannot prove that scaling.
+The research budget is **five cumulative H100 VM-on hours** on one H100, separate from the 6,000 aggregate production H100-hours. This pass measures dense training only. The controller in `research/speed_session.py` now caps the new campaign at 18,000 cumulative seconds and installs a VM-side cutoff before the cap. Use the **new** external control root `/Users/varundaiya/terminus-speed-external/stack-004-5h/control`; the old three-hour ledger belongs to a completed campaign. The candidate trials may use the same persistent remote data and results mount with unique `v2-...` names.
 
-Prepare a private config outside Git using [the example](../../research/speed_session.example.json), with a results directory on a persistent disk. Then, once the human authorizes the paid campaign:
+The previous best sustained log reports 41,075 valid tokens/s at 55.5 GB allocated. Three complete paired 20-update receipts show a stable ~11.6% gain over the incumbent. The 80-update summary is archived, but its full JSON receipt was not copied locally. The first new winning run should save the complete JSON and its hash immediately. It does not need a long repeat of the old baseline before useful candidate work.
 
-```bash
-python -m research.speed_session open --config /external/speed-session.json
-python -m research.speed_session status --config /external/speed-session.json
-python -m research.speed_session stage --config /external/speed-session.json
-python -m research.speed_session exec --config /external/speed-session.json -- nvidia-smi -L
-python -m research.speed_session close --config /external/speed-session.json --reason budget
-```
-
-`open` starts the VM once and installs a VM-side cutoff timer; `status` includes prior allocations and live time; `stage` sends a committed candidate; `exec` runs a remote command. Kimi calls `scripts/s0_block.py` through `exec` using the staged 1.5B **dense** config and manifest, writing results outside Git. An S0 plan, if used, must have `"phases": ["dense"]`. Kimi can stage and test successive commits without restarting the VM. The cutoff timer aims to deallocate before the three-hour cap even if Kimi disconnects. Azure shutdown latency is variable, so the ledger is a conservative estimate, not an exact billing invoice. The older [S0 Azure worker](../../research/azure_speed_worker.py) is one-shot and must not drive this continuous session.
-
-Keep small raw results on persistent storage and copy them off during the session. A restart costs boot, SSH, possible JIT, and restaging time; use it only when saved idle VM time exceeds that cost. The first screen uses a few complete optimizer updates with no full checkpoint or broad production preflight. [Measurement notes](MEASUREMENT.md) explain the timing; [physics](PHYSICS.md) gives the required rate and ceilings; [experiment ideas](EXPERIMENTS.md) are a menu, not a queue.
-
-[Production implementation research](PRODUCTION_IMPLEMENTATIONS.md) compares released 1–2B model depths and maintained training systems, then checks the proposed 30-layer stack against the 25-layer target's hardware floor. Use it for ideas and architectural context, never as a substitute for a matched Terminus experiment.
-
-Local checks, which do not start a VM:
+A local config exists outside Git at `/Users/varundaiya/terminus-speed-external/stack-004-5h/control/speed_session.json`. If moving this worktree to another host, start from [the example](../../research/speed_session.example.json) and choose a fresh external `local_control_root`. Commands below are shown for Kimi **after the human's one-time paid-campaign authorization**; reading or local testing does not authorize `open`.
 
 ```bash
-python3 -m unittest tests.test_speed_session tests.test_s0_block tests.test_speed_s0 tests.test_speed_research
+python3 -m research.speed_session status --config /Users/varundaiya/terminus-speed-external/stack-004-5h/control/speed_session.json
+python3 -m research.speed_session open --config /Users/varundaiya/terminus-speed-external/stack-004-5h/control/speed_session.json
+python3 -m research.speed_session stage --config /Users/varundaiya/terminus-speed-external/stack-004-5h/control/speed_session.json
+python3 -m research.speed_session exec --config /Users/varundaiya/terminus-speed-external/stack-004-5h/control/speed_session.json -- nvidia-smi -L
+python3 -m research.speed_session close --config /Users/varundaiya/terminus-speed-external/stack-004-5h/control/speed_session.json --reason budget
 ```
 
-No native H100 run or VM cutoff has been validated end to end in this checkout. The 1.5B target has 25 layers, width 2304, FFN 5760, 18 query and 6 KV heads, 4K context and 65,536 vocabulary entries: 1,500,456,496 trainable parameters.
+`open` is paid. `stage` sends a clean committed candidate. `exec` runs the real complete-update timing script on the H100. Continue experiments under the same session instead of rebooting for each trial. If a development gap warrants deallocation, use `close --reason idle`, keep the ledger and resume later. `goal` requires proof of the full production objective, not a dense-only rate. The earlier one-shot `research.azure_speed_worker` is not this loop.
 
-Architecture provenance: resolving defaults in [the winning 200M candidate](../../candidate.json) and [the speed target](../../speed_research/target_model.json) shows exactly four changes: width 768→2304, FFN 1920→5760, query heads 6→18, and KV heads 2→6. Both have 25 layers, Peri-LN, value residual, `use_subln=false`, and dense weights. The older 30-layer `configs/1.5b_h100_*.json` files use a different 96K-vocabulary architecture without this stack. A proposed 25-layer stack JSON on commit `165051a` omitted `use_subln` and `weight_mode`; their constructor defaults would add 50 SubLN scalar gains and select ternary weights. Do not use that JSON as the dense stack reference. A matched 30-layer stack-004 depth comparison has not been run, so 25 is the faithful winner transfer, not a proven globally optimal depth.
+Local checks, without VM allocation:
+
+```bash
+python3 -m unittest tests.test_speed_session tests.test_s0_block tests.test_speed_s0 tests.test_speed_research tests.test_hopper_candidates
+```
+
+`tests.test_logical_muon` additionally needs the `muon-optimizer` package, which is absent from this local Python; the native H100 environment has its own runtime. No native H100 trial or VM lifecycle command has been run from this new five-hour worktree. The previous campaign's results remain in its separate archived external control tree.

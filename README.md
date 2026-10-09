@@ -1,20 +1,13 @@
-# Terminus autoresearch
+# Terminus autoresearch speed
 
-This is a **separate, private** Terminus architecture-research repository for a Kimi K3 autonomous loop. It adapts [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) to the maintained Terminus ModelTunnelv2 code. The agent researches and edits architecture candidates; a protected runner holds the data, tokenizer, training exposure, evaluation, and spending contract fixed. No architecture search has been launched from this repository.
+This is the dedicated five-hour dense speed-research worktree for Kimi K3. It starts from the optimized stack-004 commit `1e8c0a4` with E3 packed Q/K, E4 fused value mix and E9 batched Muon. The model remains 25 layers and 1,500,456,496 parameters. The earlier architecture campaign files remain for provenance; **[speed_program.md](speed_program.md)** governs this worktree's speed loop, while `program.md` governs architecture research.
 
-The source snapshot and inspected autoresearch revision are recorded in [SOURCE_BASELINE.md](SOURCE_BASELINE.md). The rationale and readiness gaps are in [docs/AUTORESEARCH_DESIGN.md](docs/AUTORESEARCH_DESIGN.md); exact commands are in [docs/AUTORESEARCH_EXECUTION.md](docs/AUTORESEARCH_EXECUTION.md). Kimi's operating instructions are [program.md](program.md).
+- [KIMI_START.md](KIMI_START.md) is the copyable one-time paid-run prompt.
+- [PENDING_5H.md](docs/speed/PENDING_5H.md) lists every unfinished experiment, its status and the first falsifiable test.
+- [EXPERIMENTS.md](docs/speed/EXPERIMENTS.md) is the full original hypothesis atlas; [PHYSICS.md](docs/speed/PHYSICS.md) derives the hardware and token-budget bounds.
+- [MEASUREMENT.md](docs/speed/MEASUREMENT.md) defines complete-update timing; [TRANSFER_32GPU.md](docs/speed/TRANSFER_32GPU.md) gives an honest scenario model and later acceptance gates.
+- [Speed README](docs/speed/README.md) contains the controller commands and external config location.
 
-The three intended campaigns are **architecture discovery**, then joint architecture confirmation with hyperparameter/μP transfer and longer dense-to-ternary QAT, then kernel optimization for the chosen computation. Only the first campaign is implemented here. It uses English as a cheap architecture proxy and reports quality, learning efficiency, stability, throughput and memory separately. Default trials use dense FP8; a matched short QAT probe is optional for a specific quantization-sensitive mechanism. Its result is a shortlist, because a 200M English proxy and short QAT probe cannot prove the final 1.5B multilingual ternary ranking.
+The new research cap is **five cumulative H100 VM-on hours**, enforced by `research.speed_session` with a fresh external ledger. The 6,000 aggregate H100-hour production budget, including QAT, is separate. The minimum 1.5T objective requires at least 69,444 valid tokens/s per GPU before overhead; the previous best sustained dense log reported 41,075. Kimi must attack the largest exposed update costs and report the remaining gap honestly. This folder's preparation did not start a VM or paid training.
 
-The editable architecture is [candidate.json](candidate.json) and the permitted model files. The [policy](research/policy.json), [preparation wrapper](prepare.py), [trial runner](train.py), and [scorer](research/protocol.py) are protected during a campaign. The runner uses the existing native DeepGEMM/FA3/Muon training stack and requires an H100-class SM90 GPU for paid trials. The [Azure cycle](docs/AZURE_EXPERIMENT_CYCLE.md) starts the existing H100 for one committed experiment and deallocates it only after Blob archival and independent hash verification.
-
-To inspect the interface without launching a run:
-
-```bash
-python prepare.py --help
-python train.py --help
-python -m research.loop --help
-python -m unittest tests.test_research_protocol -v
-```
-
-The prepared English-only token manifest is an external input; English development tasks are optional. The example campaign and task manifests under `research/` are templates, not ready data. The [scorecard](docs/ARCHITECTURE_SCORECARD.md) defines how the loop compares candidates. The existing `eval/` records are deliberately not imported into Git. The previous source repo README remains at [docs/terminus/ORIGINAL_REPO_README.md](docs/terminus/ORIGINAL_REPO_README.md).
+The original architecture research design and source baseline remain at [SOURCE_BASELINE.md](SOURCE_BASELINE.md) and [docs/AUTORESEARCH_DESIGN.md](docs/AUTORESEARCH_DESIGN.md). No corpora, token shards, evaluation records, checkpoints, credentials or generated speed-trial results belong in Git.
