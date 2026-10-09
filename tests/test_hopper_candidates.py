@@ -140,6 +140,25 @@ class HopperCandidateTests(unittest.TestCase):
             torch.testing.assert_close(ga[1], gb[1], rtol=2e-2, atol=2e-4)
             torch.testing.assert_close(ga[2], gb[2], rtol=2e-2, atol=2e-4)
 
+    def test_value_mix_matches_eager_reference(self):
+        from terminus.pointwise import value_mix
+
+        torch.manual_seed(811)
+        for shape in ((2, 6, 17, 128), (1, 6, 5, 64)):
+            v0 = torch.randn(*shape, device="cuda", dtype=torch.bfloat16).requires_grad_()
+            v1 = torch.randn(*shape, device="cuda", dtype=torch.bfloat16).requires_grad_()
+            lambdas = torch.nn.Parameter(torch.tensor([0.3, -1.2], device="cuda"))
+            actual = value_mix(v0, v1, lambdas)
+            l2 = torch.nn.Parameter(lambdas.detach().clone())
+            expected = l2[0] * v0 + l2[1] * v1
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+            dy = torch.randn_like(actual)
+            ga = torch.autograd.grad(actual, [v0, v1, lambdas], dy, retain_graph=True)
+            gb = torch.autograd.grad(expected, [v0, v1, l2], dy)
+            torch.testing.assert_close(ga[0], gb[0], rtol=0, atol=0)
+            torch.testing.assert_close(ga[1], gb[1], rtol=0, atol=0)
+            torch.testing.assert_close(ga[2], gb[2], rtol=1e-2, atol=1e-3)
+
     def test_packed_mlp_matches_independent_equations(self):
         from terminus.pointwise import packed_swiglu_norm
 
