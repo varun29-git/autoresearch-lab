@@ -85,6 +85,23 @@ class HopperCandidateTests(unittest.TestCase):
                     self.assertTrue(torch.equal(a[0].float(), b[0].float()))
                     self.assertTrue(torch.equal(a[1], b[1]))
 
+    def test_fp8_head_loss_and_gradients_close_to_bf16(self):
+        from terminus.loss import streaming_cross_entropy_sum
+
+        torch.manual_seed(7)
+        hidden = torch.randn(2, 2048, 768, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+        weight = (torch.randn(8192, 768, device="cuda") * 0.02).requires_grad_(True)
+        targets = torch.randint(8192, (2, 2048), device="cuda")
+        targets[0, :13] = -100  # ignored rows must flow through both paths
+        for chunk in (512, 4096):
+            reference = streaming_cross_entropy_sum(hidden, weight, targets, chunk, backend="triton")
+            actual = streaming_cross_entropy_sum(hidden, weight, targets, chunk, backend="triton_fp8")
+            self.assertLess(error_ratio(actual, reference), 2e-3)
+            ga = torch.autograd.grad(actual, (hidden, weight), torch.ones((), device="cuda"), retain_graph=True)
+            gb = torch.autograd.grad(reference, (hidden, weight), torch.ones((), device="cuda"))
+            for a, b in zip(ga, gb):
+                self.assertLess(error_ratio(a, b), 3e-2)
+
     def test_norm_grid_large_rows_matches_reference(self):
         for gain in ("scalar", "channel"):
             x = torch.randn(4097, 2048, device="cuda", dtype=torch.bfloat16, requires_grad=True)

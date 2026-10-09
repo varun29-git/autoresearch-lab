@@ -96,9 +96,11 @@ def attention(query, key, value, *, backend, local_window=None, query_position_o
     return flex_forward(query, key, value, block_mask=mask, enable_gqa=query.shape[1] != key.shape[1])[:, :, :query_length]
 
 
-def deep_gemm_fp8_gemm_nt(lhs, rhs, *, rhs_group_size=128, out_dtype=torch.bfloat16):
+def deep_gemm_fp8_gemm_nt(lhs, rhs, *, rhs_group_size=128, out_dtype=torch.bfloat16, accumulate=None):
     if rhs_group_size not in {1, 128} or out_dtype not in {torch.bfloat16, torch.float32}:
         raise KernelBackendError("DeepGEMM requires explicit 1x128/128x128 scales and BF16/FP32 output")
+    if accumulate is not None and (rhs_group_size != 1 or out_dtype != torch.float32):
+        raise KernelBackendError("DeepGEMM accumulation is validated only for the 1D/1D FP32 path")
     if rhs_group_size == 1 and out_dtype != torch.float32:
         raise KernelBackendError("SM90 1D/1D GEMM requires FP32 accumulation/output")
     codes, scales = lhs
@@ -128,7 +130,9 @@ def deep_gemm_fp8_gemm_nt(lhs, rhs, *, rhs_group_size=128, out_dtype=torch.bfloa
     if align is None or gemm is None:
         raise KernelBackendError("unsupported DeepGEMM API: pin and preflight the SM90 adapter")
     allocate = torch.zeros if rhs_group_size == 1 else torch.empty
-    output = allocate((rows, outputs), dtype=out_dtype, device=codes.device)
+    output = accumulate if accumulate is not None else allocate((rows, outputs), dtype=out_dtype, device=codes.device)
+    if output.shape != (rows, outputs) or output.dtype != out_dtype:
+        raise KernelBackendError("DeepGEMM accumulation target shape/dtype mismatch")
     rhs_scales = align(weight_scales) if rhs_group_size == 1 else weight_scales.contiguous()
     gemm((codes, align(scales)), (weight_codes, rhs_scales), output, recipe=(1, rhs_group_size, 128),
          c=output if rhs_group_size == 1 else None, disable_ue8m0_cast=True)

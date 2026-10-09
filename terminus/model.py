@@ -80,8 +80,10 @@ class BitNetLlamaConfig:
             raise ValueError("fused_qkv requires fused pointwise and fused projections")
         if self.linear_backend != "deepgemm" and (self.fp8_backward != "bf16" or self.fp8_quantizer != "torch" or self.fp8_cache_weights):
             raise ValueError("FP8 backward and fused quantizers require the explicit DeepGEMM backend")
-        if self.loss_backend not in {"checkpoint", "streaming", "triton"}:
+        if self.loss_backend not in {"checkpoint", "streaming", "triton", "triton_fp8"}:
             raise ValueError("unknown linear cross entropy backend")
+        if self.loss_backend == "triton_fp8" and not self.quantize_activations:
+            raise ValueError("the FP8 head branch requires the FP8 activation recipe")
         if self.residual_dtype not in {"fp32", "bf16"}:
             raise ValueError("residual_dtype must be fp32 or bf16")
         if self.embedding_dim is not None and (isinstance(self.embedding_dim, bool)
@@ -570,7 +572,8 @@ class BitNetLlama(nn.Module):
                     from .loss import streaming_cross_entropy_sum
 
                     loss_sum = streaming_cross_entropy_sum(hidden, self.tok_embeddings.weight, targets,
-                        self.config.loss_chunk_size, backend="triton" if self.config.loss_backend == "triton" else "torch")
+                        self.config.loss_chunk_size,
+                        backend=self.config.loss_backend if self.config.loss_backend in {"triton", "triton_fp8"} else "torch")
             else:
                 loss_sum = functional.cross_entropy(logits.reshape(-1, self.config.vocab_size).float(), targets.reshape(-1), ignore_index=-100, reduction="sum")
             loss = loss_sum / loss_tokens.clamp_min(1)
@@ -612,6 +615,9 @@ class BitNetLlama(nn.Module):
         return {"logits": logits, "loss": None, "loss_tokens": None}, cache
 
     def clear_fp8_weight_cache(self):
+        from .loss import clear_head_fp8_cache
+
+        clear_head_fp8_cache()
         for _, module in self.bitlinear_named_modules():
             module.clear_fp8_weight_cache()
 
