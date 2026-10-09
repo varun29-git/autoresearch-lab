@@ -142,17 +142,22 @@ def dequantize_weight_fp8_e4m3_2d(codes, scale, block_size=128, out_dtype=None):
 def validate_fp8_options(backward_mode, quantizer):
     if backward_mode not in {"bf16", "dgrad", "full"}:
         raise ValueError("fp8_backward must be bf16, dgrad or full")
-    if quantizer not in {"torch", "triton", "triton_split"}:
-        raise ValueError("fp8_quantizer must be torch, triton or triton_split")
+    if quantizer not in {"torch", "triton", "triton_split", "triton_fused"}:
+        raise ValueError("fp8_quantizer must be torch, triton, triton_split or triton_fused")
 
 
 def quantize_fp8_directions(values, *, rowwise=True, transposed=False, eps=1e-5, backend="torch"):
     if values.ndim != 2 or min(values.shape) <= 0 or not (rowwise or transposed):
         raise ValueError("FP8 directional quantization needs a nonempty matrix and an output direction")
-    if backend in {"triton", "triton_split"}:
+    if backend == "triton_fused" and rowwise and transposed:
+        from .fp8_kernels import quantize_dual
+
+        return quantize_dual(values, eps=eps)
+    if backend in {"triton", "triton_split", "triton_fused"}:
         from .fp8_kernels import quantize_directions
 
-        return quantize_directions(values, rowwise=rowwise, transposed=transposed, eps=eps, separate=backend == "triton_split")
+        return quantize_directions(values, rowwise=rowwise, transposed=transposed, eps=eps,
+                                   separate=backend in {"triton_split", "triton_fused"})
     if backend != "torch":
         raise ValueError("unknown FP8 quantizer")
     primary = quantize_activation_fp8_e4m3(values, eps=eps) if rowwise else None

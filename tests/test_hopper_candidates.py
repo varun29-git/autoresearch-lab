@@ -71,6 +71,20 @@ class HopperCandidateTests(unittest.TestCase):
                     if transposed and rows % 128:
                         self.assertEqual(torch.count_nonzero(actual[1][0][:, rows:]).item(), 0)
 
+    def test_fused_dual_quantizer_matches_split_codes_and_scales_exactly(self):
+        cases = [torch.randn(rows, 768, device="cuda", dtype=torch.bfloat16)[:, ::2] for rows in (1, 7, 257)]
+        x = torch.randn(384, 768, device="cuda", dtype=torch.bfloat16)
+        x[5:90, 128:256] = 0  # all-zero rowwise and columnwise groups
+        x[200, 300] = 1e30
+        cases.append(x[:, ::2])
+        for case in cases:
+            for eps in (0., 1e-5):
+                actual = quantize_fp8_directions(case, transposed=True, eps=eps, backend="triton_fused")
+                expected = quantize_fp8_directions(case, transposed=True, eps=eps, backend="triton_split")
+                for a, b in zip(actual, expected):
+                    self.assertTrue(torch.equal(a[0].float(), b[0].float()))
+                    self.assertTrue(torch.equal(a[1], b[1]))
+
     def test_norm_grid_large_rows_matches_reference(self):
         for gain in ("scalar", "channel"):
             x = torch.randn(4097, 2048, device="cuda", dtype=torch.bfloat16, requires_grad=True)

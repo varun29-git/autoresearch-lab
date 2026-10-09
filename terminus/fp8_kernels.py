@@ -91,6 +91,50 @@ def _quantize_dense_kernel(weight, codes, scales,
     tl.store(scales + row_block * (width // 128) + column_block, scale)
 
 
+@triton.jit
+def _quantize_dual_kernel(values, row_codes, row_scales, column_codes, column_scales,
+                          rows: tl.constexpr, width: tl.constexpr,
+                          source_row_stride: tl.constexpr, source_column_stride: tl.constexpr,
+                          row_scale_stride: tl.constexpr, column_scale_stride: tl.constexpr,
+                          padded_rows: tl.constexpr, EPS: tl.constexpr,
+                          CHUNK: tl.constexpr, NUM_CHUNKS: tl.constexpr):
+    """One read of each 128x128 tile emits both FP8 directions bit-exactly.
+
+    A tile is exactly one rowwise scale group (128 cols per row) and one
+    columnwise scale group (128 rows per column). Pass 1 walks tall chunks:
+    column groups complete within each chunk (codes+scales stored there) while
+    row amaxes accumulate. Pass 2 reloads the L2-resident tile once and emits
+    rowwise codes+scales. Register pressure stays off the critical path; the
+    second load hits L2 instead of HBM.
+    """
+    row_block = tl.program_id(0).to(tl.int64)
+    column_block = tl.program_id(1).to(tl.int64)
+    row_max = tl.zeros((128,), tl.float32)
+    for i in tl.static_range(NUM_CHUNKS):
+        rr = row_block * 128 + tl.arange(0, 128)
+        cc = column_block * 128 + i * CHUNK + tl.arange(0, CHUNK)
+        valid = (rr[:, None] < rows) & (cc[None, :] < width)
+        block = tl.load(values + rr[:, None] * source_row_stride + cc[None, :] * source_column_stride,
+                        mask=valid, other=0).to(tl.float32)
+        row_max = tl.maximum(row_max, tl.max(tl.abs(block), axis=1))
+        scale_columns = _safe_scale(tl.max(tl.abs(block), axis=0), EPS)
+        inverse_columns = tl.div_rn(1., scale_columns)
+        quantized_columns = _scaled_values(block, scale_columns[None, :], inverse_columns[None, :]).to(tl.float8e4nv)
+        tl.store(column_codes + cc[None, :] * padded_rows + rr[:, None], quantized_columns,
+                 mask=(cc[None, :] < width) & (rr[:, None] < padded_rows))
+        tl.store(column_scales + cc + row_block * column_scale_stride, scale_columns, mask=cc < width)
+    row_indices = row_block * 128 + tl.arange(0, 128)
+    column_indices = column_block * 128 + tl.arange(0, 128)
+    valid = (row_indices[:, None] < rows) & (column_indices[None, :] < width)
+    block = tl.load(values + row_indices[:, None] * source_row_stride + column_indices[None, :] * source_column_stride,
+                    mask=valid, other=0).to(tl.float32)
+    scale_rows = _safe_scale(row_max, EPS)
+    inverse_rows = tl.div_rn(1., scale_rows)
+    quantized_rows = _scaled_values(block, scale_rows[:, None], inverse_rows[:, None]).to(tl.float8e4nv)
+    tl.store(row_codes + row_indices[:, None] * width + column_indices[None, :], quantized_rows, mask=valid)
+    tl.store(row_scales + row_indices + column_block * row_scale_stride, scale_rows, mask=row_indices < rows)
+
+
 def _check_matrix(values, *, weight=False):
     if not values.is_cuda or torch.cuda.get_device_capability(values.device)[0] != 9:
         raise RuntimeError("fused ternary-FP8 kernels require Hopper SM90")
@@ -148,6 +192,33 @@ def quantize_directions(values, *, rowwise=True, transposed=False, eps=1e-5, sep
         num_warps=8 if transposed else 4, enable_fp_fusion=False)
     if transposed and rows != padded_rows:
         secondary[0][:, rows:].zero_()
+    return primary, secondary
+
+
+@torch.no_grad()
+def quantize_dual(values, *, eps=1e-5, chunk=32, num_warps=8):
+    """Dual rowwise+columnwise activation FP8 quantization in one kernel launch.
+
+    Bit-exact with two separate _quantize_directions_kernel passes (same scale
+    math, same FMA residual rounding, same output layouts), minus one full HBM
+    read of the operand.
+    """
+    _check_matrix(values)
+    if not math.isfinite(eps) or eps < 0:
+        raise ValueError("invalid scale floor")
+    if chunk <= 0 or 128 % chunk:
+        raise ValueError("chunk must divide the 128-row group")
+    rows, width = values.shape
+    padded_rows = triton.cdiv(rows, 128) * 128
+    primary = (torch.empty((rows, width), device=values.device, dtype=torch.float8_e4m3fn),
+               _scales(rows, width // 128, values.device))
+    secondary = (torch.empty((width, padded_rows), device=values.device, dtype=torch.float8_e4m3fn),
+                 _scales(width, padded_rows // 128, values.device))
+    _quantize_dual_kernel[(triton.cdiv(rows, 128), width // 128)](
+        values, primary[0], primary[1], secondary[0], secondary[1], rows, width,
+        values.stride(0), values.stride(1), primary[1].stride(1), secondary[1].stride(1),
+        padded_rows, eps, chunk, 128 // chunk,
+        num_warps=num_warps, enable_fp_fusion=False)
     return primary, secondary
 
 
