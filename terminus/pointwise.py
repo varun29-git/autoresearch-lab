@@ -128,30 +128,27 @@ class _PackedQKVRoPE(torch.autograd.Function):
                                                    ctx.normalize_qk, q_gain=q_gain, k_gain=k_gain)
         return dx, None, None, None, None, None, None, dq_gain, dk_gain
 
+class _ValueMix(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, v0, v1, lambdas):
+        from .pointwise_kernels import value_mix_forward
 
-def packed_qkv_rope(packed, cos, sin, query_heads, kv_heads, eps, *, normalize_qk=True, q_gain=None, k_gain=None):
-    import math
+        out, f0, f1 = value_mix_forward(v0, v1, lambdas)
+        ctx.save_for_backward(f0, f1, lambdas)
+        return out
 
-    if not packed.is_cuda or packed.ndim != 3 or not packed.is_contiguous() or packed.numel() == 0:
-        raise ValueError("packed QKV requires nonempty contiguous CUDA [batch, length, width]")
-    if any(isinstance(h, bool) or not isinstance(h, int) or h <= 0 for h in (query_heads, kv_heads)):
-        raise ValueError("QKV head counts must be positive integers")
-    if query_heads % kv_heads or packed.shape[-1] % (query_heads + 2 * kv_heads):
-        raise ValueError("invalid packed QKV head dimensions")
-    if not isinstance(normalize_qk, bool):
-        raise ValueError("normalize_qk must be boolean")
-    if (q_gain is None) != (k_gain is None):
-        raise ValueError("Q and K gains must arrive together")
-    if q_gain is not None and not normalize_qk:
-        raise ValueError("learned gains require Q/K normalization")
-    if not math.isfinite(eps) or eps <= 0:
-        raise ValueError("QKV normalization requires positive finite epsilon")
-    dim = packed.shape[-1] // (query_heads + 2 * kv_heads)
-    if dim not in {64, 128, 256} or packed.dtype not in {torch.bfloat16, torch.float32}:
-        raise ValueError("packed QKV requires BF16/FP32 and head width 64, 128 or 256")
-    if any(t.device != packed.device or t.shape != (1, 1, packed.shape[1], dim // 2) or not t.is_contiguous() for t in (cos, sin)):
-        raise ValueError("RoPE tables must be contiguous and match sequence/head dimensions")
-    if q_gain is not None:
-        if any(g.shape != (dim,) or not g.is_cuda or g.device != packed.device for g in (q_gain, k_gain)):
-            raise ValueError("learned Q/K gains must be CUDA channel vectors matching the head width")
-    return _PackedQKVRoPE.apply(packed, cos, sin, query_heads, kv_heads, eps, normalize_qk, q_gain, k_gain)
+    @staticmethod
+    def backward(ctx, gradient):
+        from .pointwise_kernels import value_mix_backward
+
+        dv0, dv1, dl = value_mix_backward(gradient, *ctx.saved_tensors)
+        return dv0, dv1, dl
+
+
+def value_mix(v0, v1, lambdas):
+    """Fused V' = l0*V0 + l1*V1 with both coefficient gradients, eager roundings."""
+    if lambdas.numel() != 2 or lambdas.device != v0.device:
+        raise ValueError("value mix needs the two free coefficients on device")
+    if v0.dtype != torch.bfloat16 or v1.dtype != torch.bfloat16:
+        raise ValueError("value mix expects the BF16 value-stream contract")
+    return _ValueMix.apply(v0, v1, lambdas)
