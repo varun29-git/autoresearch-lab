@@ -152,9 +152,9 @@ class HopperCandidateTests(unittest.TestCase):
         packed = torch.randn(517, 2 * 5760, device="cuda", dtype=torch.bfloat16)
         gain = torch.tensor(0.71, device="cuda", dtype=torch.float32)
         out2, _, fp82 = packed_forward(packed, gain, 1e-5, emit_fp8=True)
-        (ref2, _), _ = quantize_fp8_directions(out2, rowwise=True, transposed=False, backend="triton_split")
-        self.assertTrue(torch.equal(fp82[0].float(), ref2.float()))
-        self.assertTrue(torch.equal(fp82[1], ref2))
+        (ref2c, ref2s), _ = quantize_fp8_directions(out2, rowwise=True, transposed=False, backend="triton_split")
+        self.assertTrue(torch.equal(fp82[0].float(), ref2c.float()))
+        self.assertTrue(torch.equal(fp82[1], ref2s))
 
         # End-to-end: sidecar-consuming linear must be bitwise-identical forward.
         from terminus.model import BitLinear
