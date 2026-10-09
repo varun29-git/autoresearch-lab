@@ -77,13 +77,14 @@ class StreamingLinearCrossEntropyFP8(torch.autograd.Function):
                 logits = deep_gemm_fp8_gemm_nt(x_rows, codes)
                 loss, gradient = cross_entropy_inplace(logits, labels, need_hidden or need_weight, normalizer=normalizer)
                 total.add_(loss)
-                g_rows, g_cols = quantize_fp8_directions(gradient, rowwise=need_hidden, transposed=need_weight,
-                                                         eps=0.0, backend="triton_split")
-                if need_hidden:
-                    dh[start:start + inputs.shape[0]] = deep_gemm_fp8_gemm_nt(g_rows, codes_t)
-                if need_weight:
-                    deep_gemm_fp8_gemm_nt(g_cols, x_cols, rhs_group_size=1, out_dtype=accumulation_dtype,
-                                          accumulate=dw)
+                if need_hidden or need_weight:
+                    g_rows, g_cols = quantize_fp8_directions(gradient, rowwise=need_hidden, transposed=need_weight,
+                                                             eps=0.0, backend="triton_split")
+                    if need_hidden:
+                        dh[start:start + inputs.shape[0]] = deep_gemm_fp8_gemm_nt(g_rows, codes_t)
+                    if need_weight:
+                        deep_gemm_fp8_gemm_nt(g_cols, x_cols, rhs_group_size=1, out_dtype=accumulation_dtype,
+                                              accumulate=dw)
         ctx.save_for_backward(dh, dw, normalizer)
         return total
 
