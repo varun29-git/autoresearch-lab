@@ -18,6 +18,8 @@ python -m research.speed_session close --config /external/speed-session.json --r
 
 Keep small raw results on persistent storage and copy them off during the session. A restart costs boot, SSH, possible JIT, and restaging time; use it only when saved idle VM time exceeds that cost. The first screen uses a few complete optimizer updates with no full checkpoint or broad production preflight. [Measurement notes](MEASUREMENT.md) explain the timing; [physics](PHYSICS.md) gives the required rate and ceilings; [experiment ideas](EXPERIMENTS.md) are a menu, not a queue.
 
+[Production implementation research](PRODUCTION_IMPLEMENTATIONS.md) compares released 1–2B model depths and maintained training systems, then checks the proposed 30-layer stack against the 25-layer target's hardware floor. Use it for ideas and architectural context, never as a substitute for a matched Terminus experiment.
+
 Local checks, which do not start a VM:
 
 ```bash
