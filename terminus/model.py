@@ -66,6 +66,7 @@ class BitNetLlamaConfig:
     fp8_wgrad_splits: int = 0
     branch_norm: str = "none"
     value_residual: str = "none"
+    local_attention_backend: str = ""
 
     def __post_init__(self):
         validate_fp8_options(self.fp8_backward, self.fp8_quantizer)
@@ -107,6 +108,12 @@ class BitNetLlamaConfig:
             raise ValueError("invalid dropout or quantization strength")
         if self.attention_backend not in {"fa3", "flex", "sdpa_reference"}:
             raise ValueError("unknown attention backend")
+        if self.local_attention_backend not in {"", "fa3", "flex", "sdpa_reference"}:
+            raise ValueError("unknown local attention backend")
+        if self.local_attention_backend == "sdpa_reference" and self.attention_backend != "sdpa_reference":
+            raise ValueError("a reference local backend cannot be mixed into a production run")
+        if self.local_attention_backend and self.local_attention_backend != "sdpa_reference" and self.dropout:
+            raise ValueError("production local attention requires dropout=0")
         if self.attention_backend != "sdpa_reference" and self.dropout:
             raise ValueError("production attention requires dropout=0")
         if self.attention_backend != "sdpa_reference" and self.head_dim not in {64, 128, 256}:
@@ -408,7 +415,10 @@ class BitNetAttention(nn.Module):
         probe = getattr(self, "stability_probe", None)
         if probe is not None and probe.active and cache is None:
             probe.record_attention(self.stability_layer, query, key, self.is_global_layer)
-        output = attention(query, key, value, backend=self.config.attention_backend,
+        backend = self.config.attention_backend
+        if not self.is_global_layer and self.config.local_attention_backend:
+            backend = self.config.local_attention_backend
+        output = attention(query, key, value, backend=backend,
                            local_window=None if self.is_global_layer else self.config.local_attention_window,
                            query_position_offset=offset, attention_mask=attention_mask,
                            dropout_p=self.config.dropout if self.training else 0.0)

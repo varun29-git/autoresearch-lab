@@ -20,9 +20,28 @@ class CandidatePolicyTests(unittest.TestCase):
         new.load_state_dict(old.state_dict(), strict=True)
         for policy in ({"fp8_wgrad_splits": 4}, {"fp8_wgrad_splits": True}, {"fp8_wgrad_splits": 3},
                        {"fused_mlp": True, "fuse_projections": False},
-                       {"fused_mlp": True, "ffn_activation": "relu2"}):
+                       {"fused_mlp": True, "ffn_activation": "relu2"},
+                       {"local_attention_backend": "cudnn"},
+                       {"local_attention_backend": "fa3", "attention_backend": "sdpa_reference", "dropout": 0.1}):
             with self.assertRaises(ValueError):
                 replace(base, **policy)
+
+    def test_local_attention_backend_dispatch(self):
+        base = tiny_config()  # 2 layers, global_attention_every=2: layer 0 local, layer 1 global
+        seen = []
+
+        def recording_attention(query, key, value, *, backend, **kwargs):
+            seen.append(backend)
+            return torch.zeros_like(query)
+
+        for override, expected in (("", ["sdpa_reference", "sdpa_reference"]),
+                                   ("flex", ["flex", "sdpa_reference"])):
+            seen.clear()
+            model = BitNetLlama(replace(base, local_attention_backend=override))
+            ids = torch.randint(0, base.vocab_size, (2, base.max_seq_len))
+            with patch("terminus.model.attention", recording_attention):
+                model(ids)
+            self.assertEqual(seen, expected)
 
     def test_component_physics_matches_total_and_update_budget(self):
         from terminus.roofline import training_roofline
