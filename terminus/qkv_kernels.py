@@ -148,17 +148,20 @@ def packed_qkv_forward(packed, cos, sin, q, kv, eps, normalize_qk=True, q_gain=N
     return out[:, :, :q].transpose(1, 2), out[:, :, q:].transpose(1, 2), value.transpose(1, 2), inverse
 
 
-def packed_qkv_backward(dq, dk, dv, packed, cos, sin, inverse, q, kv, normalize_qk=True, q_gain=None, k_gain=None):
+def packed_qkv_backward(dq, dk, dv, packed, cos, sin, inverse, q, kv, normalize_qk=True, q_gain=None, k_gain=None,
+                        heads_per_program=4, num_warps=4):
     batch, length, width = packed.shape
     dim = width // (q + 2 * kv)
     gain = q_gain is not None
     if gain != (k_gain is not None):
         raise ValueError("Q and K gains must arrive together")
+    if heads_per_program <= 0:
+        raise ValueError("heads_per_program must be positive; masks handle non-divisors")
     dq, dk, dv = (g if g.stride(-1) == 1 else g.contiguous() for g in (dq, dk, dv))
     output = torch.empty_like(packed)
-    _packed_rope[(batch * length, triton.cdiv(q + 2 * kv, 4))](packed, cos, sin, inverse, None, dq, dk, dv, output,
-        q_gain, k_gain, q, kv, dim, length, *dq.stride()[:3], *dk.stride()[:3], *dv.stride()[:3], 0., True, 4,
-        normalize_qk, gain, num_warps=4, enable_fp_fusion=False)
+    _packed_rope[(batch * length, triton.cdiv(q + 2 * kv, heads_per_program))](packed, cos, sin, inverse, None, dq, dk, dv, output,
+        q_gain, k_gain, q, kv, dim, length, *dq.stride()[:3], *dk.stride()[:3], *dv.stride()[:3], 0., True,
+        heads_per_program, normalize_qk, gain, num_warps=num_warps, enable_fp_fusion=False)
     if not gain:
         return output, None, None
     # Gain gradients: bounded deterministic reduction over row/head pairs,
