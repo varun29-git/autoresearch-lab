@@ -168,6 +168,32 @@ def _quantize_dual_v2_kernel(values, row_codes, row_scales, column_codes, column
              mask=column_indices < width)
 
 
+@triton.jit
+def _quantize_columnwise_kernel(values, column_codes, column_scales,
+                                rows: tl.constexpr, width: tl.constexpr,
+                                source_row_stride: tl.constexpr, source_column_stride: tl.constexpr,
+                                column_scale_stride: tl.constexpr,
+                                padded_rows: tl.constexpr, EPS: tl.constexpr):
+    # Columnwise-only: full 128x128 tiles give coalesced 256B reads; the smem
+    # transpose makes the transposed code store coalesced as well. Bit-exact
+    # with the 128x32 split kernel's columnwise output.
+    row_block = tl.program_id(0).to(tl.int64)
+    column_block = tl.program_id(1).to(tl.int64)
+    row_indices = row_block * 128 + tl.arange(0, 128)
+    column_indices = column_block * 128 + tl.arange(0, 128)
+    valid = (row_indices[:, None] < rows) & (column_indices[None, :] < width)
+    block = tl.load(values + row_indices[:, None] * source_row_stride + column_indices[None, :] * source_column_stride,
+                    mask=valid, other=0)
+    scale_columns = _safe_scale(tl.max(tl.abs(block), axis=0).to(tl.float32), EPS)
+    inverse_columns = tl.div_rn(1., scale_columns)
+    quantized = _scaled_values(block.to(tl.float32), scale_columns[None, :], inverse_columns[None, :]).to(tl.float8e4nv)
+    transposed = tl.trans(quantized)
+    tl.store(column_codes + column_indices[:, None] * padded_rows + row_indices[None, :], transposed,
+             mask=(column_indices[:, None] < width) & (row_indices[None, :] < padded_rows))
+    tl.store(column_scales + column_indices + row_block * column_scale_stride, scale_columns,
+             mask=column_indices < width)
+
+
 def _check_matrix(values, *, weight=False):
     if not values.is_cuda or torch.cuda.get_device_capability(values.device)[0] != 9:
         raise RuntimeError("fused ternary-FP8 kernels require Hopper SM90")
@@ -266,6 +292,25 @@ def quantize_dual(values, *, eps=1e-5, chunk=32, num_warps=16, variant="single")
         # DeepGEMM requires zeroed padding.
         secondary[0][:, rows:].zero_()
     return primary, secondary
+
+
+@torch.no_grad()
+def quantize_columnwise(values, *, eps=1e-5, num_warps=8):
+    """Columnwise-only FP8 quantization from one coalesced 128x128-tile pass."""
+    _check_matrix(values)
+    if not math.isfinite(eps) or eps < 0:
+        raise ValueError("invalid scale floor")
+    rows, width = values.shape
+    padded_rows = triton.cdiv(rows, 128) * 128
+    secondary = (torch.empty((width, padded_rows), device=values.device, dtype=torch.float8_e4m3fn),
+                 _scales(width, padded_rows // 128, values.device))
+    _quantize_columnwise_kernel[(triton.cdiv(rows, 128), width // 128)](
+        values, secondary[0], secondary[1], rows, width,
+        values.stride(0), values.stride(1), secondary[1].stride(1),
+        padded_rows, eps, num_warps=num_warps, enable_fp_fusion=False)
+    if rows != padded_rows:
+        secondary[0][:, rows:].zero_()
+    return secondary
 
 
 @torch.no_grad()

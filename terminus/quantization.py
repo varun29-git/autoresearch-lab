@@ -149,15 +149,19 @@ def validate_fp8_options(backward_mode, quantizer):
 def quantize_fp8_directions(values, *, rowwise=True, transposed=False, eps=1e-5, backend="torch"):
     if values.ndim != 2 or min(values.shape) <= 0 or not (rowwise or transposed):
         raise ValueError("FP8 directional quantization needs a nonempty matrix and an output direction")
-    if backend == "triton_fused" and rowwise and transposed:
-        from .fp8_kernels import quantize_dual
+    if backend == "triton_fused":
+        from .fp8_kernels import quantize_columnwise, quantize_directions
 
-        return quantize_dual(values, eps=eps)
-    if backend in {"triton", "triton_split", "triton_fused"}:
+        # Measured on H100 NVL: the 16x128 rowwise pass already runs near HBM
+        # peak; the win is the coalesced 128x128 columnwise pass. Single-launch
+        # dual variants lose to two specialized passes.
+        primary = quantize_directions(values, rowwise=True, transposed=False, eps=eps, separate=True)[0] if rowwise else None
+        secondary = quantize_columnwise(values, eps=eps) if transposed else None
+        return primary, secondary
+    if backend in {"triton", "triton_split"}:
         from .fp8_kernels import quantize_directions
 
-        return quantize_directions(values, rowwise=rowwise, transposed=transposed, eps=eps,
-                                   separate=backend in {"triton_split", "triton_fused"})
+        return quantize_directions(values, rowwise=rowwise, transposed=transposed, eps=eps, separate=backend == "triton_split")
     if backend != "torch":
         raise ValueError("unknown FP8 quantizer")
     primary = quantize_activation_fp8_e4m3(values, eps=eps) if rowwise else None
