@@ -64,7 +64,9 @@ class EventProfile:
             for module_name, names in targets.items():
                 module = importlib.import_module(module_name)
                 for name in names:
-                    original = getattr(module, name)
+                    original = getattr(module, name, None)
+                    if original is None:
+                        continue
                     originals.append((module, name, original))
                     setattr(module, name, wrapper(original, name))
             yield self
