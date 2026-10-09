@@ -123,7 +123,9 @@ class _PackedQKVRoPE(torch.autograd.Function):
     def backward(ctx, dq, dk, dv):
         from .qkv_kernels import packed_qkv_backward
 
-        dx, dq_gain, dk_gain = packed_qkv_backward(dq, dk, dv, *ctx.saved_tensors, *ctx.heads, ctx.normalize_qk)
+        packed, cos, sin, inverse, q_gain, k_gain = ctx.saved_tensors
+        dx, dq_gain, dk_gain = packed_qkv_backward(dq, dk, dv, packed, cos, sin, inverse, *ctx.heads,
+                                                   ctx.normalize_qk, q_gain=q_gain, k_gain=k_gain)
         return dx, None, None, None, None, None, None, dq_gain, dk_gain
 
 
