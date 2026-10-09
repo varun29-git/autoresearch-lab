@@ -1,6 +1,6 @@
 # Experiment atlas: preserve the model, change its execution
 
-These are **hypotheses**, not a required queue or a reason to keep the H100 running while reading. Start with the short full-update baseline in [speed_program.md](../../speed_program.md). Class E preserves the mathematical computation/optimizer and the frozen precision recipe; class N changes numerical representation and needs a later quality comparison. Sources are in [SOURCES.md](SOURCES.md); all repository observations below refer to the winner commit.
+These are **hypotheses**, not a required queue or a reason to keep the H100 running while reading. The current three-hour run is **dense-only**; QAT-specific ideas below are reserved for a later campaign. Start with the short full-update baseline in [speed_program.md](../../speed_program.md). Class E preserves the mathematical computation/optimizer and the frozen precision recipe; class N changes numerical representation and needs a later quality comparison. Sources are in [SOURCES.md](SOURCES.md); all repository observations below refer to the winner commit.
 
 ## S0 — Establish the cost map and prove the instruments
 
