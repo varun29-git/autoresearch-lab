@@ -12,6 +12,14 @@ class _RMSNorm(torch.autograd.Function):
         ctx.shape = values.shape
         return output.reshape(values.shape)
 
+    @staticmethod
+    def backward(ctx, gradient):
+        from .pointwise_kernels import norm_backward
+
+        values, weight, inverse = ctx.saved_tensors
+        dx, dw = norm_backward(gradient, values, weight, inverse)
+        return dx.reshape(ctx.shape), dw, None
+
 
 class _RMSNormFP8(torch.autograd.Function):
     """Fused RMSNorm that also emits rowwise FP8 codes of its BF16 output."""
@@ -38,14 +46,6 @@ def rms_norm_fp8(values, weight, eps):
     if not values.is_cuda:
         raise RuntimeError("fused RMSNorm requires CUDA")
     return _RMSNormFP8.apply(values, weight, eps)
-
-    @staticmethod
-    def backward(ctx, gradient):
-        from .pointwise_kernels import norm_backward
-
-        values, weight, inverse = ctx.saved_tensors
-        dx, dw = norm_backward(gradient, values, weight, inverse)
-        return dx.reshape(ctx.shape), dw, None
 
 
 def rms_norm(values, weight, eps):
