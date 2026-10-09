@@ -25,3 +25,5 @@ python3 -m unittest tests.test_speed_session tests.test_s0_block tests.test_spee
 ```
 
 No native H100 run or VM cutoff has been validated end to end in this checkout. The 1.5B target has 25 layers, width 2304, FFN 5760, 18 query and 6 KV heads, 4K context and 65,536 vocabulary entries: 1,500,456,496 trainable parameters.
+
+Architecture provenance: resolving defaults in [the winning 200M candidate](../../candidate.json) and [the speed target](../../speed_research/target_model.json) shows exactly four changes: width 768→2304, FFN 1920→5760, query heads 6→18, and KV heads 2→6. Both have 25 layers, Peri-LN, value residual, `use_subln=false`, and dense weights. The older 30-layer `configs/1.5b_h100_*.json` files use a different 96K-vocabulary architecture without this stack. A proposed 25-layer stack JSON on commit `165051a` omitted `use_subln` and `weight_mode`; their constructor defaults would add 50 SubLN scalar gains and select ternary weights. Do not use that JSON as the dense stack reference. A matched 30-layer stack-004 depth comparison has not been run, so 25 is the faithful winner transfer, not a proven globally optimal depth.
