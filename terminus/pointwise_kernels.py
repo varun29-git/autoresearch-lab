@@ -292,8 +292,9 @@ def _value_mix_forward(V0, V1, L, Y, N: tl.constexpr, BLOCK: tl.constexpr):
     mask = i < N
     v0 = tl.load(V0 + i, mask, other=0.).to(tl.float32)
     v1 = tl.load(V1 + i, mask, other=0.).to(tl.float32)
-    l0 = tl.load(L).to(tl.float32)
-    l1 = tl.load(L + 1).to(tl.float32)
+    # aten casts the scalar coefficient to the tensor's dtype before multiplying.
+    l0 = tl.load(L).to(V0.dtype.element_ty).to(tl.float32)
+    l1 = tl.load(L + 1).to(V0.dtype.element_ty).to(tl.float32)
     t0 = (l0 * v0).to(V0.dtype.element_ty).to(tl.float32)
     t1 = (l1 * v1).to(V0.dtype.element_ty).to(tl.float32)
     tl.store(Y + i, t0 + t1, mask)
@@ -304,8 +305,8 @@ def _value_mix_backward(G, V0, V1, L, DV0, DV1, DL, N: tl.constexpr,
                         PROGRAMS: tl.constexpr, BLOCK: tl.constexpr):
     """dv0 = bf16(g*l0), dv1 = bf16(g*l1); dl = sum_rows(bf16(g*v)) deterministically."""
     program = tl.program_id(0)
-    l0 = tl.load(L).to(tl.float32)
-    l1 = tl.load(L + 1).to(tl.float32)
+    l0 = tl.load(L).to(G.dtype.element_ty).to(tl.float32)
+    l1 = tl.load(L + 1).to(G.dtype.element_ty).to(tl.float32)
     dl0 = 0.0
     dl1 = 0.0
     for start in range(program * BLOCK, N, PROGRAMS * BLOCK):
