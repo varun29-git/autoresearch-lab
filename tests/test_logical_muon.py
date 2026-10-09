@@ -60,6 +60,56 @@ class LogicalMuonTests(unittest.TestCase):
                         torch.testing.assert_close(resumed_weight, weight, rtol=0, atol=0)
 
 
+    def test_batched_step_matches_reference_loop(self):
+        # Class-E parity: the batched launch path must reproduce the reference
+        # loop's parameter and optimizer-state evolution (Newton-Schulz runs as
+        # bmm vs mm, so only reduction-order noise is tolerated).
+        from terminus.logical_muon import LogicalMuonWithAuxAdam
+
+        torch.manual_seed(23)
+        for rows in ((32, 16, 16), (64, 64)):
+            with self.subTest(rows=rows):
+                initial = torch.randn(sum(rows), 32)
+                weight_a = torch.nn.Parameter(initial.clone())
+                weight_b = torch.nn.Parameter(initial.clone())
+                options = {"lr": .003 * .2 * math.sqrt(32), "weight_decay": .1 / (.2 * math.sqrt(32)),
+                           "momentum": .95, "use_muon": True}
+                batched = LogicalMuonWithAuxAdam([{"params": [weight_a], **options}], [rows], batched=True)
+                reference = LogicalMuonWithAuxAdam([{"params": [weight_b], **options}], [rows], batched=False)
+                for _ in range(3):
+                    gradient = torch.randn_like(initial)
+                    weight_a.grad = gradient.clone()
+                    weight_b.grad = gradient.clone()
+                    batched.step()
+                    reference.step()
+                    torch.testing.assert_close(weight_a, weight_b, rtol=1e-3, atol=1e-5)
+                    torch.testing.assert_close(batched.state[weight_a]["momentum_buffer"],
+                                               reference.state[weight_b]["momentum_buffer"],
+                                               rtol=0, atol=0)
+
+    def test_batched_step_matches_reference_adam_groups(self):
+        from terminus.logical_muon import LogicalMuonWithAuxAdam
+
+        torch.manual_seed(29)
+        specs = [torch.randn(64, 32), torch.randn(48), torch.randn(16)]
+        weights_a = [torch.nn.Parameter(value.clone()) for value in specs]
+        weights_b = [torch.nn.Parameter(value.clone()) for value in specs]
+        groups = lambda ws: [{"params": ws, "lr": .003, "weight_decay": .1,
+                              "betas": (.9, .95), "eps": 1e-10, "use_muon": False}]
+        batched = LogicalMuonWithAuxAdam(groups(weights_a), [None], batched=True)
+        reference = LogicalMuonWithAuxAdam(groups(weights_b), [None], batched=False)
+        for _ in range(3):
+            for wa, wb in zip(weights_a, weights_b):
+                gradient = torch.randn_like(wa)
+                wa.grad = gradient.clone()
+                wb.grad = gradient.clone()
+            batched.step()
+            reference.step()
+        for wa, wb in zip(weights_a, weights_b):
+            torch.testing.assert_close(wa, wb, rtol=0, atol=0)
+            torch.testing.assert_close(batched.state[wa]["exp_avg"], reference.state[wb]["exp_avg"], rtol=0, atol=0)
+            torch.testing.assert_close(batched.state[wa]["exp_avg_sq"], reference.state[wb]["exp_avg_sq"], rtol=0, atol=0)
+
     def test_learned_qk_norm_group_builds_and_steps(self):
         # Regression: the named qk_norm aux group must not reach the pinned Muon
         # constructor with extra keys (baseline campaign config uses learned_rms).
