@@ -25,6 +25,11 @@ class LogicalMuonWithAuxAdam(SingleDeviceMuonWithAuxAdam):
         if not isinstance(batched, bool):
             raise ValueError("batched must be a bool")
         self.batched = batched
+        self._slice_cache = None
+
+    def load_state_dict(self, state_dict):
+        self._slice_cache = None  # state tensors are replaced; cached views would go stale
+        return super().load_state_dict(state_dict)
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -39,7 +44,15 @@ class LogicalMuonWithAuxAdam(SingleDeviceMuonWithAuxAdam):
         return loss
 
     def _collect_muon_slices(self):
-        """Per logical slice: exact reference momentum/Nesterov semantics, grouped for launch efficiency."""
+        """Per logical slice: exact reference momentum/Nesterov semantics, grouped for launch efficiency.
+
+        The slice structure (parameters, momentum views, row bounds, grouping)
+        is static across steps; only lr/weight_decay scalars change with the
+        schedule, and grads are re-read from the parameter each step because
+        zero_grad(set_to_none=True) frees them. Cache the structure once.
+        """
+        if self._slice_cache is not None:
+            return self._slice_cache
         slices = []
         for group in self.param_groups:
             if not group["use_muon"]:
@@ -55,20 +68,25 @@ class LogicalMuonWithAuxAdam(SingleDeviceMuonWithAuxAdam):
                 for rows in group.get("logical_rows", (parameter.shape[0],)):
                     stop = start + rows
                     slices.append({"parameter": parameter, "momentum": momentum,
-                                   "start": start, "stop": stop, "lr": group["lr"],
-                                   "weight_decay": group["weight_decay"],
-                                   "beta": group["momentum"]})
+                                   "start": start, "stop": stop, "group": group})
                     start = stop
-        return slices
-
-    def _step_batched(self):
-        slices = self._collect_muon_slices()
-        # momentum.lerp_(grad, 1 - beta); grad.lerp_(momentum, beta) (Nesterov),
-        # identical elementwise math to the reference loop, grouped by beta.
         by_beta = defaultdict(list)
         for item in slices:
-            by_beta[item["beta"]].append(item)
-        for beta, members in by_beta.items():
+            by_beta[item["group"]["momentum"]].append(item)
+        by_shape = defaultdict(list)
+        for item in slices:
+            by_shape[(item["stop"] - item["start"], item["parameter"].grad.shape[1])].append(item)
+        self._slice_cache = (slices, sorted(by_beta.items()), sorted(by_shape.items()))
+        return self._slice_cache
+
+    def _step_batched(self):
+        slices, by_beta, by_shape = self._collect_muon_slices()
+        for item in slices:
+            if item["parameter"].grad is None:
+                item["parameter"].grad = torch.zeros_like(item["parameter"])
+        # momentum.lerp_(grad, 1 - beta); grad.lerp_(momentum, beta) (Nesterov),
+        # identical elementwise math to the reference loop, grouped by beta.
+        for beta, members in by_beta:
             momenta = [m["momentum"][m["start"]:m["stop"]] for m in members]
             grads = [m["parameter"].grad[m["start"]:m["stop"]] for m in members]
             torch._foreach_lerp_(momenta, grads, 1 - beta)
@@ -77,17 +95,13 @@ class LogicalMuonWithAuxAdam(SingleDeviceMuonWithAuxAdam):
         # normalizes per matrix (dim=(-2, -1)) and applies the orientation rule
         # per trailing shape, so one batched call equals per-slice calls up to
         # floating-point reduction order (class E).
-        by_shape = defaultdict(list)
-        for item in slices:
-            grad = item["parameter"].grad
-            by_shape[(item["stop"] - item["start"], grad.shape[1])].append(item)
-        for (rows, cols), members in sorted(by_shape.items()):
+        for (rows, cols), members in by_shape:
             stacked = torch.stack([m["parameter"].grad[m["start"]:m["stop"]] for m in members])
             update = zeropower_via_newtonschulz5(stacked, steps=5)
             update *= max(1, rows / cols) ** 0.5
             by_rate = defaultdict(list)
             for member in members:
-                by_rate[(member["lr"], member["weight_decay"])].append(member)
+                by_rate[(member["group"]["lr"], member["group"]["weight_decay"])].append(member)
             updates = list(update.float().unbind(0))
             positions = {id(m): index for index, m in enumerate(members)}
             for (lr, weight_decay), group_members in by_rate.items():
