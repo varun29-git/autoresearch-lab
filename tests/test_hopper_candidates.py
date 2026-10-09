@@ -163,7 +163,8 @@ class HopperCandidateTests(unittest.TestCase):
                         linear_backend="deepgemm", fp8_backward="full", fp8_quantizer="triton_split",
                         fp8_cache_weights=True, weight_mode="dense").cuda()
         direct = lin(x)
-        sided = lin(x, activation_rows=(ref_codes, ref_scales))
+        (x_codes, x_scales), _ = quantize_fp8_directions(x, rowwise=True, transposed=False, backend="triton_split")
+        sided = lin(x, activation_rows=(x_codes, x_scales))
         self.assertTrue(torch.equal(direct, sided))
 
     def test_norm_grid_large_rows_matches_reference(self):
