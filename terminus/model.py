@@ -489,6 +489,7 @@ class BitNetFeedForward(nn.Module):
 class BitNetBlock(nn.Module):
     def __init__(self, config, *, layer_index):
         super().__init__()
+        self.config = config
         self.attn_norm = RMSNorm(config.dim, config.rms_norm_eps, fused=config.fused_pointwise)
         self.ffn_norm = RMSNorm(config.dim, config.rms_norm_eps, fused=config.fused_pointwise)
         peri = config.branch_norm == "peri"
