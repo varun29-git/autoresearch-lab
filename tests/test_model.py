@@ -184,9 +184,9 @@ class ModelTests(unittest.TestCase):
     def test_learned_qk_norm_keeps_gains_before_rope(self):
         from terminus.model import BitNetAttention, apply_rotary
 
-        with self.assertRaisesRegex(ValueError, "fused_qkv=False"):
+        with self.assertRaisesRegex(ValueError, "fused_qkv requires fused pointwise"):
             tiny_config(qk_norm_mode="learned_rms", fuse_projections=True,
-                        fused_pointwise=True, fused_qkv=True)
+                        fused_pointwise=False, fused_qkv=True)
         config = tiny_config(qk_norm_mode="learned_rms", use_subln=False,
                              fuse_projections=True, fused_pointwise=True, fused_qkv=False)
         attention = BitNetAttention(config, layer_index=0)

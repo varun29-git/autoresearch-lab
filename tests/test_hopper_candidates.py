@@ -128,6 +128,40 @@ class HopperCandidateTests(unittest.TestCase):
             gb = torch.autograd.grad([a_ref, z_ref], [x, u, no.weight, ni.weight], [da, dz])
             for actual, expected in zip(ga, gb):
                 self.assertLess(error_ratio(actual, expected), .006)
+    def test_packed_qkv_learned_gains_match_eager_reference(self):
+        from terminus.model import RMSNorm, apply_rotary
+        from terminus.pointwise import packed_qkv_rope
+
+        for q, kv, dim in ((16, 4, 128), (4, 1, 64), (6, 2, 256)):
+            torch.manual_seed(q * 100 + dim)
+            packed = torch.randn(2, 17, (q + 2 * kv) * dim, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+            q_gain = torch.nn.Parameter(torch.linspace(.6, 1.7, dim, device="cuda"))
+            k_gain = torch.nn.Parameter(torch.linspace(1.5, .8, dim, device="cuda"))
+            cos, sin = (torch.randn(1, 1, 17, dim // 2, device="cuda") for _ in range(2))
+            actual = packed_qkv_rope(packed, cos, sin, q, kv, 1e-5, normalize_qk=True,
+                                     q_gain=q_gain, k_gain=k_gain)
+            reference_gains = (torch.nn.Parameter(q_gain.detach().clone()),
+                               torch.nn.Parameter(k_gain.detach().clone()))
+            expected = []
+            for index, part in enumerate(packed.split((q * dim, kv * dim, kv * dim), -1)):
+                part = part.view(2, 17, q if index == 0 else kv, dim).transpose(1, 2)
+                if index < 2:
+                    gain = reference_gains[index]
+                    norm = RMSNorm(dim, gain="channel", fused=True).cuda()
+                    norm.weight = gain
+                    expected.append(apply_rotary(norm(part), cos, sin))
+                else:
+                    expected.append(part)
+            for a, b in zip(actual, expected):
+                self.assertLess(error_ratio(a, b), .006)
+            dy = [torch.randn_like(a) for a in actual]
+            ga = torch.autograd.grad(actual, [packed, q_gain, k_gain], dy, retain_graph=True)
+            gb = torch.autograd.grad(expected, [packed, *reference_gains], dy)
+            self.assertTrue(ga[0].is_contiguous())
+            self.assertLess(error_ratio(ga[0], gb[0]), .012)
+            # Shared channel gains: every head/row contributes; compare tightly.
+            torch.testing.assert_close(ga[1], gb[1], rtol=2e-2, atol=2e-4)
+            torch.testing.assert_close(ga[2], gb[2], rtol=2e-2, atol=2e-4)
 
     def test_packed_mlp_matches_independent_equations(self):
         from terminus.pointwise import packed_swiglu_norm

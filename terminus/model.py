@@ -119,8 +119,8 @@ class BitNetLlamaConfig:
             raise ValueError("branch_norm must be none or peri")
         if self.value_residual not in {"none", "learned"}:
             raise ValueError("value_residual must be none or learned")
-        if self.qk_norm_mode == "learned_rms" and self.fused_qkv:
-            raise ValueError("learned Q/K gains require fused_qkv=False until the packed kernel supports gain gradients")
+        if self.qk_norm_mode == "learned_rms" and self.fused_qkv and not self.fused_pointwise:
+            raise ValueError("the packed learned-gain Q/K path requires fused_pointwise")
         if self.pad_token_id is not None and not 0 <= self.pad_token_id < self.vocab_size:
             raise ValueError("pad_token_id is outside the vocabulary")
         if self.weight_scale_layout not in {"rowwise", "blockwise"} or self.linear_backend not in {"torch", "deepgemm"}:
@@ -368,9 +368,12 @@ class BitNetAttention(nn.Module):
         if self.config.fused_qkv:
             from .pointwise import packed_qkv_rope
 
+            learned_gains = self.config.qk_norm_mode == "learned_rms"
             query, key, value = packed_qkv_rope(self.qkv_proj(hidden), cos, sin,
                 self.config.n_heads, self.config.n_kv_heads, self.config.rms_norm_eps,
-                normalize_qk=self.config.qk_norm_mode == "unit_rms")
+                normalize_qk=self.config.qk_norm_mode != "none",
+                q_gain=self.q_norm.weight if learned_gains else None,
+                k_gain=self.k_norm.weight if learned_gains else None)
         else:
             if self.config.fuse_projections:
                 kv_width = self.config.n_kv_heads * self.config.head_dim
