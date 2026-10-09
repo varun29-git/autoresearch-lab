@@ -22,7 +22,9 @@ from .azure_cycle import (SAFE_NAME, SAFE_REMOTE_PATH, append_event, command,
                           wait_for_ssh)
 from .protocol import ROOT, assert_clean_git, read_json
 
-CAP_SECONDS = 5 * 3600
+# Campaign cap was 5 h; the human extended it by 1.5 h on 2026-10-09 for the
+# QuACK integration screen and follow-up proposal tests (same ledger).
+CAP_SECONDS = 5 * 3600 + 5400
 SHUTDOWN_MARGIN_SECONDS = 120
 
 

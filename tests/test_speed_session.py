@@ -35,7 +35,7 @@ class FakeAzure:
 
 class SpeedSessionTests(unittest.TestCase):
     def test_campaign_cap_is_five_cumulative_vm_hours(self):
-        self.assertEqual(CAP_SECONDS, 5 * 3600)
+        self.assertEqual(CAP_SECONDS, 5 * 3600 + 5400)  # 5h campaign + 1.5h extension
 
     def test_documented_command_order_parses(self):
         parser = argument_parser()
