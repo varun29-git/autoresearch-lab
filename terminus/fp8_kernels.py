@@ -194,6 +194,32 @@ def _quantize_columnwise_kernel(values, column_codes, column_scales,
              mask=column_indices < width)
 
 
+@triton.jit
+def _quantize_blockwise_t_kernel(values, codes, scales,
+                                 rows: tl.constexpr, width: tl.constexpr,
+                                 source_row_stride: tl.constexpr, source_column_stride: tl.constexpr,
+                                 padded_rows: tl.constexpr, scale_row_stride: tl.constexpr,
+                                 EPS: tl.constexpr):
+    # One 128-token x 128-feature tile of the source is exactly one 128x128
+    # scale block of the TRANSPOSED (width, padded_rows) operand. Coalesced
+    # source read; the smem transpose keeps the code store coalesced.
+    row_block = tl.program_id(0).to(tl.int64)
+    column_block = tl.program_id(1).to(tl.int64)
+    r = row_block * 128 + tl.arange(0, 128)
+    c = column_block * 128 + tl.arange(0, 128)
+    valid = (r[:, None] < rows) & (c[None, :] < width)
+    block = tl.load(values + r[:, None] * source_row_stride + c[None, :] * source_column_stride,
+                    mask=valid, other=0).to(tl.float32)
+    scale = _safe_scale(tl.max(tl.max(tl.abs(block), axis=0), axis=1), EPS)
+    quotient = tl.div_rn(block, scale)
+    finite = (tl.abs(block) < float("inf")) & (tl.abs(scale) < float("inf"))
+    q = tl.where(finite, quotient, float("nan")).to(tl.float8e4nv)
+    transposed = tl.trans(q)
+    tl.store(codes + c[:, None] * padded_rows + r[None, :], transposed,
+             mask=(c[:, None] < width) & (r[None, :] < padded_rows))
+    tl.store(scales + column_block * scale_row_stride + row_block, scale)
+
+
 def _check_matrix(values, *, weight=False):
     if not values.is_cuda or torch.cuda.get_device_capability(values.device)[0] != 9:
         raise RuntimeError("fused ternary-FP8 kernels require Hopper SM90")
@@ -311,6 +337,30 @@ def quantize_columnwise(values, *, eps=1e-5, num_warps=8):
     if rows != padded_rows:
         secondary[0][:, rows:].zero_()
     return secondary
+
+
+@torch.no_grad()
+def quantize_blockwise_t(values, *, eps=1e-5, num_warps=8):
+    """Activation FP8 as (width, padded_rows) transposed codes + 128x128 blockwise scales.
+
+    This is the rhs operand layout for the DeepGEMM 1D2D recipe on a transposed
+    matrix: scales[index_f, index_t] covers 128 features x 128 tokens. Not
+    interchangeable with the 1x128 columnwise layout; the wgrad recipe change
+    is a class-N numerical branch.
+    """
+    _check_matrix(values)
+    if not math.isfinite(eps) or eps < 0:
+        raise ValueError("invalid scale floor")
+    rows, width = values.shape
+    padded_rows = triton.cdiv(rows, 128) * 128
+    codes = torch.empty((width, padded_rows), device=values.device, dtype=torch.float8_e4m3fn)
+    scales = torch.empty((width // 128, padded_rows // 128), device=values.device, dtype=torch.float32)
+    _quantize_blockwise_t_kernel[(triton.cdiv(rows, 128), width // 128)](
+        values, codes, scales, rows, width, values.stride(0), values.stride(1),
+        padded_rows, scales.stride(0), eps, num_warps=num_warps, enable_fp_fusion=False)
+    if rows != padded_rows:
+        codes[:, rows:].zero_()
+    return codes, scales
 
 
 @torch.no_grad()

@@ -184,13 +184,21 @@ def quantize_ternary_directions(weight, *, transposed=False, backend="torch"):
     return primary, secondary
 
 
+def validate_wgrad_recipe(wgrad_recipe):
+    if wgrad_recipe not in {"1d1d", "1d2d_bf16"}:
+        raise ValueError("fp8_wgrad_recipe must be 1d1d or 1d2d_bf16")
+
+
 def deepgemm_bitlinear(values, weight, *, backward_mode="bf16", quantizer="torch", weight_operands=None,
-                       wgrad_splits=0, weight_mode="ternary"):
+                       wgrad_splits=0, weight_mode="ternary", wgrad_recipe="1d1d"):
     validate_fp8_options(backward_mode, quantizer)
+    validate_wgrad_recipe(wgrad_recipe)
     if weight_mode not in {"ternary", "dense"}:
         raise ValueError("weight_mode must be ternary or dense")
     if isinstance(wgrad_splits, bool) or not isinstance(wgrad_splits, int) or wgrad_splits not in {0, 1, 2, 4, 8, 16} or (wgrad_splits and backward_mode != "full"):
         raise ValueError("split-K wgrad requires full FP8 backward and a supported split count")
+    if wgrad_recipe != "1d1d" and (backward_mode != "full" or wgrad_splits):
+        raise ValueError("the 1d2d_bf16 wgrad recipe requires full FP8 backward without split-K")
     if values.dtype != torch.bfloat16 or weight.dtype != torch.float32:
         raise ValueError("DeepGEMM requires BF16 activations and FP32 latent weights")
     if not torch.is_grad_enabled() or not (values.requires_grad or weight.requires_grad):
@@ -202,7 +210,7 @@ def deepgemm_bitlinear(values, weight, *, backward_mode="bf16", quantizer="torch
         output = deep_gemm_fp8_gemm_nt(inputs, weights)
         return output.reshape(*values.shape[:-1], weight.shape[0])
     return DeepGEMMBitLinearFunction.apply(values, weight, backward_mode, quantizer, weight_operands,
-                                           wgrad_splits, weight_mode)
+                                           wgrad_splits, weight_mode, wgrad_recipe)
 
 
 class DeepGEMMBitLinearFunction(torch.autograd.Function):
@@ -210,22 +218,30 @@ class DeepGEMMBitLinearFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, values, weight, backward_mode="bf16", quantizer="torch", weight_operands=None,
-                wgrad_splits=0, weight_mode="ternary"):
+                wgrad_splits=0, weight_mode="ternary", wgrad_recipe="1d1d"):
         from .kernels import deep_gemm_fp8_gemm_nt
 
         validate_fp8_options(backward_mode, quantizer)
+        validate_wgrad_recipe(wgrad_recipe)
         if weight_mode not in {"ternary", "dense"}:
             raise ValueError("weight_mode must be ternary or dense")
         if isinstance(wgrad_splits, bool) or not isinstance(wgrad_splits, int) or wgrad_splits not in {0, 1, 2, 4, 8, 16} or (wgrad_splits and backward_mode != "full"):
             raise ValueError("split-K wgrad requires full FP8 backward and a supported split count")
+        if wgrad_recipe != "1d1d" and (backward_mode != "full" or wgrad_splits):
+            raise ValueError("the 1d2d_bf16 wgrad recipe requires full FP8 backward without split-K")
         if values.dtype != torch.bfloat16 or weight.dtype != torch.float32:
             raise ValueError("DeepGEMM requires BF16 activations and FP32 latent weights")
         flat = values.reshape(-1, values.shape[-1])
         need_input, need_weight = ctx.needs_input_grad[:2]
         fp8_input_gradient = backward_mode != "bf16"
         fp8_weight_gradient = backward_mode == "full"
+        blockwise_wgrad = wgrad_recipe == "1d2d_bf16" and need_weight and fp8_weight_gradient
         inputs, transposed_inputs = quantize_fp8_directions(
-            flat, transposed=need_weight and fp8_weight_gradient, backend=quantizer)
+            flat, transposed=need_weight and fp8_weight_gradient and not blockwise_wgrad, backend=quantizer)
+        if blockwise_wgrad:
+            from .fp8_kernels import quantize_blockwise_t
+
+            transposed_inputs = quantize_blockwise_t(flat)
         weights, transposed_weights = weight_operands or quantize_weight_directions(
             weight, weight_mode=weight_mode, transposed=need_input and fp8_input_gradient,
             backend=quantizer)
@@ -236,6 +252,7 @@ class DeepGEMMBitLinearFunction(torch.autograd.Function):
         ctx.input_shape, ctx.weight_shape = values.shape, weight.shape
         ctx.backward_mode, ctx.quantizer = backward_mode, quantizer
         ctx.wgrad_splits = wgrad_splits
+        ctx.wgrad_recipe = wgrad_recipe
         return output.reshape(*values.shape[:-1], weight.shape[0])
 
     @staticmethod
@@ -265,10 +282,16 @@ class DeepGEMMBitLinearFunction(torch.autograd.Function):
                     from .wgrad_kernels import fp8_wgrad
 
                     grad_weight = fp8_wgrad(gradient_columns, (input_codes, input_scales), splits=ctx.wgrad_splits)
+                elif ctx.wgrad_recipe == "1d2d_bf16":
+                    # Class-N branch: rhs carries 128x128 blockwise scales (the
+                    # saved blockwise-transposed activation codes) and the wgrad
+                    # rounds to BF16 before the FP32 autograd accumulation.
+                    grad_weight = deep_gemm_fp8_gemm_nt(gradient_columns, (input_codes, input_scales),
+                                                        rhs_group_size=128, out_dtype=torch.bfloat16).float()
                 else:
                     grad_weight = deep_gemm_fp8_gemm_nt(gradient_columns, (input_codes, input_scales),
                                                        rhs_group_size=1, out_dtype=torch.float32)
             elif need_weight:
                 effective_input = dequantize_activation_fp8_e4m3(input_codes, input_scales, out_dtype=grad_output.dtype)
                 grad_weight = (grad_output.T @ effective_input).float()
-        return grad_input, grad_weight, None, None, None, None, None
+        return grad_input, grad_weight, None, None, None, None, None, None

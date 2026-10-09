@@ -64,6 +64,7 @@ class BitNetLlamaConfig:
     fused_mlp: bool = False
     fused_qkv: bool = False
     fp8_wgrad_splits: int = 0
+    fp8_wgrad_recipe: str = "1d1d"
     branch_norm: str = "none"
     value_residual: str = "none"
     local_attention_backend: str = ""
@@ -74,6 +75,10 @@ class BitNetLlamaConfig:
             raise ValueError("fp8_wgrad_splits must be 0 (DeepGEMM), 1, 2, 4, 8 or 16")
         if self.fp8_wgrad_splits and (self.linear_backend != "deepgemm" or self.fp8_backward != "full"):
             raise ValueError("split-K FP8 wgrad requires DeepGEMM with full FP8 backward")
+        if self.fp8_wgrad_recipe not in {"1d1d", "1d2d_bf16"}:
+            raise ValueError("fp8_wgrad_recipe must be 1d1d or 1d2d_bf16")
+        if self.fp8_wgrad_recipe != "1d1d" and (self.linear_backend != "deepgemm" or self.fp8_backward != "full" or self.fp8_wgrad_splits):
+            raise ValueError("the 1d2d_bf16 wgrad recipe requires DeepGEMM full FP8 backward without split-K")
         if self.fused_mlp and (not self.fused_pointwise or not self.fuse_projections or self.ffn_activation != "swiglu"):
             raise ValueError("fused_mlp requires fused pointwise, fused projections and SwiGLU")
         if self.fused_qkv and (not self.fused_pointwise or not self.fuse_projections):
@@ -181,9 +186,11 @@ class BitLinear(nn.Module):
     def __init__(self, in_features, out_features, *, eps=1e-6, weight_init="normal", alpha_group_size=128,
                  quantization_strength=1.0, quantize_activations=False, init_scale=1.0,
                  weight_scale_layout="rowwise", linear_backend="torch", fp8_backward="bf16", fp8_quantizer="torch", fp8_cache_weights=False,
-                 fp8_wgrad_splits=0, weight_mode="ternary"):
+                 fp8_wgrad_splits=0, fp8_wgrad_recipe="1d1d", weight_mode="ternary"):
         super().__init__()
         validate_fp8_options(fp8_backward, fp8_quantizer)
+        if fp8_wgrad_recipe not in {"1d1d", "1d2d_bf16"}:
+            raise ValueError("fp8_wgrad_recipe must be 1d1d or 1d2d_bf16")
         if weight_mode not in {"ternary", "dense"}:
             raise ValueError("weight_mode must be ternary or dense")
         if isinstance(fp8_wgrad_splits, bool) or not isinstance(fp8_wgrad_splits, int) or fp8_wgrad_splits not in {0, 1, 2, 4, 8, 16}:
@@ -210,6 +217,7 @@ class BitLinear(nn.Module):
         self.weight_scale_layout, self.linear_backend = weight_scale_layout, linear_backend
         self.fp8_backward, self.fp8_quantizer = fp8_backward, fp8_quantizer
         self.fp8_wgrad_splits = fp8_wgrad_splits
+        self.fp8_wgrad_recipe = fp8_wgrad_recipe
         self.fp8_cache_weights = fp8_cache_weights
         self.weight_mode = weight_mode
         self._fp8_weight_cache = None
@@ -268,7 +276,8 @@ class BitLinear(nn.Module):
             return deepgemm_bitlinear(values.to(torch.bfloat16), self.weight,
                                      backward_mode=self.fp8_backward, quantizer=self.fp8_quantizer,
                                      weight_operands=self._weight_operands(values),
-                                     wgrad_splits=self.fp8_wgrad_splits, weight_mode=self.weight_mode)
+                                     wgrad_splits=self.fp8_wgrad_splits, weight_mode=self.weight_mode,
+                                     wgrad_recipe=self.fp8_wgrad_recipe)
         if self.quantize_activations:
             values, _ = self.quantized_activation(values)
         return functional.linear(values, self.quantized_weight().to(values.dtype))
@@ -348,7 +357,7 @@ def make_linear(config, in_features, out_features, *, residual=False):
                      weight_scale_layout=config.weight_scale_layout, linear_backend=config.linear_backend,
                      fp8_backward=config.fp8_backward, fp8_quantizer=config.fp8_quantizer,
                      fp8_cache_weights=config.fp8_cache_weights, fp8_wgrad_splits=config.fp8_wgrad_splits,
-                     weight_mode=config.weight_mode)
+                     fp8_wgrad_recipe=config.fp8_wgrad_recipe, weight_mode=config.weight_mode)
 
 
 class BitNetAttention(nn.Module):

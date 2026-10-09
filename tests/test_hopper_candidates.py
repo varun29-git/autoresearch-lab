@@ -22,7 +22,9 @@ class CandidatePolicyTests(unittest.TestCase):
                        {"fused_mlp": True, "fuse_projections": False},
                        {"fused_mlp": True, "ffn_activation": "relu2"},
                        {"local_attention_backend": "cudnn"},
-                       {"local_attention_backend": "fa3", "attention_backend": "sdpa_reference", "dropout": 0.1}):
+                       {"local_attention_backend": "fa3", "attention_backend": "sdpa_reference", "dropout": 0.1},
+                       {"fp8_wgrad_recipe": "2d2d"},
+                       {"fp8_wgrad_recipe": "1d2d_bf16"}):  # requires deepgemm+full; tiny_config is torch backend
             with self.assertRaises(ValueError):
                 replace(base, **policy)
 
@@ -101,6 +103,38 @@ class HopperCandidateTests(unittest.TestCase):
             gb = torch.autograd.grad(reference, (hidden, weight), torch.ones((), device="cuda"))
             for a, b in zip(ga, gb):
                 self.assertLess(error_ratio(a, b), 3e-2)
+
+    def test_wgrad_1d2d_bf16_branch(self):
+        from terminus.fp8_kernels import quantize_blockwise_t
+        from terminus.model import BitLinear
+
+        torch.manual_seed(31)
+        x = torch.randn(3, 7, 256, device="cuda", dtype=torch.bfloat16)  # 21 rows: ragged
+        codes, scales = quantize_blockwise_t(x.reshape(21, 256))
+        self.assertEqual(codes.shape, (256, 128))
+        self.assertEqual(scales.shape, (2, 1))
+        self.assertEqual(torch.count_nonzero(codes[:, 21:]).item(), 0)
+        rebuilt = codes.float()[:, :21].T * scales.repeat_interleave(128, 0).T
+        self.assertLess(error_ratio(rebuilt, x.reshape(21, 256).float()), 0.2)
+
+        def build(recipe):
+            return BitLinear(256, 512, eps=1e-6, quantize_activations=True, weight_scale_layout="blockwise",
+                             linear_backend="deepgemm", fp8_backward="full", fp8_quantizer="triton_split",
+                             fp8_cache_weights=True, weight_mode="dense", fp8_wgrad_recipe=recipe).cuda()
+
+        reference, candidate = build("1d1d"), build("1d2d_bf16")
+        candidate.load_state_dict(reference.state_dict())
+        xa = x.clone().requires_grad_(True)
+        xb = x.clone().requires_grad_(True)
+        dy = torch.randn(3, 7, 512, device="cuda", dtype=torch.bfloat16)
+        out_a = reference(xa)
+        out_b = candidate(xb)
+        self.assertTrue(torch.equal(out_a, out_b))  # forward path unchanged
+        ga = torch.autograd.grad(out_a, (xa, reference.weight), dy)
+        gb = torch.autograd.grad(out_b, (xb, candidate.weight), dy)
+        self.assertTrue(torch.equal(ga[0], gb[0]))  # dgrad path unchanged
+        self.assertLess(error_ratio(gb[1], ga[1]), 5e-2)  # wgrad: blockwise scales + bf16 output
+        self.assertEqual(gb[1].dtype, torch.float32)
 
     def test_norm_grid_large_rows_matches_reference(self):
         for gain in ("scalar", "channel"):
