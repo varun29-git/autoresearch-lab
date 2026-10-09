@@ -2,9 +2,12 @@ import torch
 import triton
 import triton.language as tl
 
+from .fp8_kernels import _safe_scale, _scaled_values
+
 
 @triton.jit
-def _norm_forward(X, W, Y, R, WIDTH: tl.constexpr, GAIN: tl.constexpr, EPS: tl.constexpr, BLOCK: tl.constexpr):
+def _norm_forward(X, W, Y, R, CODES, CSCALES, WIDTH: tl.constexpr, GAIN: tl.constexpr, EPS: tl.constexpr,
+                  BLOCK: tl.constexpr, EMIT_FP8: tl.constexpr, SCALE_STRIDE: tl.constexpr):
     row = tl.program_id(0)
     col = tl.arange(0, BLOCK)
     x = tl.load(X + row * WIDTH + col, col < WIDTH, other=0).to(tl.float32)
@@ -13,8 +16,19 @@ def _norm_forward(X, W, Y, R, WIDTH: tl.constexpr, GAIN: tl.constexpr, EPS: tl.c
     if GAIN:
         w = tl.load(W + (col if GAIN == 2 else tl.full((BLOCK,), 0, tl.int32)), col < WIDTH, other=0).to(tl.float32)
         normalized *= w
-    tl.store(Y + row * WIDTH + col, normalized, col < WIDTH)
+    y = normalized.to(Y.dtype.element_ty)
+    tl.store(Y + row * WIDTH + col, y, col < WIDTH)
     tl.store(R + row, inverse)
+    if EMIT_FP8:
+        # Quantize the exact BF16-rounded output values, per 128-wide group —
+        # bit-identical to a separate rowwise quantize pass over Y.
+        y2 = tl.reshape(y.to(tl.float32), (BLOCK // 128, 128))
+        scales = _safe_scale(tl.max(tl.abs(y2), axis=1), 1e-5)
+        inverse_scales = tl.div_rn(1., scales)
+        codes = tl.reshape(_scaled_values(y2, scales[:, None], inverse_scales[:, None]).to(tl.float8e4nv), (BLOCK,))
+        tl.store(CODES + row * WIDTH + col, codes, col < WIDTH)
+        group = tl.arange(0, BLOCK // 128)
+        tl.store(CSCALES + row + group * SCALE_STRIDE, scales, group < WIDTH // 128)
 
 
 @triton.jit
@@ -41,15 +55,26 @@ def _norm_backward(DY, X, W, R, DX, DW, ROWS: tl.constexpr, WIDTH: tl.constexpr,
         tl.store(DW + program, tl.sum(dw, 0))
 
 
-def norm_forward(values, weight, eps):
+def norm_forward(values, weight, eps, *, emit_fp8=False):
     flat = values.contiguous().view(-1, values.shape[-1])
     rows, width = flat.shape
     output = torch.empty_like(flat)
     inverse = torch.empty(rows, device=values.device, dtype=torch.float32)
     gain = 0 if weight is None else (1 if weight.ndim == 0 else 2)
-    _norm_forward[(rows,)](flat, weight, output, inverse, width, gain, eps, triton.next_power_of_2(width),
-                           enable_fp_fusion=False)
-    return output, inverse, flat
+    codes = scales = None
+    scale_stride = 0
+    if emit_fp8:
+        if width % 128 or flat.dtype != torch.bfloat16:
+            raise ValueError("FP8 emission requires BF16 and 128-aligned width")
+        from .fp8_kernels import _scales
+
+        codes = torch.empty((rows, width), device=values.device, dtype=torch.float8_e4m3fn)
+        scales = _scales(rows, width // 128, values.device)
+        scale_stride = scales.stride(1)
+    _norm_forward[(rows,)](flat, weight, output, inverse, codes if emit_fp8 else flat,
+                           scales if emit_fp8 else flat, width, gain, eps, triton.next_power_of_2(width),
+                           emit_fp8, scale_stride, enable_fp_fusion=False)
+    return output, inverse, flat, (codes, scales) if emit_fp8 else None
 
 
 def norm_backward(gradient, values, weight, inverse, *, programs_override=None):

@@ -190,7 +190,7 @@ def validate_wgrad_recipe(wgrad_recipe):
 
 
 def deepgemm_bitlinear(values, weight, *, backward_mode="bf16", quantizer="torch", weight_operands=None,
-                       wgrad_splits=0, weight_mode="ternary", wgrad_recipe="1d1d"):
+                       wgrad_splits=0, weight_mode="ternary", wgrad_recipe="1d1d", activation_rows=None):
     validate_fp8_options(backward_mode, quantizer)
     validate_wgrad_recipe(wgrad_recipe)
     if weight_mode not in {"ternary", "dense"}:
@@ -201,16 +201,21 @@ def deepgemm_bitlinear(values, weight, *, backward_mode="bf16", quantizer="torch
         raise ValueError("the 1d2d_bf16 wgrad recipe requires full FP8 backward without split-K")
     if values.dtype != torch.bfloat16 or weight.dtype != torch.float32:
         raise ValueError("DeepGEMM requires BF16 activations and FP32 latent weights")
+    if activation_rows is not None:
+        flat_rows, flat_width = values.reshape(-1, values.shape[-1]).shape
+        codes, scales = activation_rows
+        if codes.shape != (flat_rows, flat_width) or scales.shape != (flat_rows, flat_width // 128):
+            raise ValueError("activation sidecar shape mismatch")
     if not torch.is_grad_enabled() or not (values.requires_grad or weight.requires_grad):
         from .kernels import deep_gemm_fp8_gemm_nt
 
-        inputs, _ = quantize_fp8_directions(values.reshape(-1, values.shape[-1]), backend=quantizer)
+        inputs = activation_rows or quantize_fp8_directions(values.reshape(-1, values.shape[-1]), backend=quantizer)[0]
         weights, _ = weight_operands or quantize_weight_directions(
             weight, weight_mode=weight_mode, backend=quantizer)
         output = deep_gemm_fp8_gemm_nt(inputs, weights)
         return output.reshape(*values.shape[:-1], weight.shape[0])
     return DeepGEMMBitLinearFunction.apply(values, weight, backward_mode, quantizer, weight_operands,
-                                           wgrad_splits, weight_mode, wgrad_recipe)
+                                           wgrad_splits, weight_mode, wgrad_recipe, activation_rows)
 
 
 class DeepGEMMBitLinearFunction(torch.autograd.Function):
@@ -218,7 +223,7 @@ class DeepGEMMBitLinearFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, values, weight, backward_mode="bf16", quantizer="torch", weight_operands=None,
-                wgrad_splits=0, weight_mode="ternary", wgrad_recipe="1d1d"):
+                wgrad_splits=0, weight_mode="ternary", wgrad_recipe="1d1d", activation_rows=None):
         from .kernels import deep_gemm_fp8_gemm_nt
 
         validate_fp8_options(backward_mode, quantizer)
@@ -236,8 +241,14 @@ class DeepGEMMBitLinearFunction(torch.autograd.Function):
         fp8_input_gradient = backward_mode != "bf16"
         fp8_weight_gradient = backward_mode == "full"
         blockwise_wgrad = wgrad_recipe == "1d2d_bf16" and need_weight and fp8_weight_gradient
-        inputs, transposed_inputs = quantize_fp8_directions(
-            flat, transposed=need_weight and fp8_weight_gradient and not blockwise_wgrad, backend=quantizer)
+        if activation_rows is not None:
+            inputs = activation_rows
+            transposed_inputs = None
+            if need_weight and fp8_weight_gradient and not blockwise_wgrad:
+                _, transposed_inputs = quantize_fp8_directions(flat, rowwise=False, transposed=True, backend=quantizer)
+        else:
+            inputs, transposed_inputs = quantize_fp8_directions(
+                flat, transposed=need_weight and fp8_weight_gradient and not blockwise_wgrad, backend=quantizer)
         if blockwise_wgrad:
             from .fp8_kernels import quantize_blockwise_t
 
@@ -294,4 +305,4 @@ class DeepGEMMBitLinearFunction(torch.autograd.Function):
             elif need_weight:
                 effective_input = dequantize_activation_fp8_e4m3(input_codes, input_scales, out_dtype=grad_output.dtype)
                 grad_weight = (grad_output.T @ effective_input).float()
-        return grad_input, grad_weight, None, None, None, None, None, None
+        return grad_input, grad_weight, None, None, None, None, None, None, None

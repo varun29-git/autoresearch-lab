@@ -68,6 +68,7 @@ class BitNetLlamaConfig:
     branch_norm: str = "none"
     value_residual: str = "none"
     local_attention_backend: str = ""
+    fused_fp8_producers: bool = False
 
     def __post_init__(self):
         validate_fp8_options(self.fp8_backward, self.fp8_quantizer)
@@ -89,12 +90,14 @@ class BitNetLlamaConfig:
             raise ValueError("unknown linear cross entropy backend")
         if self.loss_backend == "triton_fp8" and not self.quantize_activations:
             raise ValueError("the FP8 head branch requires the FP8 activation recipe")
+        if self.fused_fp8_producers and not (self.fused_pointwise and self.linear_backend == "deepgemm" and self.quantize_activations):
+            raise ValueError("producer FP8 fusion requires fused pointwise kernels and the DeepGEMM FP8 recipe")
         if self.residual_dtype not in {"fp32", "bf16"}:
             raise ValueError("residual_dtype must be fp32 or bf16")
         if self.embedding_dim is not None and (isinstance(self.embedding_dim, bool)
                 or not isinstance(self.embedding_dim, int) or not 0 < self.embedding_dim <= self.dim):
             raise ValueError("embedding_dim must be a positive integer no larger than model width")
-        for name in ("use_subln", "use_embedding_projection", "quantize_activations", "gradient_checkpointing", "fp8_cache_weights", "fused_pointwise", "fuse_projections", "fused_mlp", "fused_qkv"):
+        for name in ("use_subln", "use_embedding_projection", "quantize_activations", "gradient_checkpointing", "fp8_cache_weights", "fused_pointwise", "fuse_projections", "fused_mlp", "fused_qkv", "fused_fp8_producers"):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"{name} must be a boolean")
         for name in ("use_attention_subln", "use_ffn_subln"):
@@ -271,13 +274,13 @@ class BitLinear(nn.Module):
             self._fp8_weight_cache = (identity, operands)
         return self._fp8_weight_cache[1]
 
-    def forward(self, values):
+    def forward(self, values, activation_rows=None):
         if self.linear_backend == "deepgemm":
             return deepgemm_bitlinear(values.to(torch.bfloat16), self.weight,
                                      backward_mode=self.fp8_backward, quantizer=self.fp8_quantizer,
                                      weight_operands=self._weight_operands(values),
                                      wgrad_splits=self.fp8_wgrad_splits, weight_mode=self.weight_mode,
-                                     wgrad_recipe=self.fp8_wgrad_recipe)
+                                     wgrad_recipe=self.fp8_wgrad_recipe, activation_rows=activation_rows)
         if self.quantize_activations:
             values, _ = self.quantized_activation(values)
         return functional.linear(values, self.quantized_weight().to(values.dtype))
@@ -381,13 +384,13 @@ class BitNetAttention(nn.Module):
         self.k_norm = RMSNorm(config.head_dim, config.rms_norm_eps, gain=norm_gain, fused=config.fused_pointwise) if config.qk_norm_mode != "none" else nn.Identity()
         self.attn_sub_norm = RMSNorm(config.dim, config.rms_norm_eps, gain="scalar", fused=config.fused_pointwise) if config.attention_subln_enabled else nn.Identity()
 
-    def forward(self, hidden, cos, sin, attention_mask=None, cache=None, *, value_source=None):
+    def forward(self, hidden, cos, sin, attention_mask=None, cache=None, *, value_source=None, hidden_fp8=None):
         batch, length, _ = hidden.shape
         if self.config.fused_qkv:
             from .pointwise import packed_qkv_rope
 
             learned_gains = self.config.qk_norm_mode == "learned_rms"
-            query, key, value = packed_qkv_rope(self.qkv_proj(hidden), cos, sin,
+            query, key, value = packed_qkv_rope(self.qkv_proj(hidden, activation_rows=hidden_fp8), cos, sin,
                 self.config.n_heads, self.config.n_kv_heads, self.config.rms_norm_eps,
                 normalize_qk=self.config.qk_norm_mode != "none",
                 q_gain=self.q_norm.weight if learned_gains else None,
@@ -395,7 +398,7 @@ class BitNetAttention(nn.Module):
         else:
             if self.config.fuse_projections:
                 kv_width = self.config.n_kv_heads * self.config.head_dim
-                query, key, value = self.qkv_proj(hidden).split((self.config.dim, kv_width, kv_width), dim=-1)
+                query, key, value = self.qkv_proj(hidden, activation_rows=hidden_fp8).split((self.config.dim, kv_width, kv_width), dim=-1)
             else:
                 query, key, value = self.q_proj(hidden), self.k_proj(hidden), self.v_proj(hidden)
             query = query.view(batch, length, self.config.n_heads, self.config.head_dim).transpose(1, 2)
@@ -445,6 +448,7 @@ class BitNetFeedForward(nn.Module):
         self.ffn_activation = config.ffn_activation
         self.fused_pointwise = config.fused_pointwise
         self.fused_mlp = config.fused_mlp
+        self.emit_fp8 = config.fused_fp8_producers and config.linear_backend == "deepgemm"
         self.fuse_projections = config.fuse_projections and self.ffn_activation == "swiglu"
         if self.fuse_projections:
             self.gate_up_proj = make_linear(config, config.dim, 2 * config.ffn_dim)
@@ -455,13 +459,19 @@ class BitNetFeedForward(nn.Module):
         self.down_proj = make_linear(config, config.ffn_dim, config.dim, residual=True)
         self.ffn_sub_norm = RMSNorm(config.ffn_dim, config.rms_norm_eps, gain="scalar", fused=config.fused_pointwise) if config.ffn_subln_enabled else nn.Identity()
 
-    def forward(self, hidden):
+    def forward(self, hidden, hidden_fp8=None):
         if self.fused_mlp:
-            from .pointwise import packed_swiglu_norm
-
             weight = self.ffn_sub_norm.weight if isinstance(self.ffn_sub_norm, RMSNorm) else None
             eps = self.ffn_sub_norm.eps if weight is not None else 0.
-            return self.down_proj(packed_swiglu_norm(self.gate_up_proj(hidden), weight, eps))
+            gate_input = self.gate_up_proj(hidden, activation_rows=hidden_fp8)
+            if self.emit_fp8:
+                from .pointwise import packed_swiglu_norm_fp8
+
+                out, codes, scales = packed_swiglu_norm_fp8(gate_input, weight, eps)
+                return self.down_proj(out, activation_rows=(codes, scales))
+            from .pointwise import packed_swiglu_norm
+
+            return self.down_proj(packed_swiglu_norm(gate_input, weight, eps))
         if self.ffn_activation == "swiglu":
             gate, up = (self.gate_up_proj(hidden).chunk(2, dim=-1) if self.fuse_projections
                         else (self.gate_proj(hidden), self.up_proj(hidden)))
@@ -490,6 +500,16 @@ class BitNetBlock(nn.Module):
         self.ffn = BitNetFeedForward(config)
 
     def forward(self, hidden, cos, sin, attention_mask=None, cache=None, *, value_source=None):
+        fuse_fp8 = (self.config.fused_fp8_producers and hidden.is_cuda and cache is None
+                    and self.attn.qkv_proj.linear_backend == "deepgemm")
+        if fuse_fp8:
+            from .pointwise import rms_norm_fp8
+
+            normed, codes, scales = rms_norm_fp8(hidden, self.attn_norm.weight, self.attn_norm.eps)
+            hidden = hidden + self.attn_out_norm(self.attn(normed, cos, sin, attention_mask, cache,
+                                                           value_source=value_source, hidden_fp8=(codes, scales)))
+            normed, codes, scales = rms_norm_fp8(hidden, self.ffn_norm.weight, self.ffn_norm.eps)
+            return hidden + self.ffn_out_norm(self.ffn(normed, hidden_fp8=(codes, scales)))
         hidden = hidden + self.attn_out_norm(self.attn(self.attn_norm(hidden), cos, sin, attention_mask, cache,
                                                        value_source=value_source))
         return hidden + self.ffn_out_norm(self.ffn(self.ffn_norm(hidden)))

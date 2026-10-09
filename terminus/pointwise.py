@@ -7,10 +7,37 @@ class _RMSNorm(torch.autograd.Function):
     def forward(ctx, values, weight, eps):
         from .pointwise_kernels import norm_forward
 
-        output, inverse, flat = norm_forward(values, weight, eps)
+        output, inverse, flat, _ = norm_forward(values, weight, eps)
         ctx.save_for_backward(flat, weight, inverse)
         ctx.shape = values.shape
         return output.reshape(values.shape)
+
+
+class _RMSNormFP8(torch.autograd.Function):
+    """Fused RMSNorm that also emits rowwise FP8 codes of its BF16 output."""
+
+    @staticmethod
+    def forward(ctx, values, weight, eps):
+        from .pointwise_kernels import norm_forward
+
+        output, inverse, flat, fp8 = norm_forward(values, weight, eps, emit_fp8=True)
+        ctx.save_for_backward(flat, weight, inverse)
+        ctx.shape = values.shape
+        return output.reshape(values.shape), fp8[0], fp8[1]
+
+    @staticmethod
+    def backward(ctx, gradient, d_codes, d_scales):
+        from .pointwise_kernels import norm_backward
+
+        values, weight, inverse = ctx.saved_tensors
+        dx, dw = norm_backward(gradient, values, weight, inverse)
+        return dx.reshape(ctx.shape), dw, None
+
+
+def rms_norm_fp8(values, weight, eps):
+    if not values.is_cuda:
+        raise RuntimeError("fused RMSNorm requires CUDA")
+    return _RMSNormFP8.apply(values, weight, eps)
 
     @staticmethod
     def backward(ctx, gradient):
@@ -53,7 +80,7 @@ class _PackedSwiGLUNorm(torch.autograd.Function):
     def forward(ctx, packed, weight, eps):
         from .mlp_kernels import packed_forward
 
-        output, inverse = packed_forward(packed, weight, eps)
+        output, inverse, _ = packed_forward(packed, weight, eps)
         ctx.save_for_backward(packed, weight, inverse)
         return output
 
@@ -64,6 +91,35 @@ class _PackedSwiGLUNorm(torch.autograd.Function):
 
         dx, dw = packed_backward(gradient, *ctx.saved_tensors)
         return dx, dw, None
+
+
+class _PackedSwiGLUNormFP8(torch.autograd.Function):
+    """Packed SwiGLU(+SubLN) that also emits rowwise FP8 codes of its BF16 output."""
+
+    @staticmethod
+    def forward(ctx, packed, weight, eps):
+        from .mlp_kernels import packed_forward
+
+        output, inverse, fp8 = packed_forward(packed, weight, eps, emit_fp8=True)
+        ctx.save_for_backward(packed, weight, inverse)
+        return output, fp8[0], fp8[1]
+
+    @staticmethod
+    @torch.autograd.function.once_differentiable
+    def backward(ctx, gradient, d_codes, d_scales):
+        from .mlp_kernels import packed_backward
+
+        dx, dw = packed_backward(gradient, *ctx.saved_tensors)
+        return dx, dw, None
+
+
+def packed_swiglu_norm_fp8(packed, weight=None, eps=1e-5):
+    """packed_swiglu_norm plus rowwise FP8 sidecar of the BF16 output."""
+    if not packed.is_cuda or not packed.is_contiguous() or packed.ndim < 2 or packed.shape[-1] % 2:
+        raise ValueError("packed SwiGLU needs contiguous CUDA [..., 2 * width] inputs")
+    if packed.numel() == 0 or packed.dtype != torch.bfloat16:
+        raise ValueError("FP8 sidecar emission requires the BF16 packed path")
+    return _PackedSwiGLUNormFP8.apply(packed, weight, eps)
 
 
 def packed_swiglu_norm(packed, weight=None, eps=1e-5):

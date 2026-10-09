@@ -24,7 +24,8 @@ class CandidatePolicyTests(unittest.TestCase):
                        {"local_attention_backend": "cudnn"},
                        {"local_attention_backend": "fa3", "attention_backend": "sdpa_reference", "dropout": 0.1},
                        {"fp8_wgrad_recipe": "2d2d"},
-                       {"fp8_wgrad_recipe": "1d2d_bf16"}):  # requires deepgemm+full; tiny_config is torch backend
+                       {"fp8_wgrad_recipe": "1d2d_bf16"},  # requires deepgemm+full; tiny_config is torch backend
+                       {"fused_fp8_producers": True}):  # requires fused_pointwise + deepgemm
             with self.assertRaises(ValueError):
                 replace(base, **policy)
 
@@ -135,6 +136,35 @@ class HopperCandidateTests(unittest.TestCase):
         self.assertTrue(torch.equal(ga[0], gb[0]))  # dgrad path unchanged
         self.assertLess(error_ratio(gb[1], ga[1]), 5e-2)  # wgrad: blockwise scales + bf16 output
         self.assertEqual(gb[1].dtype, torch.float32)
+
+    def test_fused_fp8_producer_emission_bitexact(self):
+        from terminus.mlp_kernels import packed_forward
+        from terminus.pointwise_kernels import norm_forward
+
+        torch.manual_seed(11)
+        x = torch.randn(517, 2304, device="cuda", dtype=torch.bfloat16)
+        w = torch.randn(2304, device="cuda", dtype=torch.float32)
+        out, _, _, fp8 = norm_forward(x, w, 1e-5, emit_fp8=True)
+        ref_codes, ref_scales = quantize_fp8_directions(out, rowwise=True, transposed=False, backend="triton_split")
+        self.assertTrue(torch.equal(fp8[0].float(), ref_codes.float()))
+        self.assertTrue(torch.equal(fp8[1], ref_scales))
+
+        packed = torch.randn(517, 2 * 5760, device="cuda", dtype=torch.bfloat16)
+        gain = torch.tensor(0.71, device="cuda", dtype=torch.float32)
+        out2, _, fp82 = packed_forward(packed, gain, 1e-5, emit_fp8=True)
+        ref2, _ = quantize_fp8_directions(out2, rowwise=True, transposed=False, backend="triton_split")
+        self.assertTrue(torch.equal(fp82[0].float(), ref2.float()))
+        self.assertTrue(torch.equal(fp82[1], ref2))
+
+        # End-to-end: sidecar-consuming linear must be bitwise-identical forward.
+        from terminus.model import BitLinear
+
+        lin = BitLinear(2304, 512, eps=1e-6, quantize_activations=True, weight_scale_layout="blockwise",
+                        linear_backend="deepgemm", fp8_backward="full", fp8_quantizer="triton_split",
+                        fp8_cache_weights=True, weight_mode="dense").cuda()
+        direct = lin(x)
+        sided = lin(x, activation_rows=(ref_codes, ref_scales))
+        self.assertTrue(torch.equal(direct, sided))
 
     def test_norm_grid_large_rows_matches_reference(self):
         for gain in ("scalar", "channel"):
