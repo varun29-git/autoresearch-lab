@@ -210,7 +210,7 @@ def _quantize_blockwise_t_kernel(values, codes, scales,
     valid = (r[:, None] < rows) & (c[None, :] < width)
     block = tl.load(values + r[:, None] * source_row_stride + c[None, :] * source_column_stride,
                     mask=valid, other=0).to(tl.float32)
-    scale = _safe_scale(tl.max(tl.max(tl.abs(block), axis=0), axis=1), EPS)
+    scale = _safe_scale(tl.max(tl.max(tl.abs(block), axis=1), axis=0), EPS)
     quotient = tl.div_rn(block, scale)
     finite = (tl.abs(block) < float("inf")) & (tl.abs(scale) < float("inf"))
     q = tl.where(finite, quotient, float("nan")).to(tl.float8e4nv)
