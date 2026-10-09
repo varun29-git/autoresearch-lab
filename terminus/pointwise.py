@@ -192,3 +192,29 @@ def residual_norms(x, u, g_o, g_i, eps):
     if not math.isfinite(eps) or eps <= 0:
         raise ValueError("normalization requires positive finite epsilon")
     return _ResidualNorms.apply(x, u, g_o, g_i, eps)
+
+
+class _ValueMix(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, v0, v1, lambdas):
+        from .pointwise_kernels import value_mix_forward
+
+        out, f0, f1 = value_mix_forward(v0, v1, lambdas)
+        ctx.save_for_backward(f0, f1, lambdas)
+        return out
+
+    @staticmethod
+    def backward(ctx, gradient):
+        from .pointwise_kernels import value_mix_backward
+
+        dv0, dv1, dl = value_mix_backward(gradient, *ctx.saved_tensors)
+        return dv0, dv1, dl
+
+
+def value_mix(v0, v1, lambdas):
+    """Fused V' = l0*V0 + l1*V1 with both coefficient gradients, eager roundings."""
+    if lambdas.numel() != 2 or lambdas.device != v0.device:
+        raise ValueError("value mix needs the two free coefficients on device")
+    if v0.dtype != torch.bfloat16 or v1.dtype != torch.bfloat16:
+        raise ValueError("value mix expects the BF16 value-stream contract")
+    return _ValueMix.apply(v0, v1, lambdas)

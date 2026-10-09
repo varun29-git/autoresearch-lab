@@ -391,7 +391,12 @@ class BitNetAttention(nn.Module):
                 query, key = apply_rotary(self.q_norm(query), cos, sin), apply_rotary(self.k_norm(key), cos, sin)
         if value_source is not None:
             # Mix only the new positions' values, before the cache window below.
-            value = self.value_lambda[0] * value_source + self.value_lambda[1] * value
+            if self.config.fused_pointwise and value.is_cuda:
+                from .pointwise import value_mix
+
+                value = value_mix(value_source, value, self.value_lambda)
+            else:
+                value = self.value_lambda[0] * value_source + self.value_lambda[1] * value
         if self.value_residual:
             # Exposed for BitNetLlama's cross-layer V1 plumbing; forward must keep
             # returning a plain tensor because the protected stability monitor

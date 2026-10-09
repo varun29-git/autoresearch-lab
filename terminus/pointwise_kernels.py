@@ -283,3 +283,65 @@ def residual_norms_backward(dz, da, u, a, g_o, g_i, r1, r2):
     dgo = reduced[:width].reshape(g_o.shape).to(g_o.dtype)
     dgi = reduced[width:].reshape(g_i.shape).to(g_i.dtype)
     return du.view_as(u), dx.view_as(a), dgo, dgi
+
+
+@triton.jit
+def _value_mix_forward(V0, V1, L, Y, N: tl.constexpr, BLOCK: tl.constexpr):
+    """v' = bf16(bf16(l0*v0) + bf16(l1*v1)) — the eager multiply/add roundings."""
+    i = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    mask = i < N
+    v0 = tl.load(V0 + i, mask, other=0.).to(tl.float32)
+    v1 = tl.load(V1 + i, mask, other=0.).to(tl.float32)
+    l0 = tl.load(L).to(tl.float32)
+    l1 = tl.load(L + 1).to(tl.float32)
+    t0 = (l0 * v0).to(V0.dtype.element_ty).to(tl.float32)
+    t1 = (l1 * v1).to(V0.dtype.element_ty).to(tl.float32)
+    tl.store(Y + i, t0 + t1, mask)
+
+
+@triton.jit
+def _value_mix_backward(G, V0, V1, L, DV0, DV1, DL, N: tl.constexpr,
+                        PROGRAMS: tl.constexpr, BLOCK: tl.constexpr):
+    """dv0 = bf16(g*l0), dv1 = bf16(g*l1); dl = sum_rows(bf16(g*v)) deterministically."""
+    program = tl.program_id(0)
+    l0 = tl.load(L).to(tl.float32)
+    l1 = tl.load(L + 1).to(tl.float32)
+    dl0 = 0.0
+    dl1 = 0.0
+    for start in range(program * BLOCK, N, PROGRAMS * BLOCK):
+        i = start + tl.arange(0, BLOCK)
+        mask = i < N
+        g = tl.load(G + i, mask, other=0.).to(tl.float32)
+        v0 = tl.load(V0 + i, mask, other=0.).to(tl.float32)
+        v1 = tl.load(V1 + i, mask, other=0.).to(tl.float32)
+        tl.store(DV0 + i, g * l0, mask)
+        tl.store(DV1 + i, g * l1, mask)
+        dl0 += tl.sum((g * v0).to(G.dtype.element_ty).to(tl.float32) * mask, 0)
+        dl1 += tl.sum((g * v1).to(G.dtype.element_ty).to(tl.float32) * mask, 0)
+    tl.store(DL + program * 2, dl0)
+    tl.store(DL + program * 2 + 1, dl1)
+
+
+def value_mix_forward(v0, v1, lambdas):
+    if v0.shape != v1.shape or not v0.is_cuda:
+        raise ValueError("value mix needs same-shape CUDA tensors")
+    f0, f1 = v0.contiguous(), v1.contiguous()
+    out = torch.empty_like(f0)
+    n = f0.numel()
+    _value_mix_forward[(triton.cdiv(n, 4096),)](f0, f1, lambdas, out, n, 4096,
+                                                num_warps=4, enable_fp_fusion=False)
+    return out, f0, f1
+
+
+def value_mix_backward(gradient, v0, v1, lambdas):
+    g = gradient.contiguous()
+    dv0 = torch.empty_like(v0)
+    dv1 = torch.empty_like(v1)
+    n = g.numel()
+    programs = min(triton.cdiv(n, 4096), 1024)
+    partial = torch.empty((programs, 2), device=g.device, dtype=torch.float32)
+    _value_mix_backward[(programs,)](g, v0, v1, lambdas, dv0, dv1, partial, n, programs, 4096,
+                                     num_warps=4, enable_fp_fusion=False)
+    # Reference rounds the reduced scalar gradient to BF16 before the FP32 parameter.
+    dl = partial.sum(0).to(torch.bfloat16).to(lambdas.dtype)
+    return dv0, dv1, dl
