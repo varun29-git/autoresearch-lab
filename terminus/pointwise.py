@@ -108,11 +108,12 @@ def qk_rope(values, cos, sin, eps):
 
 class _PackedQKVRoPE(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, packed, cos, sin, query_heads, kv_heads, eps, normalize_qk):
+    def forward(ctx, packed, cos, sin, query_heads, kv_heads, eps, normalize_qk, q_gain, k_gain):
         from .qkv_kernels import packed_qkv_forward
 
-        query, key, value, inverse = packed_qkv_forward(packed, cos, sin, query_heads, kv_heads, eps, normalize_qk)
-        ctx.save_for_backward(packed, cos, sin, inverse)
+        query, key, value, inverse = packed_qkv_forward(packed, cos, sin, query_heads, kv_heads, eps, normalize_qk,
+                                                        q_gain=q_gain, k_gain=k_gain)
+        ctx.save_for_backward(packed, cos, sin, inverse, q_gain, k_gain)
         ctx.heads = query_heads, kv_heads
         ctx.normalize_qk = normalize_qk
         return query, key, value
@@ -122,10 +123,11 @@ class _PackedQKVRoPE(torch.autograd.Function):
     def backward(ctx, dq, dk, dv):
         from .qkv_kernels import packed_qkv_backward
 
-        return packed_qkv_backward(dq, dk, dv, *ctx.saved_tensors, *ctx.heads, ctx.normalize_qk), None, None, None, None, None, None
+        dx, dq_gain, dk_gain = packed_qkv_backward(dq, dk, dv, *ctx.saved_tensors, *ctx.heads, ctx.normalize_qk)
+        return dx, None, None, None, None, None, None, dq_gain, dk_gain
 
 
-def packed_qkv_rope(packed, cos, sin, query_heads, kv_heads, eps, *, normalize_qk=True):
+def packed_qkv_rope(packed, cos, sin, query_heads, kv_heads, eps, *, normalize_qk=True, q_gain=None, k_gain=None):
     import math
 
     if not packed.is_cuda or packed.ndim != 3 or not packed.is_contiguous() or packed.numel() == 0:
@@ -136,6 +138,10 @@ def packed_qkv_rope(packed, cos, sin, query_heads, kv_heads, eps, *, normalize_q
         raise ValueError("invalid packed QKV head dimensions")
     if not isinstance(normalize_qk, bool):
         raise ValueError("normalize_qk must be boolean")
+    if (q_gain is None) != (k_gain is None):
+        raise ValueError("Q and K gains must arrive together")
+    if q_gain is not None and not normalize_qk:
+        raise ValueError("learned gains require Q/K normalization")
     if not math.isfinite(eps) or eps <= 0:
         raise ValueError("QKV normalization requires positive finite epsilon")
     dim = packed.shape[-1] // (query_heads + 2 * kv_heads)
@@ -143,4 +149,7 @@ def packed_qkv_rope(packed, cos, sin, query_heads, kv_heads, eps, *, normalize_q
         raise ValueError("packed QKV requires BF16/FP32 and head width 64, 128 or 256")
     if any(t.device != packed.device or t.shape != (1, 1, packed.shape[1], dim // 2) or not t.is_contiguous() for t in (cos, sin)):
         raise ValueError("RoPE tables must be contiguous and match sequence/head dimensions")
-    return _PackedQKVRoPE.apply(packed, cos, sin, query_heads, kv_heads, eps, normalize_qk)
+    if q_gain is not None:
+        if any(g.shape != (dim,) or not g.is_cuda or g.device != packed.device for g in (q_gain, k_gain)):
+            raise ValueError("learned Q/K gains must be CUDA channel vectors matching the head width")
+    return _PackedQKVRoPE.apply(packed, cos, sin, query_heads, kv_heads, eps, normalize_qk, q_gain, k_gain)
