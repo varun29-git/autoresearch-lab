@@ -24,7 +24,7 @@ from .protocol import ROOT, assert_clean_git, read_json
 
 # Campaign cap was 5 h; the human extended it by 1.5 h on 2026-10-09 for the
 # QuACK integration screen and follow-up proposal tests (same ledger).
-CAP_SECONDS = 5 * 3600 + 5400
+CAP_SECONDS = 5 * 3600 + 5400 + 5400  # second +1.5h extension 2026-10-09: wavefront + Megatron 1F1B tests
 SHUTDOWN_MARGIN_SECONDS = 120
 
 
