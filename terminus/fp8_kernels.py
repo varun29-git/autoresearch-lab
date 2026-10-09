@@ -135,6 +135,39 @@ def _quantize_dual_kernel(values, row_codes, row_scales, column_codes, column_sc
     tl.store(row_scales + row_indices + column_block * row_scale_stride, scale_rows, mask=row_indices < rows)
 
 
+@triton.jit
+def _quantize_dual_v2_kernel(values, row_codes, row_scales, column_codes, column_scales,
+                             rows: tl.constexpr, width: tl.constexpr,
+                             source_row_stride: tl.constexpr, source_column_stride: tl.constexpr,
+                             row_scale_stride: tl.constexpr, column_scale_stride: tl.constexpr,
+                             padded_rows: tl.constexpr, EPS: tl.constexpr):
+    # Single pass: hold the tile in BF16 (abs/max are exact in BF16), run the
+    # FP32 scale math identically to the reference, and stage the columnwise
+    # codes through shared memory so both stores are fully coalesced.
+    row_block = tl.program_id(0).to(tl.int64)
+    column_block = tl.program_id(1).to(tl.int64)
+    row_indices = row_block * 128 + tl.arange(0, 128)
+    column_indices = column_block * 128 + tl.arange(0, 128)
+    valid = (row_indices[:, None] < rows) & (column_indices[None, :] < width)
+    block = tl.load(values + row_indices[:, None] * source_row_stride + column_indices[None, :] * source_column_stride,
+                    mask=valid, other=0)
+    amplitude = tl.abs(block)
+    scale_rows = _safe_scale(tl.max(amplitude, axis=1).to(tl.float32), EPS)
+    scale_columns = _safe_scale(tl.max(amplitude, axis=0).to(tl.float32), EPS)
+    values32 = block.to(tl.float32)
+    inverse_rows = tl.div_rn(1., scale_rows)
+    quantized_rows = _scaled_values(values32, scale_rows[:, None], inverse_rows[:, None]).to(tl.float8e4nv)
+    tl.store(row_codes + row_indices[:, None] * width + column_indices[None, :], quantized_rows, mask=valid)
+    tl.store(row_scales + row_indices + column_block * row_scale_stride, scale_rows, mask=row_indices < rows)
+    inverse_columns = tl.div_rn(1., scale_columns)
+    quantized_columns = _scaled_values(values32, scale_columns[None, :], inverse_columns[None, :]).to(tl.float8e4nv)
+    transposed = tl.trans(quantized_columns)
+    tl.store(column_codes + column_indices[:, None] * padded_rows + row_indices[None, :], transposed,
+             mask=(column_indices[:, None] < width) & (row_indices[None, :] < padded_rows))
+    tl.store(column_scales + column_indices + row_block * column_scale_stride, scale_columns,
+             mask=column_indices < width)
+
+
 def _check_matrix(values, *, weight=False):
     if not values.is_cuda or torch.cuda.get_device_capability(values.device)[0] != 9:
         raise RuntimeError("fused ternary-FP8 kernels require Hopper SM90")
@@ -196,16 +229,19 @@ def quantize_directions(values, *, rowwise=True, transposed=False, eps=1e-5, sep
 
 
 @torch.no_grad()
-def quantize_dual(values, *, eps=1e-5, chunk=32, num_warps=8):
+def quantize_dual(values, *, eps=1e-5, chunk=32, num_warps=16, variant="single"):
     """Dual rowwise+columnwise activation FP8 quantization in one kernel launch.
 
     Bit-exact with two separate _quantize_directions_kernel passes (same scale
     math, same FMA residual rounding, same output layouts), minus one full HBM
-    read of the operand.
+    read of the operand. variant="single" holds the tile in BF16 with an smem
+    transpose; variant="twopass" re-reads the tile from L2 instead.
     """
     _check_matrix(values)
     if not math.isfinite(eps) or eps < 0:
         raise ValueError("invalid scale floor")
+    if variant not in {"single", "twopass"}:
+        raise ValueError("unknown dual-quantizer variant")
     if chunk <= 0 or 128 % chunk:
         raise ValueError("chunk must divide the 128-row group")
     rows, width = values.shape
@@ -214,11 +250,17 @@ def quantize_dual(values, *, eps=1e-5, chunk=32, num_warps=8):
                _scales(rows, width // 128, values.device))
     secondary = (torch.empty((width, padded_rows), device=values.device, dtype=torch.float8_e4m3fn),
                  _scales(width, padded_rows // 128, values.device))
-    _quantize_dual_kernel[(triton.cdiv(rows, 128), width // 128)](
-        values, primary[0], primary[1], secondary[0], secondary[1], rows, width,
-        values.stride(0), values.stride(1), primary[1].stride(1), secondary[1].stride(1),
-        padded_rows, eps, chunk, 128 // chunk,
-        num_warps=num_warps, enable_fp_fusion=False)
+    if variant == "single":
+        _quantize_dual_v2_kernel[(triton.cdiv(rows, 128), width // 128)](
+            values, primary[0], primary[1], secondary[0], secondary[1], rows, width,
+            values.stride(0), values.stride(1), primary[1].stride(1), secondary[1].stride(1),
+            padded_rows, eps, num_warps=num_warps, enable_fp_fusion=False)
+    else:
+        _quantize_dual_kernel[(triton.cdiv(rows, 128), width // 128)](
+            values, primary[0], primary[1], secondary[0], secondary[1], rows, width,
+            values.stride(0), values.stride(1), primary[1].stride(1), secondary[1].stride(1),
+            padded_rows, eps, chunk, 128 // chunk,
+            num_warps=num_warps, enable_fp_fusion=False)
     if rows != padded_rows:
         # Same Triton 3.4 transposed-store lane gap as _quantize_directions_kernel;
         # DeepGEMM requires zeroed padding.
