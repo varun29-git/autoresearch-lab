@@ -1,6 +1,6 @@
-# Honest 32-GPU transfer model for the dense stack-004 speed continuation
+# Archived 32-GPU transfer model (outside the five-hour single-GPU loop)
 
-This is a scenario calculation, **not a 32-GPU result**. The production objective is 1.5T minimum or 2T target valid tokens in 6,000 aggregate H100-hours across dense training and later QAT. Thirty-two GPUs give 187.5 wall hours at full allocation; more GPUs shorten wall time but do not create extra GPU-hours. The required mean per-GPU production rates before overhead are 69,444 and 92,593 tokens/s.
+This is archived production context, **not a 32-GPU result or a task for the five-hour single-GPU campaign**. The production objective is 1.5T minimum or 2T target valid tokens in 6,000 aggregate H100-hours across dense training and later QAT. Thirty-two GPUs give 187.5 wall hours at full allocation; more GPUs shorten wall time but do not create extra GPU-hours. The required mean per-GPU production rates before overhead are 69,444 and 92,593 tokens/s.
 
 ## Single-GPU evidence and its limits
 
@@ -35,4 +35,4 @@ The optimized mb4 candidate peaked at 55.5 GB allocated on the research NVL. The
 
 ## Required later measurements
 
-On the actual 32 GPUs, measure full dense update rate across all ranks at the chosen global batch, real sharded data throughput, NCCL payload/bucket overlap, slowest-rank time, numerical update equivalence, and checkpoint/restart cost. Then measure the separate ternary-QAT phase under the same accounting. Weight dense and QAT rates by their actual token fractions and include setup, evaluation and downtime before claiming that 6,000 GPU-hours can cover 1.5T or 2T. The five-hour one-GPU loop must keep improving the local rate and refresh this model from complete receipts; it cannot certify the production target alone.
+On the actual 32 GPUs, a later campaign must measure full dense update rate across all ranks at the chosen global batch, real sharded data throughput, NCCL payload/bucket overlap, slowest-rank time, numerical update equivalence, and checkpoint/restart cost. Then it must measure the separate ternary-QAT phase under the same accounting. Weight dense and QAT rates by their actual token fractions and include setup, evaluation and downtime before claiming that 6,000 GPU-hours can cover 1.5T or 2T. Do not refresh this model or run these measurements during the five-hour single-GPU loop.

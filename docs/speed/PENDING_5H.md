@@ -2,7 +2,7 @@
 
 Base candidate: `1e8c0a4` (E3 packed learned Q/K norm+RoPE, E4 fused value mix, E9 batched Muon), 25 layers and 1,500,456,496 parameters. The three paired 20-update runs averaged 40,996 tokens/s for the candidate and 36,723 for the incumbent. An archived line from the 80-update soak reports 41,075 tokens/s and 55.5 GB peak allocated; its full `block.json` was not copied locally. Use the complete paired receipts as the auditable baseline until a new complete sustained receipt is saved.
 
-At 524,288 valid tokens/update, 41,075 tokens/s means 12.76 s/update. The no-overhead minimum 1.5T rate requires 7.55 s/update, about **5.21 s less**; 2T requires 5.66 s/update, about **7.10 s less**. At 32 accumulation microsteps those gaps are roughly 163 and 222 ms/microstep. Production overhead and QAT make the required dense headroom larger. Small pointwise fusions alone cannot close this.
+At 524,288 valid tokens/update, 41,075 tokens/s means 12.76 s/update. The objective is to reduce that **complete-update** time as far as the single H100 and the fixed model permit. Derive the current achievable bound from measured FLOPs, bytes, occupancy and exposed stalls; there is no preselected throughput number at which this loop is done. Small pointwise fusions should be ranked by the milliseconds they can actually remove.
 
 The previous instrumented diagnostic suggested the following **nonadditive** gaps, per 16,384-token microstep. Instrumentation includes launch gaps and did not match raw block time, so remeasure before committing to a long kernel project:
 
@@ -23,7 +23,7 @@ These floors omit some real costs, and the gaps cannot simply be added. Attack w
 | ID | State after the first campaign | Next falsifiable experiment | Priority |
 | --- | --- | --- | --- |
 | S0 cost map | Done, but diagnostic timings disagree with raw block time | One brief exact-shape event/CUDA trace for the current candidate; reconcile clocks, power, GEMM shapes and instrumented overhead | P0, brief |
-| E1 tensor ownership/rematerialization | Only mb2/4/8 sweep done | Storage-ID lifetime map for V₁ and packed MLP inputs; free or rematerialize only if it enables a faster tile/grouped-wgrad schedule under 74 GB | P1 |
+| E1 tensor ownership/rematerialization | Only mb2/4/8 sweep done | Storage-ID lifetime map for V₁ and packed MLP inputs; free or rematerialize only if it enables a faster tile/grouped-wgrad schedule within measured H100 NVL usable memory | P1 |
 | E2 residual + Peri-LN fusion | Implemented and rejected when gain reduction erased the saving | Revisit only with a new reduction/producer-consumer design and a whole-update upper bound | P2 |
 | E3 packed learned Q/K + RoPE | Implemented and kept | Further QKV gradient/layout work only if new profile shows exposed time; preserve shared gain reductions | P2 |
 | E4 value residual | First fused value-mix kernel kept | Fuse V₀/Vl mixing into attention V-tile loads, including exact dV₀ fan-in and coefficient gradients; compare with materialized mix | P1 |
@@ -31,11 +31,11 @@ These floors omit some real costs, and the gaps cannot simply be added. Attack w
 | E6 shape-specific GEMM | Only split-K=4/8 toggles tried; both regressed | Tune DeepGEMM/CUTLASS/Triton dispatch for actual M/N/K of forward, dgrad and especially wgrad; isolate tile waste and launch/scale cost | P0 |
 | E7 grouped/deferred wgrad | Untested | Bound memory for 2–4 accumulation microsteps; issue one larger exact wgrad from preserved FP8 operands while dgrad runs normally; compare gradients and update | P0 |
 | E8 exact vocabulary loss | Loss chunk 2048/8192 toggles only | Measure head GEMM vs logits/softmax traffic; prototype exact tiled online-LSE loss with tied-head and embedding gradients | P1 |
-| E9 Muon/Adam | Implemented; one-GPU speed was a wash | Keep parity evidence; measure benefit only at the production-local accumulation profile, not as a claimed single-GPU win | P2/later |
+| E9 Muon/Adam | Implemented; one-GPU speed was a wash | Keep parity evidence; revisit only if a new one-GPU profile shows an exposed optimizer tail | P2 |
 | E10 compile/graphs | Naive `cuda_graphs=true` regressed | Selective compilation or graph capture only if a fresh trace shows host gaps; preserve changing weights/data/LR and finite checks | P2 |
-| E11 data/checkpoint | Data `next()` ~0.7 ms/update; checkpoint not measured | Defer input tuning; later measure production checkpoint and asynchronous archival costs against paid GPU-hours | P2/later |
+| E11 data/checkpoint | Data `next()` ~0.7 ms/update; checkpoint not in timed S0 | Defer unless this one-GPU run shows a larger input stall; keep archival time in billed-hour accounting | P2 |
 | E12 hybrid attention | Untested | Count issued vs valid tiles for 20 local-window and 5 global layers; specialize exact mask/FA3 schedule and compare forward **and backward** | P0 |
-| E13 distributed transfer | Analytical scenario only; contains stale anchors | Correct from sustained receipt; later test NCCL payload, bucket readiness, rank-sharded input and actual 32-GPU efficiency | P1 model, later hardware |
+| E13 distributed transfer | Analytical scenario only; contains stale anchors | Outside this single-GPU campaign; spend no research GPU time on it | Later |
 | E14 dependency-aware overlap | Untested | Trace resource and gradient readiness; overlap independent microbatch, wgrad or optimizer groups only with correct final clip/update ordering | P1 |
 | E15 joint tensor schedule | Untested | Search small legal combinations of saved activations, FP8 layouts, grouped wgrad and microbatch under measured memory limit; GPU-test only best few | P1 |
 | E16 persistent producer/consumer fusion | Untested | Prototype one exact gate/up → SwiGLU → FP8 pack → down or GEMM → norm/residual path after byte/time ceiling; require full-update win | P1 |
@@ -53,4 +53,4 @@ The table is not an exhaustive idea list. For each new idea, first write a concr
 - Stream the tied vocabulary projection through online log-sum-exp and exact FP32 gradient accumulation, or develop a WGMMA/TMA pipeline that joins producer epilogues to their real consumers without inventing partial RMSNorm reductions.
 - Search the actual Hopper tile and warp-group configurations for each fixed model shape, with a roofline/occupancy bound and a full-update A/B. A library default is a starting candidate, not a law of physics.
 
-A novel numerical or optimizer idea is allowed as a separately labeled research branch only if the 25-layer model, unique-token budget and matched-token quality remain credible. Never count a precision shortcut, skipped gradient, changed objective or untrained branch as a speed win. If the best exact ideas cannot plausibly recover the required 5.21 s/update, escalate the numerical branch early enough to test it; do not spend five hours polishing 1% changes.
+A novel numerical or optimizer idea is allowed as a separately labeled research branch only if the 25-layer model, unique-token accounting and matched-token quality remain credible. Never count a precision shortcut, skipped gradient, changed objective or untrained branch as a speed win. If exact ideas plateau against the measured single-GPU hardware bound, test a promising numerical branch early enough to establish both speed and quality; do not spend five hours polishing 1% changes while larger exposed costs remain.

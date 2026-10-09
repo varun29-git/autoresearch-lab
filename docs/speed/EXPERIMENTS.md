@@ -1,10 +1,10 @@
 # Experiment atlas: preserve the model, change its execution
 
-These are **hypotheses**, not a required queue or a reason to keep the H100 running while reading. The current five-hour run is **dense-only**; QAT-specific ideas below are reserved for a later campaign. Start with the short full-update baseline in [speed_program.md](../../speed_program.md). Class E preserves the mathematical computation/optimizer and the frozen precision recipe; class N changes numerical representation and needs a later quality comparison. Sources are in [SOURCES.md](SOURCES.md); all repository observations below refer to the winner commit.
+These are **hypotheses**, not a required queue or a reason to keep the H100 running while reading. For the active five-hour campaign use [PENDING_5H.md](PENDING_5H.md) to select **single-GPU dense-throughput** work. Distributed E13 and QAT N3 are outside this campaign; production-budget language below is historical context. Start with the short full-update baseline in [speed_program.md](../../speed_program.md). Class E preserves the mathematical computation/optimizer and the frozen precision recipe; class N changes numerical representation and needs a matched-token quality comparison. Sources are in [SOURCES.md](SOURCES.md); all repository observations below refer to the winner commit.
 
 ## S0 — Establish the cost map and prove the instruments
 
-**First question:** which part of the full update explains the 800B projection? Time a few real updates at the target width/depth/context and record memory. Use one short profiler capture only if the bottleneck is unclear. More detailed tensor, kernel and input-path analysis should follow a measured question. The old 200M speed does not predict the 1.5B speed.
+**First question:** which part of the current one-GPU full update consumes the most exposed time? Time a few real updates at the fixed width/depth/context and record memory. Use one short profiler capture only if the bottleneck is unclear. More detailed tensor, kernel and input-path analysis should follow a measured question. The old 200M speed does not predict the 1.5B speed.
 
 ## E1 — Tensor ownership and selective rematerialization
 
