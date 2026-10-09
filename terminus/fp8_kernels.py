@@ -219,6 +219,10 @@ def quantize_dual(values, *, eps=1e-5, chunk=32, num_warps=8):
         values.stride(0), values.stride(1), primary[1].stride(1), secondary[1].stride(1),
         padded_rows, eps, chunk, 128 // chunk,
         num_warps=num_warps, enable_fp_fusion=False)
+    if rows != padded_rows:
+        # Same Triton 3.4 transposed-store lane gap as _quantize_directions_kernel;
+        # DeepGEMM requires zeroed padding.
+        secondary[0][:, rows:].zero_()
     return primary, secondary
 
 
