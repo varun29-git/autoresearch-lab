@@ -34,6 +34,9 @@ class FakeAzure:
 
 
 class SpeedSessionTests(unittest.TestCase):
+    def test_campaign_cap_is_five_cumulative_vm_hours(self):
+        self.assertEqual(CAP_SECONDS, 5 * 3600)
+
     def test_documented_command_order_parses(self):
         parser = argument_parser()
         command = parser.parse_args(("exec", "--config", "/tmp/config.json", "--",

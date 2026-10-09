@@ -1,6 +1,6 @@
 """One authorized, continuous Azure H100 speed-research session.
 
-Kimi owns experiment selection. This small controller owns the three GPU-hour
+Kimi owns experiment selection. This small controller owns the five GPU-hour
 allocation: it starts the VM once, leaves it on between experiments, and puts
 an independent cutoff timer on the VM. Records stay on the persistent disk.
 Nothing in this module starts a VM until ``open`` is explicitly invoked.
@@ -22,7 +22,7 @@ from .azure_cycle import (SAFE_NAME, SAFE_REMOTE_PATH, append_event, command,
                           wait_for_ssh)
 from .protocol import ROOT, assert_clean_git, read_json
 
-CAP_SECONDS = 3 * 3600
+CAP_SECONDS = 5 * 3600
 SHUTDOWN_MARGIN_SECONDS = 120
 
 
@@ -112,7 +112,7 @@ def open_session(settings: dict, *, run=command, now=time.time,
     if state["active_session_id"] or state["vm_power_state"] != "PowerState/deallocated":
         raise RuntimeError("the research VM is already allocated or running")
     if state["remaining_seconds"] <= SHUTDOWN_MARGIN_SECONDS + 300:
-        raise RuntimeError("less than one useful short experiment remains in the three-hour cap")
+        raise RuntimeError("less than one useful short experiment remains in the five-hour cap")
     session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + secrets.token_hex(3)
     path = log_path(settings)
     requested_at = now()
