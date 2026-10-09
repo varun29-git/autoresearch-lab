@@ -105,6 +105,30 @@ class HopperCandidateTests(unittest.TestCase):
             gb = torch.autograd.grad(expected[2].sum(), packed)[0]
             torch.testing.assert_close(ga, gb, rtol=0, atol=0)
 
+    def test_fused_residual_norms_match_reference_loop(self):
+        from terminus.pointwise import residual_norms
+
+        torch.manual_seed(733)
+        for rows, width in ((3, 128), (65, 2304)):
+            x = torch.randn(rows, width, device="cuda", dtype=torch.bfloat16).requires_grad_()
+            u = torch.randn(rows, width, device="cuda", dtype=torch.bfloat16).requires_grad_()
+            go = torch.nn.Parameter(torch.linspace(.7, 1.4, width, device="cuda"))
+            gi = torch.nn.Parameter(torch.linspace(1.3, .8, width, device="cuda"))
+            a, z = residual_norms(x, u, go, gi, 1e-5)
+            # Reference: the separate fused RMSNorm kernels + eager residual add.
+            no = RMSNorm(width, gain="channel", fused=True).cuda(); no.weight = torch.nn.Parameter(go.detach().clone())
+            ni = RMSNorm(width, gain="channel", fused=True).cuda(); ni.weight = torch.nn.Parameter(gi.detach().clone())
+            a_ref = x + no(u)
+            z_ref = ni(a_ref)
+            torch.testing.assert_close(a, a_ref, rtol=0, atol=0)
+            torch.testing.assert_close(z, z_ref, rtol=0, atol=0)
+            da = torch.randn_like(a)
+            dz = torch.randn_like(z)
+            ga = torch.autograd.grad([a, z], [x, u, go, gi], [da, dz], retain_graph=True)
+            gb = torch.autograd.grad([a_ref, z_ref], [x, u, no.weight, ni.weight], [da, dz])
+            for actual, expected in zip(ga, gb):
+                self.assertLess(error_ratio(actual, expected), .006)
+
     def test_packed_mlp_matches_independent_equations(self):
         from terminus.pointwise import packed_swiglu_norm
 

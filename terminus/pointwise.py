@@ -144,3 +144,40 @@ def packed_qkv_rope(packed, cos, sin, query_heads, kv_heads, eps, *, normalize_q
     if any(t.device != packed.device or t.shape != (1, 1, packed.shape[1], dim // 2) or not t.is_contiguous() for t in (cos, sin)):
         raise ValueError("RoPE tables must be contiguous and match sequence/head dimensions")
     return _PackedQKVRoPE.apply(packed, cos, sin, query_heads, kv_heads, eps, normalize_qk)
+
+
+class _ResidualNorms(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, u, g_o, g_i, eps):
+        from .pointwise_kernels import residual_norms_forward
+
+        a, z, r1, r2 = residual_norms_forward(x, u, g_o, g_i, eps)
+        ctx.save_for_backward(u, a, g_o, g_i, r1, r2)
+        return a, z
+
+    @staticmethod
+    def backward(ctx, da, dz):
+        from .pointwise_kernels import residual_norms_backward
+
+        du, dx, dgo, dgi = residual_norms_backward(dz, da, *ctx.saved_tensors)
+        return dx, du, dgo, dgi, None
+
+
+def residual_norms(x, u, g_o, g_i, eps):
+    """Fused Peri-LN boundary: branch out-norm, residual add, next in-norm.
+
+    a = x + g_o ⊙ rms(u); z = g_i ⊙ rms(a), with the reference kernels' BF16
+    rounding boundaries. CUDA-only fusion; callers keep the reference ops
+    elsewhere.
+    """
+    import math
+
+    if not (x.is_cuda and u.is_cuda) or x.shape != u.shape or x.stride(-1) != 1 or u.stride(-1) != 1:
+        raise ValueError("residual norm fusion needs CUDA tensors with matching contiguous rows")
+    if x.dtype != torch.bfloat16 or u.dtype != torch.bfloat16:
+        raise ValueError("residual norm fusion expects the BF16 residual/branch contract")
+    if g_o.shape != (x.shape[-1],) or g_i.shape != (x.shape[-1],):
+        raise ValueError("channel gains must match the residual width")
+    if not math.isfinite(eps) or eps <= 0:
+        raise ValueError("normalization requires positive finite epsilon")
+    return _ResidualNorms.apply(x, u, g_o, g_i, eps)

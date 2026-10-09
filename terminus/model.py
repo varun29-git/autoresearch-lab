@@ -521,7 +521,26 @@ class BitNetLlama(nn.Module):
         hidden = hidden.to(torch.bfloat16 if self.config.residual_dtype == "bf16" else torch.float32)
         cos, sin = self.rotary(input_ids.shape[1], device=hidden.device, dtype=hidden.dtype)
         value_source = None
-        for index, layer in enumerate(self.layers):
+        fused_boundaries = (attention_mask is None and hidden.is_cuda
+                            and self.config.branch_norm == "peri" and self.config.fused_pointwise
+                            and not self.config.gradient_checkpointing)
+        if fused_boundaries:
+            from .pointwise import residual_norms
+
+            z = self.layers[0].attn_norm(hidden)
+            for index, layer in enumerate(self.layers):
+                branch = layer.attn(z, cos, sin, attention_mask, value_source=value_source)
+                if value_source is None and self.config.value_residual != "none":
+                    value_source = layer.attn.values_used
+                hidden, z = residual_norms(hidden, branch, layer.attn_out_norm.weight,
+                                           layer.ffn_norm.weight, self.config.rms_norm_eps)
+                branch = layer.ffn(z)
+                next_gain = (self.layers[index + 1].attn_norm.weight if index + 1 < len(self.layers)
+                             else self.norm.weight)
+                hidden, z = residual_norms(hidden, branch, layer.ffn_out_norm.weight,
+                                           next_gain, self.config.rms_norm_eps)
+            hidden = z  # the last fused boundary already applied the final norm
+        for index, layer in enumerate(self.layers) if not fused_boundaries else ():
             # With value_residual, layer 0 stays uncheckpointed so its stashed V1
             # carries gradients (a checkpointed stash would be a no-grad tensor
             # and v_proj_0 would silently stop learning). V1 then enters later
@@ -540,7 +559,8 @@ class BitNetLlama(nn.Module):
                     value_source = layer.attn.values_used
             else:
                 hidden = layer(hidden, cos, sin, attention_mask)
-        hidden = self.embed_rot_out(self.norm(hidden))
+        hidden = hidden if fused_boundaries else self.norm(hidden)
+        hidden = self.embed_rot_out(hidden)
         logits = functional.linear(hidden, self.tok_embeddings.weight) if return_logits else None
         loss = loss_sum = loss_tokens = None
         if targets is not None:

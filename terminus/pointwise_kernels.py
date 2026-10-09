@@ -163,3 +163,123 @@ def qk_rope_backward(gradient, values, cos, sin, inverse):
         heads, length, width, *values.stride()[:3], *gradient.stride()[:3], 0., True,
         num_warps=1, enable_fp_fusion=False)
     return output.transpose(1, 2)
+
+
+@triton.jit
+def _residual_norms_forward(X, U, GO, GI, A, Z, R1, R2, WIDTH: tl.constexpr,
+                            EPS: tl.constexpr, BLOCK: tl.constexpr):
+    """a = bf16(x + bf16(u*r1*g_o)); z = bf16(a*r2*g_i) — one pass, reference roundings."""
+    row = tl.program_id(0)
+    col = tl.arange(0, BLOCK)
+    mask = col < WIDTH
+    x = tl.load(X + row * WIDTH + col, mask, other=0).to(tl.float32)
+    u = tl.load(U + row * WIDTH + col, mask, other=0).to(tl.float32)
+    go = tl.load(GO + col, mask, other=0).to(tl.float32)
+    gi = tl.load(GI + col, mask, other=0).to(tl.float32)
+    r1 = tl.rsqrt(tl.sum(u * u, 0) / WIDTH + EPS)
+    t = (u * r1 * go).to(X.dtype.element_ty).to(tl.float32)
+    a = (x + t).to(X.dtype.element_ty)
+    tl.store(A + row * WIDTH + col, a, mask)
+    a32 = a.to(tl.float32)
+    r2 = tl.rsqrt(tl.sum(a32 * a32, 0) / WIDTH + EPS)
+    z = a32 * r2 * gi
+    tl.store(Z + row * WIDTH + col, z, mask)
+    tl.store(R1 + row, r1)
+    tl.store(R2 + row, r2)
+
+
+@triton.jit
+def _residual_norms_backward(DZ, DA, U, A, GO, GI, R1, R2, DX, DU,
+                             WIDTH: tl.constexpr, BLOCK: tl.constexpr):
+    """Chained backward through both norms and the residual add.
+
+    da2 (norm2's input gradient) is stored BF16 by the reference kernel and the
+    autograd engine accumulates it with the residual-stream gradient in BF16;
+    both rounding boundaries are reproduced before the norm1 backward."""
+    row = tl.program_id(0)
+    col = tl.arange(0, BLOCK)
+    mask = col < WIDTH
+    dz = tl.load(DZ + row * WIDTH + col, mask, other=0).to(tl.float32)
+    da = tl.load(DA + row * WIDTH + col, mask, other=0).to(tl.float32)
+    u = tl.load(U + row * WIDTH + col, mask, other=0).to(tl.float32)
+    a = tl.load(A + row * WIDTH + col, mask, other=0).to(tl.float32)
+    go = tl.load(GO + col, mask, other=0).to(tl.float32)
+    gi = tl.load(GI + col, mask, other=0).to(tl.float32)
+    r1 = tl.load(R1 + row)
+    r2 = tl.load(R2 + row)
+    x2 = a * r2
+    dy2 = dz * gi
+    dot2 = tl.sum(dy2 * x2, 0) / WIDTH
+    da2 = ((dy2 - x2 * dot2) * r2).to(DZ.dtype.element_ty).to(tl.float32)
+    d = (da + da2).to(DZ.dtype.element_ty).to(tl.float32)
+    x1 = u * r1
+    dy1 = d * go
+    dot1 = tl.sum(dy1 * x1, 0) / WIDTH
+    du = (dy1 - x1 * dot1) * r1
+    tl.store(DU + row * WIDTH + col, du, mask)
+    tl.store(DX + row * WIDTH + col, d, mask)
+
+
+@triton.jit
+def _residual_norms_gain_backward(DZ, DA, U, A, GO, GI, R1, R2, DW,
+                                  WIDTH: tl.constexpr, ROWS: tl.constexpr,
+                                  PROGRAMS: tl.constexpr, BLOCK: tl.constexpr):
+    """dg_o = sum_rows(d_t * x_hat1) and dg_i = sum_rows(dz * x_hat2), bounded deterministic."""
+    program = tl.program_id(0)
+    col = tl.arange(0, BLOCK)
+    mask = col < WIDTH
+    go = tl.load(GO + col, mask, other=0).to(tl.float32)
+    gi = tl.load(GI + col, mask, other=0).to(tl.float32)
+    dgo = tl.zeros((BLOCK,), tl.float32)
+    dgi = tl.zeros((BLOCK,), tl.float32)
+    for row in range(program, ROWS, PROGRAMS):
+        dz = tl.load(DZ + row * WIDTH + col, mask, other=0).to(tl.float32)
+        da = tl.load(DA + row * WIDTH + col, mask, other=0).to(tl.float32)
+        u = tl.load(U + row * WIDTH + col, mask, other=0).to(tl.float32)
+        a = tl.load(A + row * WIDTH + col, mask, other=0).to(tl.float32)
+        r1 = tl.load(R1 + row)
+        r2 = tl.load(R2 + row)
+        x2 = a * r2
+        dy2 = dz * gi
+        dot2 = tl.sum(dy2 * x2, 0) / WIDTH
+        da2 = ((dy2 - x2 * dot2) * r2).to(DZ.dtype.element_ty).to(tl.float32)
+        d = (da + da2).to(DZ.dtype.element_ty).to(tl.float32)
+        x1 = u * r1
+        dgo += d * x1
+        dgi += dz * x2
+    tl.store(DW + program * (2 * WIDTH) + col, dgo, mask)
+    tl.store(DW + program * (2 * WIDTH) + WIDTH + col, dgi, mask)
+
+
+def residual_norms_forward(x, u, g_o, g_i, eps):
+    flat_x = x.contiguous().view(-1, x.shape[-1])
+    flat_u = u.contiguous().view(-1, u.shape[-1])
+    rows, width = flat_x.shape
+    a = torch.empty_like(flat_x)
+    z = torch.empty_like(flat_x)
+    r1 = torch.empty(rows, device=x.device, dtype=torch.float32)
+    r2 = torch.empty(rows, device=x.device, dtype=torch.float32)
+    _residual_norms_forward[(rows,)](flat_x, flat_u, g_o, g_i, a, z, r1, r2, width, eps,
+                                     triton.next_power_of_2(width), enable_fp_fusion=False)
+    return a.view_as(x), z.view_as(x), r1, r2
+
+
+def residual_norms_backward(dz, da, u, a, g_o, g_i, r1, r2):
+    flat_u = u.contiguous().view(-1, u.shape[-1])
+    flat_a = a.contiguous().view(-1, a.shape[-1])
+    rows, width = flat_u.shape
+    flat_dz = dz.contiguous().view(-1, width)
+    flat_da = da.contiguous().view(-1, width)
+    dx = torch.empty_like(flat_a)
+    du = torch.empty_like(flat_u)
+    _residual_norms_backward[(rows,)](flat_dz, flat_da, flat_u, flat_a, g_o, g_i, r1, r2, dx, du,
+                                      width, triton.next_power_of_2(width), enable_fp_fusion=False)
+    programs = min(rows, 512 if width <= 4096 else 256)
+    partial = torch.empty((programs, 2 * width), device=u.device, dtype=torch.float32)
+    _residual_norms_gain_backward[(programs,)](flat_dz, flat_da, flat_u, flat_a, g_o, g_i, r1, r2,
+                                               partial, width, rows, programs,
+                                               triton.next_power_of_2(width), enable_fp_fusion=False)
+    reduced = partial.sum(0)
+    dgo = reduced[:width].reshape(g_o.shape).to(g_o.dtype)
+    dgi = reduced[width:].reshape(g_i.shape).to(g_i.dtype)
+    return du.view_as(u), dx.view_as(a), dgo, dgi
