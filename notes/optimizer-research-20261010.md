@@ -96,6 +96,26 @@ speedrun band (~0.05), near the on-model screen value.
   agree), betas (0.9, 0.95), eps 1e-8, grad clip 1.0 stay at reference.
   Revisit only if trials show instability or update/weight-ratio anomalies.
 
+### The NYU critique of the Moonlight rule (added post-launch, user pointer)
+
+Qiu, Chen, Phan, Lei & Wilson (NYU), "Hyperparameter Transfer Enables
+Consistent Gains of Matrix-Preconditioned Optimizers Across Scales", arXiv
+2512.05620 (NeurIPS 2025). Appendix G shows Moonlight's `0.2*sqrt(max(A,B))`
+rule ("Muon-Kimi") **fails to transfer the optimal LR across width**, with or
+without an added Adam-style 1/d_in factor; only the `eta*sqrt(d_out/d_in)`
+spectral rule — this campaign's fixed `spectral_unclamped` — transfers, with
+the base LR Θ(1) in width. That independently supports (a) the campaign rule
+choice, (b) `hpo.transfer`'s plan to hold the Muon base rate constant across
+the 700M/1.5B width bridge, and (c) Adam for the tied embedding/readout
+(their recommendation matches our optimizer split). Their §3.4 also argues
+for decoupled weight decay λ = Θ(1/D) over the LR-coupled AdamW convention,
+warning that LR-coupled decay "can be highly suboptimal for other optimizers
+(e.g., Muon)" — this reinforces the planned matrix-wd contrast (trial 5) and
+the LR×wd accounting. Caveat: the critique is about **width transfer**; at a
+single width either rule can be re-tuned, and Dion3 (2608.11612) reports the
+Moonlight factor working well at larger scale. Counter-evidence noted, not
+hidden.
+
 ### Missing-in-literature (recorded honestly)
 
 K2: momentum value, Nesterov flag, NS steps, param split, embed LR. GLM-4.5:
