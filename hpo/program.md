@@ -58,9 +58,9 @@ ready candidates; deallocate when another complete run cannot fit. Report
 the full CE curve, tokens/s, clipping, FP8/stability incidents, elapsed
 allocated GPU time, and any incomplete run separately.
 
-Choose the initial Muon LR, tied-table AdamW LR, matrix weight decay, and
-embedding weight decay from your research and the model profile; write all
-four explicitly in every candidate. Decide which optimizer groups need
+Choose the initial Muon LR, tied-table AdamW LR, norm LR, Q/K-gain LR,
+matrix weight decay, and embedding weight decay from your research and the
+model profile; write all six explicitly in every candidate. Decide which optimizer groups need
 distinct rates from measured CE curves and update/weight ratios. Design high-information experiments that
 fit the time cap; coupled group changes are allowed when the hypothesis
 requires them. **Optimizer weight decay operates during every one of these

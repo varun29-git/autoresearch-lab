@@ -16,7 +16,7 @@ updates (500,170,752 tokens) against the fixed English stream, and
 200M search has an eight-allocated-GPU-hour cap. Candidates can tune global
 and role-specific Muon LRs, the tied embedding Adam LR/decay, norm and value
 mix group LRs, matrix decay, momentum/betas/epsilon, and clipping.
-Kimi must research and fill the four `null` LR/decay fields in `candidate.json`
+Kimi must research and fill the six `null` LR/decay fields in `candidate.json`
 before its first run; the reference-file numbers are only valid-config placeholders.
 Its factual starting brief is [MODEL_PROFILE.md](MODEL_PROFILE.md).
 All results and checkpoints go outside Git. Read [program.md](program.md)

@@ -22,7 +22,8 @@ OPTIMIZER_FIELDS = frozenset({"muon_lr", "adamw_lr", "norm_lr", "qk_norm_lr",
                               "muon_qkv_lr", "muon_o_lr", "muon_gate_up_lr", "muon_down_lr",
                               "peri_norm_lr", "final_norm_lr", "value_mix_lr",
                               "weight_decay", "embedding_weight_decay", "momentum", "betas", "eps"})
-REQUIRED_RESEARCH_CHOICES = frozenset({"muon_lr", "adamw_lr", "weight_decay", "embedding_weight_decay"})
+REQUIRED_RESEARCH_CHOICES = frozenset({"muon_lr", "adamw_lr", "norm_lr", "qk_norm_lr",
+                                       "weight_decay", "embedding_weight_decay"})
 TRAINING_FIELDS = frozenset({"grad_clip"})
 
 
@@ -68,7 +69,7 @@ def candidate_config(reference: dict, candidate: dict) -> dict:
         raise ValueError("candidate changes a fixed optimizer field")
     if (REQUIRED_RESEARCH_CHOICES - set(candidate["optimizer"])
             or any(candidate["optimizer"].get(name) is None for name in REQUIRED_RESEARCH_CHOICES)):
-        raise ValueError("candidate must explicitly choose Muon LR, AdamW LR, matrix decay, and embedding decay")
+        raise ValueError("candidate must explicitly choose Muon, embedding AdamW, norm, and Q/K-gain LRs, plus matrix and embedding decay")
     if set(candidate["training"]) - TRAINING_FIELDS:
         raise ValueError("candidate changes the fixed training schedule or batch")
     config = copy.deepcopy(reference["config"])

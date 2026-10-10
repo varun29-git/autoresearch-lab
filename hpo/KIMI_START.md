@@ -22,9 +22,9 @@ AdamW practices: Moonlight/Kimi, MiniCPM, MiniCPM4, Qwen3, Gemma 3/4, and
 other relevant first-party papers or released training implementations.
 Extract effective group LRs, width/update scaling, matrix and embedding
 weight decay, batch, warmup, schedule, and omissions. Distinguish the
-published rule from what this model implements. Choose the initial Muon
-LR, tied-embedding AdamW LR, matrix decay, and embedding decay yourself;
-fill the four `null` fields in `hpo/candidate.json`. Make a compact source
+published rule from what this model implements. Choose the initial Muon LR,
+tied-embedding AdamW LR, norm LR, Q/K-gain LR, matrix decay, and embedding
+decay yourself; fill all six `null` fields in `hpo/candidate.json`. Make a compact source
 note and a short reason for each candidate. You may tune packed QKV,
 attention O, gate/up, down, input/Peri/final norms, Q/K gains, and learned
 value mix separately. Weight decay acts every optimizer update; the WSD

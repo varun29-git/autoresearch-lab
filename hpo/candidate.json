@@ -2,6 +2,8 @@
   "optimizer": {
     "muon_lr": null,
     "adamw_lr": null,
+    "norm_lr": null,
+    "qk_norm_lr": null,
     "weight_decay": null,
     "embedding_weight_decay": null
   },

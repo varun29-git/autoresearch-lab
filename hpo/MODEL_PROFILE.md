@@ -4,7 +4,9 @@ This is a factual description of the model and experiment contract. Kimi must
 research the literature and released implementations independently, then
 choose and test learning rates, weight decay, and optimizer-group settings.
 Numbers already present in `reference_200m.json` keep the training config
-parseable; they are **unselected placeholders**, not recommended rates.
+parseable; they are **unselected placeholders**, not recommended rates. The
+candidate must explicitly provide all six core LR/decay values, so those
+reference rates cannot silently become the first trial's choices.
 
 | Property | Current 200M dense HPO model |
 | --- | --- |

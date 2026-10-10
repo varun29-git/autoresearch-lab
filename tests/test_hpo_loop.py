@@ -38,6 +38,7 @@ def test_candidate_only_changes_allowed_hyperparameters():
     reference = load_reference(DEFAULT_REFERENCE)
     reference_before = copy.deepcopy(reference)
     candidate = {"optimizer": {"muon_lr": 0.012, "adamw_lr": 0.001,
+                                "norm_lr": 0.0002, "qk_norm_lr": 0.0001,
                                 "muon_o_lr": 0.006, "muon_down_lr": 0.006,
                                 "peri_norm_lr": 0.0003,
                                 "embedding_weight_decay": 0.0,
@@ -46,6 +47,8 @@ def test_candidate_only_changes_allowed_hyperparameters():
     result = candidate_config(reference, candidate)
     assert result["optimizer"]["muon_lr"] == 0.012
     assert result["optimizer"]["muon_o_lr"] == 0.006
+    assert result["optimizer"]["norm_lr"] == 0.0002
+    assert result["optimizer"]["qk_norm_lr"] == 0.0001
     assert result["training"]["grad_clip"] == 0.5
     assert result["model"] == reference["config"]["model"]
     assert reference == reference_before
@@ -53,6 +56,11 @@ def test_candidate_only_changes_allowed_hyperparameters():
         candidate_config(reference, {"optimizer": {"muon_lr": 0.003}, "training": {}})
     with pytest.raises(ValueError, match="explicitly choose"):
         candidate_config(reference, json.loads(DEFAULT_CANDIDATE.read_text()))
+    without_small_group_rates = copy.deepcopy(candidate)
+    without_small_group_rates["optimizer"].pop("norm_lr")
+    without_small_group_rates["optimizer"].pop("qk_norm_lr")
+    with pytest.raises(ValueError, match="explicitly choose"):
+        candidate_config(reference, without_small_group_rates)
     for forbidden in ({"optimizer": {"muon_lr_rule": "sqrt_fan_in"}, "training": {}},
                       {"optimizer": {}, "training": {"warmup_tokens": 10}},
                       {"optimizer": {}, "training": {"gradient_accumulation_steps": 1}}):
@@ -171,6 +179,7 @@ def test_embedding_transfer_exponents_preserve_decay_and_other_group_rates():
     reference = load_reference(DEFAULT_REFERENCE)
     candidate = {"optimizer": {"muon_lr": 0.01, "muon_o_lr": 0.005,
                                "adamw_lr": 0.002, "norm_lr": 0.0003,
+                               "qk_norm_lr": 0.00015,
                                "weight_decay": 0.08, "embedding_weight_decay": 0.06},
                  "training": {}}
     before = copy.deepcopy(candidate)
@@ -186,6 +195,7 @@ def test_embedding_transfer_exponents_preserve_decay_and_other_group_rates():
             assert optimizer["muon_lr"] == 0.01
             assert optimizer["muon_o_lr"] == 0.005
             assert optimizer["norm_lr"] == 0.0003
+            assert optimizer["qk_norm_lr"] == 0.00015
             assert optimizer["weight_decay"] == 0.08
     assert candidate == before
     with pytest.raises(ValueError, match="exponent"):
