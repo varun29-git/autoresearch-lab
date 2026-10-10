@@ -7,6 +7,7 @@ import pytest
 from hpo.loop import (DEFAULT_CANDIDATE, DEFAULT_REFERENCE, candidate_config, load_reference,
                       rank, run, source_hashes, validation_curve)
 from hpo.bridge import bridge_reference
+from hpo.transfer import transfer_candidate
 
 
 def test_reference_is_fixed_stack4_on_speed_execution_path(tmp_path):
@@ -164,3 +165,28 @@ def test_width_bridge_preserves_effective_batch_and_validation_set():
         assert bridge["config"]["optimizer"] == base["config"]["optimizer"]
     with pytest.raises(ValueError):
         bridge_reference(base, width=2304, microbatch=3, manifest_sha256="a" * 64)
+
+
+def test_embedding_transfer_exponents_preserve_decay_and_other_group_rates():
+    reference = load_reference(DEFAULT_REFERENCE)
+    candidate = {"optimizer": {"muon_lr": 0.01, "muon_o_lr": 0.005,
+                               "adamw_lr": 0.002, "norm_lr": 0.0003,
+                               "weight_decay": 0.08, "embedding_weight_decay": 0.06},
+                 "training": {}}
+    before = copy.deepcopy(candidate)
+    for width in (1536, 2304):
+        for exponent in (0.0, 0.5, 1.0):
+            transferred = transfer_candidate(candidate, reference, width=width,
+                                              embedding_exponent=exponent)
+            optimizer = transferred["optimizer"]
+            factor = (768 / width) ** exponent
+            assert optimizer["adamw_lr"] == pytest.approx(0.002 * factor)
+            assert optimizer["embedding_weight_decay"] == pytest.approx(0.06 / factor)
+            assert optimizer["adamw_lr"] * optimizer["embedding_weight_decay"] == pytest.approx(0.002 * 0.06)
+            assert optimizer["muon_lr"] == 0.01
+            assert optimizer["muon_o_lr"] == 0.005
+            assert optimizer["norm_lr"] == 0.0003
+            assert optimizer["weight_decay"] == 0.08
+    assert candidate == before
+    with pytest.raises(ValueError, match="exponent"):
+        transfer_candidate(candidate, reference, width=1536, embedding_exponent=0.25)
