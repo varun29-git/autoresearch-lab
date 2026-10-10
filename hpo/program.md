@@ -105,8 +105,17 @@ projection cancels any scalar applied to the update first. Neither law
 transfers the best LR across batch size, horizon, data mixture, or QAT by
 theorem.
 
-Carry the best 200M rate and neighboring sentinel rates to width 1536,
-then at least a short width-2304 check on the same fixed stream and batch.
+For each width bridge, carry **four complete 200M recipes** on the same fixed
+stream and effective batch: the winner, its closest credible runner-up, and
+two stable settings that were clearly worse at 200M. Choose the weaker
+settings on opposite sides of the matrix-LR optimum (one too low, one too
+high), while holding their other settings equal to the winner where possible.
+Their 200M CE gaps must exceed ordinary validation noise; an unstable or
+divergent setting is not a useful negative control. Run all four at width
+1536, then all four at width 2304 for a width-transfer claim. Compare them
+at the same post-warmup token milestones, preferably 750 and 1,250 updates;
+125 updates is only a stability screen. If either former loser becomes best,
+the 200M ranking did not transfer, even if the old winner still trains well.
 Compare **where the LR minimum moves**, not only each width's raw loss.
 Measure logit/activation RMS, logical weight and update RMS, clipping and
 stability. If the optimum shifts, fit and test a simple role-specific

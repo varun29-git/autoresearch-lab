@@ -29,5 +29,9 @@ trials. Stop when the evidence is informative or the total GPU-hour cap is
 reached. Report CE curves at equal tokens, code/config hashes, tokens/s,
 incidents, GPU-hours, and the remaining width/horizon uncertainty. A final
 transfer claim additionally requires the width and production-batch
-checks in `hpo/program.md`; do not call the English 200M winner a 1.5B
-production recipe without them.
+checks in `hpo/program.md`. At both larger widths, compare four 200M
+recipes at matched post-warmup tokens: the winner, a close runner-up, and
+two stable but clearly worse settings on opposite sides of the matrix-LR
+optimum. A former loser winning at larger width means the 200M ranking
+did not transfer. Do not call the English 200M winner a 1.5B production
+recipe without these checks.
