@@ -18,6 +18,14 @@ class OptimizerConfig:
     norm_lr: float = 1e-4
     qk_norm_lr: float = 1e-4
     muon_lr: float = 3e-3
+    muon_qkv_lr: float | None = None
+    muon_o_lr: float | None = None
+    muon_gate_up_lr: float | None = None
+    muon_down_lr: float | None = None
+    peri_norm_lr: float | None = None
+    final_norm_lr: float | None = None
+    value_mix_lr: float | None = None
+    embedding_weight_decay: float | None = None
     weight_decay: float = 0.1
     betas: tuple[float, float] = (0.9, 0.95)
     eps: float = 1e-8
@@ -31,6 +39,14 @@ class OptimizerConfig:
         for name in ("adamw_lr", "norm_lr", "qk_norm_lr", "muon_lr", "eps"):
             if not math.isfinite(getattr(self, name)) or getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be finite and positive")
+        for name in ("muon_qkv_lr", "muon_o_lr", "muon_gate_up_lr", "muon_down_lr",
+                     "peri_norm_lr", "final_norm_lr", "value_mix_lr"):
+            value = getattr(self, name)
+            if value is not None and (not math.isfinite(value) or value <= 0):
+                raise ValueError(f"{name} must be positive and finite when set")
+        if self.embedding_weight_decay is not None and (
+                not math.isfinite(self.embedding_weight_decay) or self.embedding_weight_decay < 0):
+            raise ValueError("embedding_weight_decay must be finite and nonnegative when set")
         if not math.isfinite(self.weight_decay) or self.weight_decay < 0:
             raise ValueError("weight decay must be finite and nonnegative")
         if len(self.betas) != 2 or any(not 0 <= beta < 1 for beta in self.betas) or not 0 <= self.momentum < 1:
@@ -85,6 +101,16 @@ def logical_muon_rows(name, parameter, model):
     return rows
 
 
+def muon_role_lr(name, config):
+    for suffix, field in ((".attn.qkv_proj.weight", "muon_qkv_lr"),
+                          (".attn.o_proj.weight", "muon_o_lr"),
+                          (".ffn.gate_up_proj.weight", "muon_gate_up_lr"),
+                          (".ffn.down_proj.weight", "muon_down_lr")):
+        if name.endswith(suffix):
+            return getattr(config, field) or config.muon_lr
+    return config.muon_lr
+
+
 def build_optimizer(model, config=None):
     config = config or OptimizerConfig()
     matrices = {id(module.weight) for _, module in model.bitlinear_named_modules()}
@@ -92,40 +118,51 @@ def build_optimizer(model, config=None):
         module = getattr(model, name)
         if hasattr(module, "weight"):
             matrices.add(id(module.weight))
-    groups, logical_rows = [], []
-    adam_matrices, norms, qk_norms = [], [], []
+    groups, logical_rows, group_names = [], [], []
+    adam_matrices, embedding, norms, peri_norms, final_norms, value_mix, qk_norms = [], [], [], [], [], [], []
     for name, parameter in model.named_parameters():
         if not parameter.requires_grad:
             continue
         if config.kind == "muon" and id(parameter) in matrices:
             scale = muon_update_scale_for_param(parameter, rule=config.muon_lr_rule,
                                                 fan_in_base=config.muon_fan_in_base)
-            groups.append({"params": [parameter], "lr": config.muon_lr * scale,
+            groups.append({"params": [parameter], "lr": muon_role_lr(name, config) * scale,
                            "weight_decay": config.weight_decay / scale,
                            "momentum": config.momentum, "use_muon": True})
             logical_rows.append(logical_muon_rows(name, parameter, model))
+            group_names.append(name)
         elif name.endswith((".attn.q_norm.weight", ".attn.k_norm.weight")):
             if parameter.ndim != 1:
                 raise ValueError("learned Q/K norm gain must be a channel vector")
             qk_norms.append(parameter)
+        elif name == "tok_embeddings.weight":
+            embedding.append(parameter)
+        elif name.endswith((".attn_out_norm.weight", ".ffn_out_norm.weight")):
+            peri_norms.append(parameter)
+        elif name == "norm.weight":
+            final_norms.append(parameter)
+        elif name.endswith(".attn.value_lambda"):
+            value_mix.append(parameter)
         elif parameter.ndim < 2:
             norms.append(parameter)
         else:
             adam_matrices.append(parameter)
-    qk_norm_group_index = None
-    for parameters, learning_rate, decay in ((adam_matrices, config.adamw_lr, config.weight_decay),
-                                            (norms, config.norm_lr, 0.0),
-                                            (qk_norms, config.qk_norm_lr, 0.0)):
+    for label, parameters, learning_rate, decay in (
+            ("adam_matrix", adam_matrices, config.adamw_lr, config.weight_decay),
+            ("tied_embedding", embedding, config.adamw_lr,
+             config.weight_decay if config.embedding_weight_decay is None else config.embedding_weight_decay),
+            ("input_norm", norms, config.norm_lr, 0.0),
+            ("peri_norm", peri_norms, config.peri_norm_lr or config.norm_lr, 0.0),
+            ("final_norm", final_norms, config.final_norm_lr or config.norm_lr, 0.0),
+            ("value_mix", value_mix, config.value_mix_lr or config.norm_lr, 0.0),
+            ("qk_norm", qk_norms, config.qk_norm_lr, 0.0)):
         if parameters:
             group = {"params": parameters, "lr": learning_rate, "weight_decay": decay, "betas": tuple(config.betas), "eps": config.eps}
             if config.kind == "muon":
                 group["use_muon"] = False
-            if parameters is qk_norms:
-                # The pinned Muon constructor asserts exact group keys; the
-                # telemetry label must be attached after construction.
-                qk_norm_group_index = len(groups)
             groups.append(group)
             logical_rows.append(None)
+            group_names.append(label)
     grouped = [id(parameter) for group in groups for parameter in group["params"]]
     trainable = {id(parameter) for parameter in model.parameters() if parameter.requires_grad}
     if len(grouped) != len(set(grouped)) or set(grouped) != trainable:
@@ -142,9 +179,7 @@ def build_optimizer(model, config=None):
     else:
         use_cuda = all(parameter.is_cuda for parameter in model.parameters())
         optimizer = torch.optim.AdamW(groups, fused=use_cuda, foreach=not use_cuda)
-    for index, group in enumerate(optimizer.param_groups):
-        group.setdefault("name", f"{config.kind}_{index}")
+    for group, name in zip(optimizer.param_groups, group_names):
+        group["name"] = name
         group["base_lr"] = group["lr"]
-    if qk_norm_group_index is not None:
-        optimizer.param_groups[qk_norm_group_index]["name"] = "qk_norm"
     return optimizer

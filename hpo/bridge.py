@@ -31,7 +31,7 @@ def bridge_reference(base: dict, *, width: int, microbatch: int,
         raise ValueError("width bridge needs the fixed 768-width reference")
     result = copy.deepcopy(base)
     heads, kv_heads, ffn_dim, size_label = WIDTHS[width]
-    result["campaign_id"] = f"stack4-hpo-{size_label}-en-v1"
+    result["campaign_id"] = f"stack4-hpo-{size_label}-en-v2"
     result["manifest_sha256"] = manifest_sha256
     model = result["config"]["model"]
     model.update(dim=width, n_heads=heads, n_kv_heads=kv_heads, ffn_dim=ffn_dim)

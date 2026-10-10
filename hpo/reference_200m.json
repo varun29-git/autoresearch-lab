@@ -1,5 +1,5 @@
 {
-  "campaign_id": "stack4-hpo-200m-en-v1",
+  "campaign_id": "stack4-hpo-200m-en-v2",
   "config": {
     "model": {
       "attention_backend": "fa3",
@@ -67,13 +67,11 @@
     }
   },
   "manifest_sha256": "3c70bef91d09b2c31194887191a8058899d199f3bb4ebbed41c8691b3b521575",
-  "screen_max_updates": 1250,
   "stages": [
-    125,
     250,
     500,
     750,
-    1250,
-    6358
+    1000,
+    1272
   ]
 }

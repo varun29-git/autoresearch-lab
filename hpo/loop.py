@@ -19,7 +19,10 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REFERENCE = ROOT / "hpo/reference_200m.json"
 DEFAULT_CANDIDATE = ROOT / "hpo/candidate.json"
 OPTIMIZER_FIELDS = frozenset({"muon_lr", "adamw_lr", "norm_lr", "qk_norm_lr",
-                              "weight_decay", "momentum", "betas", "eps"})
+                              "muon_qkv_lr", "muon_o_lr", "muon_gate_up_lr", "muon_down_lr",
+                              "peri_norm_lr", "final_norm_lr", "value_mix_lr",
+                              "weight_decay", "embedding_weight_decay", "momentum", "betas", "eps"})
+REQUIRED_RESEARCH_CHOICES = frozenset({"muon_lr", "adamw_lr", "weight_decay", "embedding_weight_decay"})
 TRAINING_FIELDS = frozenset({"grad_clip"})
 
 
@@ -38,8 +41,7 @@ def source_hashes() -> dict[str, str]:
 
 def load_reference(path: Path) -> dict:
     reference = json.loads(path.read_text())
-    if set(reference) != {"campaign_id", "manifest_sha256", "stages",
-                          "screen_max_updates", "config"}:
+    if set(reference) != {"campaign_id", "manifest_sha256", "stages", "config"}:
         raise ValueError("reference must pin campaign, manifest, stages, and config")
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", reference["campaign_id"]):
         raise ValueError("invalid campaign ID")
@@ -50,11 +52,10 @@ def load_reference(path: Path) -> dict:
             or any(type(stage) is not int or stage <= 0 for stage in stages)
             or stages != sorted(set(stages))):
         raise ValueError("stages must be sorted, unique positive update counts")
-    if (type(reference["screen_max_updates"]) is not int
-            or reference["screen_max_updates"] not in stages):
-        raise ValueError("screen maximum must be one of the stages")
     if set(reference["config"]) != {"model", "training", "optimizer"}:
         raise ValueError("reference config must contain model, training, optimizer")
+    if reference["config"]["model"]["dim"] == 768 and max(stages) != 1272:
+        raise ValueError("200M HPO reference must end at 1,272 updates")
     return reference
 
 
@@ -65,6 +66,9 @@ def candidate_config(reference: dict, candidate: dict) -> dict:
         raise ValueError("candidate overrides must be objects")
     if set(candidate["optimizer"]) - OPTIMIZER_FIELDS:
         raise ValueError("candidate changes a fixed optimizer field")
+    if (REQUIRED_RESEARCH_CHOICES - set(candidate["optimizer"])
+            or any(candidate["optimizer"].get(name) is None for name in REQUIRED_RESEARCH_CHOICES)):
+        raise ValueError("candidate must explicitly choose Muon LR, AdamW LR, matrix decay, and embedding decay")
     if set(candidate["training"]) - TRAINING_FIELDS:
         raise ValueError("candidate changes the fixed training schedule or batch")
     config = copy.deepcopy(reference["config"])
@@ -116,8 +120,8 @@ def run(args: argparse.Namespace) -> dict:
     reference = load_reference(args.reference)
     if args.updates not in reference["stages"]:
         raise ValueError("updates must be a declared milestone")
-    if args.updates > reference["screen_max_updates"] and not args.finalist:
-        raise ValueError("a run past the screen limit requires --finalist")
+    if reference["config"]["model"]["dim"] == 768 and args.updates != max(reference["stages"]):
+        raise ValueError("every 200M HPO candidate must run the full 500M-token comparison")
     if sha256(args.manifest) != reference["manifest_sha256"]:
         raise ValueError("manifest differs from this campaign's fixed stream")
     results_root = args.results_root.resolve()
@@ -200,6 +204,8 @@ def rank(args: argparse.Namespace) -> list[dict]:
     reference = load_reference(args.reference)
     if args.updates not in reference["stages"]:
         raise ValueError("rank at one declared milestone")
+    if reference["config"]["model"]["dim"] == 768 and args.updates != max(reference["stages"]):
+        raise ValueError("rank 200M candidates only after the full 500M-token comparison")
     campaign_root = args.results_root.resolve() / reference["campaign_id"]
     rows = []
     for result_path in campaign_root.glob("*/result.json"):
@@ -228,7 +234,6 @@ def main() -> None:
             sub.add_argument("--candidate", type=Path, default=DEFAULT_CANDIDATE)
             sub.add_argument("--manifest", type=Path, required=True)
             sub.add_argument("--data-root", type=Path, required=True)
-            sub.add_argument("--finalist", action="store_true")
     args = parser.parse_args()
     print(json.dumps(run(args) if args.command == "run" else rank(args), sort_keys=True))
 
