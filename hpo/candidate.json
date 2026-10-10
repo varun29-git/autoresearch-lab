@@ -1,11 +1,9 @@
 {
   "optimizer": {
-    "muon_lr": null,
-    "adamw_lr": null,
-    "norm_lr": null,
-    "qk_norm_lr": null,
-    "weight_decay": null,
-    "embedding_weight_decay": null
+    "muon_lr": 0.017,
+    "adamw_lr": 0.003,
+    "weight_decay": 0.1,
+    "embedding_weight_decay": 0.1
   },
   "training": {}
 }
