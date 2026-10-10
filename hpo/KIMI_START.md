@@ -1,54 +1,81 @@
-# Paste after the optimizer result is set
+# Paste this prompt to Kimi for the dense 200M HPO campaign
 
-Work in `/Users/varundaiya/terminus-autoresearch-hpo`. Read `hpo/program.md`.
-This worktree contains yesterday's selected E3/E4/E9 speed implementation
-and a runnable 200M Stack 4 dense HPO loop. The separate optimizer
-comparison has selected **<SPECTRAL_OR_HYPERBALL>**. Set that rule once in
-`hpo/reference_200m.json` and, if Hyperball won, merge its tested optimizer
-code and verify the existing local tests before the first GPU trial.
+Work in `/Users/varundaiya/terminus-autoresearch-hpo` (branch
+`hpo/autoresearch-v1`). Read `AGENTS.md`, `hpo/program.md`, and
+`hpo/MODEL_PROFILE.md`. This is the fixed 25-layer Stack 4 dense model on
+the selected E3/E4/E9 single-GPU speed implementation. The optimizer rule
+for this campaign is **spectral_unclamped Muon**; keep it fixed. The printed
+rates and decay in `hpo/reference_200m.json` are parseable placeholders,
+not research conclusions. Do not run Hyperball, ternary QAT, architecture
+changes, data changes, or a new speed campaign here.
 
-You are authorized to use the human-provided single H100 NVL for at most
-**8 allocated GPU-hours total** for this 200M dense HPO campaign, counting
-startup, validation, and idle allocated time. The human controls VM
-provisioning. The exact archived manifest is at **<MANIFEST_ON_VM>**, prepared shards at
-`/srv/terminus-10b/data/packed`, and external results at **<RESULTS_ROOT>**.
-Do not use the older architecture campaign manifest: this HPO runner checks
-the exact archived Stack 4 manifest SHA-256.
+The human supplies and starts one H100 NVL/PCIe GPU. Once it is available,
+you are authorized to run consecutive HPO experiments without asking again,
+up to **8 allocated GPU-hours total** including startup, validation, and
+idle allocated time. The human controls VM provisioning and final shutdown;
+request deallocation promptly when another complete experiment cannot fit.
+Do not start a paid VM yourself. If the GPU is already allocated, avoid
+leaving it idle while doing extended literature research.
 
-Before GPU allocation, read the factual `hpo/MODEL_PROFILE.md` and do your
-**own deep research** using first-party papers and released training code:
-Moonlight/Kimi, MiniCPM, MiniCPM4, Qwen3, Gemma 3/4, and other relevant
-implementations you find. Determine which published rates and weight decay
-apply to which optimizer groups and how their scaling, batch, and schedule
-differ from ours. Decide the initial Muon LR, tied-table AdamW LR, and matrix
-and embedding weight decay yourself. Record sources, calculations, and why
-you chose the first candidates; do not treat reference-file values as tuned.
-Weight decay acts on every optimizer update during these 500M-token trials;
-the later WSD learning-rate decay is a different mechanism. Include matched
-comparisons of matrix and tied-embedding weight decay in the research loop
-when time permits, and report plainly if either remains untested.
+First do your **own source-backed research** on actual production Muon and
+AdamW practices: Moonlight/Kimi, MiniCPM, MiniCPM4, Qwen3, Gemma 3/4, and
+other relevant first-party papers or released training implementations.
+Extract effective group LRs, width/update scaling, matrix and embedding
+weight decay, batch, warmup, schedule, and omissions. Distinguish the
+published rule from what this model implements. Choose the initial Muon
+LR, tied-embedding AdamW LR, matrix decay, and embedding decay yourself;
+fill the four `null` fields in `hpo/candidate.json`. Make a compact source
+note and a short reason for each candidate. You may tune packed QKV,
+attention O, gate/up, down, input/Peri/final norms, Q/K gains, and learned
+value mix separately. Weight decay acts every optimizer update; the WSD
+learning-rate decay does not start until roughly 2B tokens.
 
-Run the Karpathy-style loop in `hpo/program.md`: one candidate, one named
-trial, inspect its matched-token English held-out cross-entropy and
-throughput, then keep or revert and choose the next candidate. **Every valid
-200M candidate runs 1,272 updates (500,170,752 tokens); rank only there.**
-Intermediate validations inform the next hypothesis, not a shortened trial.
-Work the actual optimizer groups: packed QKV, O, gate/up, down, the tied
-embedding/readout Adam group, input and Peri-LN norms, final norm, Q/K gains,
-and learned value mix. Use the eight-hour cap to choose high-information
-experiments adaptively, not a Cartesian sweep. Investigate rates and decay
-rather than inheriting a published or placeholder number. Do not run QAT or
-change architecture, data, scorer, or batch inside this 200M campaign.
+The exact locked manifest exists on the controller at
+`/Users/varundaiya/terminus-optimizer-evidence/stack004-manifest.json`.
+Stage that exact file on the GPU host's persistent disk and verify its
+SHA-256 is
+`3c70bef91d09b2c31194887191a8058899d199f3bb4ebbed41c8691b3b521575`.
+The prepared shards resolve under `/srv/terminus-10b/data/packed`. Do not
+use the older architecture manifest. Put results and checkpoints on an
+external persistent path such as `/srv/terminus-10b/hpo-results`, outside
+Git. Confirm the manifest and a readable sample shard before paid training;
+do not burn GPU time on a prolonged preflight or profiler run.
 
-Keep the GPU doing useful experiments while authorized. Do not ask between
-trials. Before starting another configuration, confirm that a full 500M-token
-run fits the remaining allocated GPU time based on measured runtime; then
-deallocate when it does not. Report CE curves at equal tokens, code/config
-hashes, tokens/s, incidents, allocated GPU-hours, and the remaining
-width/horizon uncertainty. A final transfer claim additionally requires the width and production-batch
-checks in `hpo/program.md`. At both larger widths, compare four 200M
-recipes at matched post-warmup tokens: the winner, a close runner-up, and
-two stable but clearly worse settings on opposite sides of the matrix-LR
-optimum. A former loser winning at larger width means the 200M ranking
-did not transfer. Do not call the English 200M winner a 1.5B production
-recipe without these checks.
+Run the Karpathy-style loop in `hpo/program.md`: state one hypothesis,
+change and commit one candidate, run a uniquely named trial, inspect its
+matched-token English held-out cross-entropy and stability, then keep or
+revert and select the next experiment. Use the runner's exact syntax:
+
+```bash
+python -m hpo run --trial researched_candidate_01 --updates 1272 \
+  --candidate hpo/candidate.json \
+  --manifest /srv/terminus-10b/stack004-manifest.json \
+  --data-root /srv/terminus-10b/data/packed \
+  --results-root /srv/terminus-10b/hpo-results
+
+python -m hpo rank --updates 1272 \
+  --results-root /srv/terminus-10b/hpo-results
+```
+
+If the staged manifest uses another path, substitute its **verified** path.
+Every valid 200M candidate must complete 1,272 updates = 500,170,752
+tokens. Only the final endpoint ranks; earlier validations guide the next
+hypothesis. Optimize held-out CE, then consider stability and throughput.
+Test optimizer-group rates and weight decay with high-information adaptive
+experiments, not a Cartesian sweep. Account for `LR × weight_decay` when
+comparing decay. Before starting another trial, make sure its measured full
+runtime fits the remaining allocated time. Keep the GPU running useful
+trials while it is allocated; stop at the cap or when no complete trial fits.
+Record source/config hashes, CE curves, tokens/s, incidents, and allocated
+GPU time. Keep all shards, checkpoints, and trial results out of Git.
+
+This eight-hour allocation is **only the 200M dense search**. The 700M and
+1.5B width bridge needs its own GPU budget later. After selecting the 200M
+winner, prepare the bridge plan using `python -m hpo.bridge` and
+`python -m hpo.transfer`, but do not run those larger trials under this cap.
+At each larger width, test the winner with tied-embedding AdamW LR exponents
+0, 0.5, and 1, keeping per-step `LR × embedding_weight_decay` matched;
+then test the close 200M runner-up and two stable 200M losers on opposite
+sides of the matrix-LR optimum. Leave Muon spectral and small-parameter
+rates constant initially. Report the 200M result as an English proxy recipe
+until those transfer and production-batch checks are measured.

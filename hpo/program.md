@@ -25,13 +25,10 @@ The source is yesterday's selected E3/E4/E9 speed stack. The 200M reference
 in `reference_200m.json` fixes its model, prepared English token stream,
 393,216-token global update, seed, validation examples, the archived 2.5B-token
 WSD schedule, and scorer. Every HPO candidate stops at its first ~500M tokens;
-the schedule's decay starts near 2B tokens and is not observed here. Before
-starting, incorporate the optimizer winner from the separate Hyperball
-comparison. If spectral Muon wins, keep the current `spectral_unclamped`
-implementation; research and tune its weight decay. If Hyperball wins,
-merge its tested implementation and set the reference rule to `hyperball`.
-Do this **once**, before the first HPO trial. The same printed LR has a
-different meaning under the two rules.
+the schedule's decay starts near 2B tokens and is not observed here. This
+campaign uses the selected `spectral_unclamped` Muon update, not Moonshot's
+width-growing scale. Kimi independently researches and tunes its learning
+rate and weight decay alongside the auxiliary AdamW groups.
 
 One loop iteration is: make a specific hypothesis, edit `candidate.json`,
 commit it, run the candidate through **1,272 updates = 500,170,752 tokens**,
@@ -117,26 +114,45 @@ the 96 training examples per optimizer update and 32 validation examples
 remain fixed. If a selected microbatch does not fit, choose another divisor
 of 32 and 96 and regenerate a **new** bridge before running its campaign.
 
-Under spectral Muon the stated hidden-matrix hypothesis is the raw NS5
+Under the selected spectral Muon rule the hidden-matrix hypothesis is the raw NS5
 update times `η√(d_out/d_in)` for each logical Q/K/V/O/gate/up/down matrix,
 with `η` held constant as width grows. This is a mathematical **candidate**
 for width transfer. The tied embedding/readout is Adam, and the present
-initialization/readout is not a complete μP parameterization. Hyperball's
-candidate width hypothesis instead holds its angular LR fixed; its radius
-projection cancels any scalar applied to the update first. Neither law
-transfers the best LR across batch size, horizon, data mixture, or QAT by
-theorem.
+initialization/readout is not a complete μP parameterization. For the tied
+AdamW table, `python -m hpo.transfer` generates width exponents 0, 0.5,
+and 1 from the researched 200M candidate: `η_d = η_768(768/d)^α`. It adjusts
+embedding decay inversely, so the per-update `LR × weight_decay` shrinkage
+is identical across exponent candidates. Norm, Q/K-gain, value-mix, and Muon
+rates remain at the 200M values. These are three transfer hypotheses; no
+single exponent is declared the μP answer in advance. Longer horizons, batch,
+data mixture, and QAT remain separate transfer questions.
+
+After preparing the width-specific reference with `hpo.bridge`, generate
+three candidates from the 200M winner, for example:
+
+```bash
+python -m hpo.transfer --candidate /external/winner_200m.json \
+  --width 1536 --embedding-exponent 0.5 \
+  --output /external/winner_700m_sqrt.json
+```
+
+Use the generated file with `python -m hpo run --candidate ... --reference ...`.
+Run the winner under all three exponents at 700M and at 1.5B, compare
+held-out CE and logit/activation stability at matched tokens, and choose the
+best supported exponent. The rate/decay adjustment is a controlled bridge,
+not a claim that the final long-horizon decay coefficient is optimal.
 
 The width bridges need a separately authorized GPU budget; they are not part
-of the eight-hour 200M search. For each width bridge, carry **four complete
-200M recipes** on the same fixed stream and effective batch: the winner,
-its closest credible runner-up, and
-two stable settings that were clearly worse at 200M. Choose the weaker
+of the eight-hour 200M search. In addition to the winner's three exponent
+tests at each width, carry its closest credible 200M runner-up and **two
+stable settings that were clearly worse at 200M**, all using the currently
+best-supported embedding exponent. Choose the weaker
 settings on opposite sides of the matrix-LR optimum (one too low, one too
 high), while holding their other settings equal to the winner where possible.
 Their 200M CE gaps must exceed ordinary validation noise; an unstable or
-divergent setting is not a useful negative control. Run all four at width
-1536, then all four at width 2304 for a width-transfer claim. Compare them
+divergent setting is not a useful negative control. Thus each width compares
+the winner under three AdamW rules and three other 200M recipes under the
+selected rule. Compare them
 at the same post-warmup token milestones, preferably 750 and 1,272 updates;
 earlier points are only trajectory or stability checks. If either former
 loser becomes best,

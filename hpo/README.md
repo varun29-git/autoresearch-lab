@@ -6,11 +6,9 @@ uses the selected E3 packed learned Q/K path (`fused_qkv=true`), E4 value mix,
 and E9 batched Muon. Optional numerical speed candidates such as an FP8
 vocabulary head are **not** enabled. The architecture remains 25-layer Stack 4.
 
-The optimizer-selection result is pending. `reference_200m.json` currently
-uses spectral Muon with placeholder rates and weight decay; if Hyperball wins, select that
-optimizer implementation and change the reference **before** the first HPO
-trial. The optimizer rule is fixed across an HPO campaign. Do not compare
-HPO trials with different optimizer rules as if they were one LR sweep.
+This campaign uses spectral Muon, fixed across all 200M candidates.
+`reference_200m.json` has placeholder rates and weight decay that Kimi must
+replace with researched candidate choices before training.
 
 `python -m hpo run` executes each 200M candidate for exactly 1,272 full
 updates (500,170,752 tokens) against the fixed English stream, and
@@ -23,7 +21,9 @@ before its first run; the reference-file numbers are only valid-config placehold
 Its factual starting brief is [MODEL_PROFILE.md](MODEL_PROFILE.md).
 All results and checkpoints go outside Git. Read [program.md](program.md)
 before starting a paid run; [KIMI_START.md](KIMI_START.md) is the pasteable
-agent prompt once the optimizer winner and data paths are known.
+agent prompt. For later width checks, `python -m hpo.bridge` locks the
+width-specific reference and `python -m hpo.transfer` generates tied-embedding
+AdamW LR exponents 0, 0.5, and 1 at matched `LR × weight_decay`.
 
 The exact archived Stack 4 manifest is staged on the controller at
 `/Users/varundaiya/terminus-optimizer-evidence/stack004-manifest.json`.

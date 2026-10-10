@@ -39,10 +39,9 @@ with learning rate `η_t` and weight decay `λ` multiplies its weights by
 scheduled near 2B tokens. The tied table can use a separate
 `embedding_weight_decay`; Kimi must choose and test both values.
 
-The selected Muon rule is fixed **once before the first trial**;
-the current reference says `spectral_unclamped`, under which a logical matrix
-receives its Newton–Schulz direction multiplied by `√(d_out/d_in)` and its
-chosen LR. If the separate optimizer comparison selects Hyperball, Kimi must
-merge that tested rule and update the reference before starting this campaign.
+The selected Muon rule is fixed for this campaign: `spectral_unclamped`.
+A logical matrix receives its Newton–Schulz direction multiplied by
+`√(d_out/d_in)` and its chosen LR. The rule is a width-transfer hypothesis,
+not a complete μP guarantee for the tied embedding and readout.
 The runner fixes the model, data, tokenizer, batch, schedule, and scoring;
 candidate changes are optimizer hyperparameters and global clipping only.
