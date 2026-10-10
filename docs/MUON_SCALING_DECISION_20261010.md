@@ -4,6 +4,8 @@ Reviewed 2026-10-10. This is research and a proposed dense-training recipe, not 
 
 **Decision:** retain the paper's width exponent. Improve the complete parameterization, decay/horizon accounting, and calibration of how updates affect this architecture. The best narrowly scoped experimental extension is fixed-radius retraction on attention-output and FFN-down matrices while retaining the paper's spectral update scale. It is mathematically motivated but has no Terminus training result. Published Hyperball is a useful comparator, not an automatic add-on to Muon µP.
 
+**Implementation follow-up:** the user selected the direct `eta × sqrt(d_out/d_in)` convention, without Moonshot scaling or hidden base-width matching constants. It is implemented in `8153a78` on `hpo/muon-spectral`, based on the completed speed branch `8a62293`; see the [implementation and configuration note](https://github.com/varun29-git/terminus-autoresearch/blob/8153a78/docs/MUON_SPECTRAL_IMPLEMENTATION.md). New Muon configurations on that branch default to `spectral_unclamped`. Forty selected local optimizer/training tests passed; native H100 checks remain unrun. This implements hidden-matrix scaling only; the tied parameterization, decay experiments, retraction and Hyperball discussed below remain proposals. The base-width matching option below explains the paper's relative convention and is not an extra multiplier in the chosen implementation.
+
 ## 1. What is already well supported
 
 The screenshot is Appendix G of Qiu et al., [Hyperparameter Transfer Enables Consistent Gains of Matrix-Preconditioned Optimizers Across Scales](https://arxiv.org/abs/2512.05620v2). Sections 3, B.4, D.1, G and H, and both public code branches were inspected.
