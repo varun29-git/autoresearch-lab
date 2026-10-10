@@ -81,14 +81,20 @@ speedrun band (~0.05), near the on-model screen value.
   while rare-token rows get rare gradient (at 393k tokens/batch the average
   row appears ~6x). Contrast 0.0 is owed.
 
-### Other groups (kept at archived policy for trial 1)
+### Norm and Q/K-gain LRs (required explicit choices per b493de9)
 
-norm_lr 2e-4, qk_norm_lr 1e-4 (archived 150M practice, within Keller README
-3e-4 ballpark), momentum 0.95 (Moonlight: no gain from tuning; speedrun and
-Keller default agree), betas (0.9, 0.95), eps 1e-8, grad clip 1.0 (Ling and
-standard practice; Moonlight silent). These are not the four researched
-choices; revisit only if trials show instability or update/weight-ratio
-anomalies.
+- KellerJordan/Muon README puts hidden gains/biases in the AdamW group at
+  3e-4 (same rate as embed/head there). modded-nanogpt runs scalars at 0.04
+  (no-warmup speedrun regime; not transferable). Moonlight shares one eta
+  across Muon and AdamW groups, which under my tied-table choice would imply
+  3e-3 for gains — hot for 1-D gains with wd 0.
+- Choice: `norm_lr` 3e-4 (Keller convention; 10x below the tied-table rate),
+  `qk_norm_lr` 1e-4 (extra conservative: Q/K gains directly scale attention
+  logits; Moonlight App. D flags norm-gamma behavior as stability-critical;
+  matches archived Terminus family practice).
+- momentum 0.95 (Moonlight: no gain from tuning; speedrun and Keller default
+  agree), betas (0.9, 0.95), eps 1e-8, grad clip 1.0 stay at reference.
+  Revisit only if trials show instability or update/weight-ratio anomalies.
 
 ### Missing-in-literature (recorded honestly)
 
@@ -105,6 +111,8 @@ used.
 | --- | --- | --- |
 | `muon_lr` | 0.017 | On-model screen winner; between dense-production band (5e-3) and same-batch speedrun (0.05) on Keller scale |
 | `adamw_lr` | 0.003 | Moonlight shared-eta rule at muon_lr 0.017 (0.017/5.543); matches embedding update RMS to matrix update RMS |
+| `norm_lr` | 0.0003 | Keller README gains/biases AdamW rate; 10x below tied-table rate |
+| `qk_norm_lr` | 0.0001 | Conservative for logit-scaling Q/K gains; archived family practice |
 | `weight_decay` | 0.1 | Universal production Muon/AdamW value (Moonlight/K2/GLM/nanoGPT); contrast owed |
 | `embedding_weight_decay` | 0.1 | nanoGPT tied-table and Moonlight-code convention; 0.0 contrast owed |
 
