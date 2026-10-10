@@ -7,17 +7,23 @@ and E9 batched Muon. Optional numerical speed candidates such as an FP8
 vocabulary head are **not** enabled. The architecture remains 25-layer Stack 4.
 
 The optimizer-selection result is pending. `reference_200m.json` currently
-chooses spectral Muon with weight decay; if Hyperball wins, select that
+uses spectral Muon with placeholder rates and weight decay; if Hyperball wins, select that
 optimizer implementation and change the reference **before** the first HPO
 trial. The optimizer rule is fixed across an HPO campaign. Do not compare
 HPO trials with different optimizer rules as if they were one LR sweep.
 
-`python -m hpo run` executes one candidate against the fixed English stream,
-and `python -m hpo rank` compares candidates at one matched-token milestone.
-Candidates only override LRs, decay, momentum/betas/epsilon, or clipping.
+`python -m hpo run` executes each 200M candidate for exactly 1,272 full
+updates (500,170,752 tokens) against the fixed English stream, and
+`python -m hpo rank` compares candidates only at that endpoint. The dense
+200M search has an eight-allocated-GPU-hour cap. Candidates can tune global
+and role-specific Muon LRs, the tied embedding Adam LR/decay, norm and value
+mix group LRs, matrix decay, momentum/betas/epsilon, and clipping.
+Kimi must research and fill the four `null` LR/decay fields in `candidate.json`
+before its first run; the reference-file numbers are only valid-config placeholders.
+Its factual starting brief is [MODEL_PROFILE.md](MODEL_PROFILE.md).
 All results and checkpoints go outside Git. Read [program.md](program.md)
 before starting a paid run; [KIMI_START.md](KIMI_START.md) is the pasteable
-agent prompt once the optimizer winner, GPU-hour cap, and data paths are known.
+agent prompt once the optimizer winner and data paths are known.
 
 The exact archived Stack 4 manifest is staged on the controller at
 `/Users/varundaiya/terminus-optimizer-evidence/stack004-manifest.json`.

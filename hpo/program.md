@@ -1,68 +1,90 @@
 # Dense HPO loop after optimizer selection
 
-**Objective:** Find a low-loss, stable, affordable dense recipe for the fixed
-25-layer Peri-LN + learned-value-residual Stack 4 model, then measure whether
-its rates transfer across width and training horizon. Work on one H100 NVL
-for research. The human supplies the total paid GPU-hour cap and authorizes
-the campaign. Kimi runs experiments continuously within that cap and stops
-at an informative result or the cap. This is dense FP8 only; QAT is a later
-separate campaign.
+**Objective:** Find the best attainable dense hyperparameters for the fixed
+25-layer Peri-LN + learned-value-residual Stack 4 model. Use one H100 NVL and
+at most **8 allocated GPU-hours total for the 200M campaign**, including
+startup, validation, and any idle time while the GPU remains allocated. The
+human launches and stops the paid GPU. Kimi runs consecutive full experiments
+within that cap, then reports the best measured recipe. This is dense FP8
+only; ternary QAT is a later separate campaign.
+
+Before allocating the GPU, read the factual `MODEL_PROFILE.md`, then perform
+**your own deep research** into first-party papers and released training
+code. Investigate Moonlight/Kimi, MiniCPM, MiniCPM4, Qwen3, Gemma 3, Gemma 4,
+and any other production implementation you judge important. Find the
+optimizer assignment, effective Muon and AdamW group LRs, scaling
+conventions, weight decay, momentum/betas, batch, and schedule where a source
+actually discloses them. Mark missing information as missing. You, not this
+framework, must decide which rates, group splits, and decay values deserve
+experiments for this model. Keep a compact source-backed note and candidate
+rationale. If the evidence calls for a different optimizer-group partition or
+decay field, implement and test it **before the first trial**, then freeze the
+campaign source. Prepare the first candidates before GPU allocation.
 
 The source is yesterday's selected E3/E4/E9 speed stack. The 200M reference
 in `reference_200m.json` fixes its model, prepared English token stream,
-393,216-token global update, seed, validation examples, full 2.5B-token WSD
-schedule, and scorer. Before starting, incorporate the optimizer winner from
-the separate Hyperball comparison. If spectral Muon wins, keep the current
-`spectral_unclamped` implementation and weight decay. If Hyperball wins,
+393,216-token global update, seed, validation examples, the archived 2.5B-token
+WSD schedule, and scorer. Every HPO candidate stops at its first ~500M tokens;
+the schedule's decay starts near 2B tokens and is not observed here. Before
+starting, incorporate the optimizer winner from the separate Hyperball
+comparison. If spectral Muon wins, keep the current `spectral_unclamped`
+implementation; research and tune its weight decay. If Hyperball wins,
 merge its tested implementation and set the reference rule to `hyperball`.
 Do this **once**, before the first HPO trial. The same printed LR has a
 different meaning under the two rules.
 
 One loop iteration is: make a specific hypothesis, edit `candidate.json`,
-commit it, run one trial, read the held-out English cross-entropy curve at
-matched tokens, keep or revert the candidate, then choose the next idea.
-The editable HPO fields are matrix Muon LR, tied embedding/readout Adam LR,
-main/Peri/final norm LR, Q/K gain LR, matrix/embedding weight decay, Muon
-momentum, Adam betas/epsilon, and global clipping. The model and data are
-fixed. Use the same trial name only to **resume the same candidate and code**;
-use a new name for a different recipe. The runner checks that condition.
+commit it, run the candidate through **1,272 updates = 500,170,752 tokens**,
+read its held-out English cross-entropy curve, keep or revert, then choose
+the next idea. Every valid 200M candidate must complete this full comparison;
+only an actual failure (OOM, nonfinite loss, or the hard eight-hour cutoff)
+may end early, and an incomplete run cannot be ranked. The editable HPO
+fields are the global Muon LR; optional packed-QKV, attention-O, gate/up, and
+down Muon LRs; tied embedding/readout Adam LR and its own weight decay;
+input-norm LR, Peri-LN gain LR, final-norm LR, Q/K gain LR, learned-value-mix
+LR; matrix decay, Muon momentum, Adam betas/epsilon, and global clipping.
+Unset role-specific rates inherit the candidate's global rate. The model, data,
+effective batch, warmup, decay, and scorer stay fixed. Use the same trial name
+only to **resume the same candidate and code**; use a new name for a different
+recipe. The runner checks that condition.
 
-The 125-update point (49.15M tokens, roughly five minutes at the archived
-200M speed) is a stability screen, not an LR winner: it is still in warmup.
-The 250/500-update points are likewise early. The 750 and 1,250 points
-(294.91M and 491.52M tokens) give a first post-warmup ranking. Continue only
-promising and nearby candidates. One or two finalists can be explicitly
-continued to update 6,358 (2.500B tokens) to observe the completed decay;
-the runner requires `--finalist` beyond 1,250. Do not infer a long-horizon
-optimum from a five-minute or 500M-token checkpoint. Report the full curve,
-tokens/s, clipping, FP8/stability incidents, and active GPU time.
+The 250/500-update validations are inside the 250M-token warmup and cannot
+select a winner. The 750/1,000-update validations are useful trajectory
+diagnostics, but **rank only the 1,272-update endpoint** in the stable-LR
+phase. These runs do not measure the later decay or long-horizon norm drift.
+At the archived 143.5k tokens/s, one complete run would take about 58 minutes
+before setup and validation; the optimized 200M
+speed is unmeasured. Eight hours is a cap, not a promise of eight candidates.
+Before each new candidate, use the last complete run's real allocation time
+to decide whether a full 500M-token run still fits. Keep the GPU busy with
+ready candidates; deallocate when another complete run cannot fit. Report
+the full CE curve, tokens/s, clipping, FP8/stability incidents, elapsed
+allocated GPU time, and any incomplete run separately.
 
-Start with a **wide but reasoned matrix-LR bracket** for the selected optimizer.
-The old Moonshot-style 0.003 cannot be copied numerically to spectral Muon
-or Hyperball. Inspect the initial logical-matrix update-to-weight ratios,
-especially small-initialized O/down, then narrow the bracket; stop nonfinite
-or clearly collapsing settings. After matrix LR, tune the tied embedding LR,
-then norm and Q/K gain LRs. Test weight decay and momentum only around a
-stable rate region. When LR changes, record the resulting decoupled
-`LR × weight_decay` shrinkage; if a gain might be due to decay, run a
-matched-shrinkage counterfactual. Avoid a Cartesian sweep. Change one
-major axis at a time, except for a justified coupled calibration.
+Choose the initial Muon LR, tied-table AdamW LR, matrix weight decay, and
+embedding weight decay from your research and the model profile; write all
+four explicitly in every candidate. Decide which optimizer groups need
+distinct rates from measured CE curves and update/weight ratios. Design high-information experiments that
+fit the time cap; coupled group changes are allowed when the hypothesis
+requires them. **Optimizer weight decay operates during every one of these
+500M-token trials**, even though the WSD learning-rate decay happens much
+later. Test matrix and tied-embedding weight decay empirically at matched
+learning rates where the budget allows; do not call either tuned from a
+single uncontrasted value. Consider the effect of `LR × weight_decay` when
+interpreting a result. The framework does not prescribe numerical rates,
+weight-decay values, trial order, or a fixed list of group splits. An
+unsuccessful full candidate is evidence.
 
 Example on the human-provided H100, with the exact archived manifest staged
 on its persistent disk:
 
 ```bash
-python -m hpo run --trial spectral_lr_003 --updates 125 \
+python -m hpo run --trial researched_candidate_01 --updates 1272 \
   --manifest /external/stack004-manifest.json \
   --data-root /srv/terminus-10b/data/packed \
   --results-root /external/hpo-results
 
-python -m hpo run --trial spectral_lr_003 --updates 1250 \
-  --manifest /external/stack004-manifest.json \
-  --data-root /srv/terminus-10b/data/packed \
-  --results-root /external/hpo-results
-
-python -m hpo rank --updates 1250 --results-root /external/hpo-results
+python -m hpo rank --updates 1272 --results-root /external/hpo-results
 ```
 
 The reference requires the exact manifest SHA-256. Training still checks the
@@ -105,16 +127,19 @@ projection cancels any scalar applied to the update first. Neither law
 transfers the best LR across batch size, horizon, data mixture, or QAT by
 theorem.
 
-For each width bridge, carry **four complete 200M recipes** on the same fixed
-stream and effective batch: the winner, its closest credible runner-up, and
+The width bridges need a separately authorized GPU budget; they are not part
+of the eight-hour 200M search. For each width bridge, carry **four complete
+200M recipes** on the same fixed stream and effective batch: the winner,
+its closest credible runner-up, and
 two stable settings that were clearly worse at 200M. Choose the weaker
 settings on opposite sides of the matrix-LR optimum (one too low, one too
 high), while holding their other settings equal to the winner where possible.
 Their 200M CE gaps must exceed ordinary validation noise; an unstable or
 divergent setting is not a useful negative control. Run all four at width
 1536, then all four at width 2304 for a width-transfer claim. Compare them
-at the same post-warmup token milestones, preferably 750 and 1,250 updates;
-125 updates is only a stability screen. If either former loser becomes best,
+at the same post-warmup token milestones, preferably 750 and 1,272 updates;
+earlier points are only trajectory or stability checks. If either former
+loser becomes best,
 the 200M ranking did not transfer, even if the old winner still trains well.
 Compare **where the LR minimum moves**, not only each width's raw loss.
 Measure logit/activation RMS, logical weight and update RMS, clipping and
