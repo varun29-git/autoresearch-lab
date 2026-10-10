@@ -56,7 +56,7 @@ def count_width_parameters(width):
 
 def make_run_config(width, *, weight_mode, schedule, warmup_tokens, decay_tokens=None,
                     decay_style="cosine", final_lr_fraction=0.1, muon_lr, adamw_lr,
-                    norm_lr=2e-4, qk_norm_lr=1e-4, weight_decay=0.1, muon_lr_rule="sqrt_fan_in",
+                    norm_lr=2e-4, qk_norm_lr=1e-4, weight_decay=0.1, muon_lr_rule="spectral_unclamped",
                     muon_fan_in_base=None, gradient_accumulation_steps=64, seed=1337,
                     linear_backend="deepgemm", fp8_backward="full", fp8_quantizer="triton_split",
                     extra_model=None):

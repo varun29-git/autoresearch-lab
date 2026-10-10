@@ -28,11 +28,14 @@ class WidthFamilyTests(unittest.TestCase):
             self.assertEqual(config["model"]["qk_norm_mode"], "learned_rms")
             self.assertFalse(config["model"]["fused_qkv"])
             self.assertEqual(config["optimizer"]["qk_norm_lr"], .0001)
+            self.assertEqual(config["optimizer"]["muon_lr_rule"], "spectral_unclamped")
             self.assertLess(config["optimizer"]["qk_norm_lr"], config["optimizer"]["norm_lr"])
 
     def test_muon_lr_rules(self):
         torch = __import__("torch")
         parameter = torch.nn.Parameter(torch.empty(256, 1024))
+        self.assertEqual(OptimizerConfig().muon_lr_rule, "spectral_unclamped")
+        self.assertEqual(muon_update_scale_for_param(parameter), 1.0)
         rule_a = muon_update_scale_for_param(parameter, rule="sqrt_fan_in")
         rule_b = muon_update_scale_for_param(parameter, rule="sqrt_fan_in_ratio",
                                              fan_in_base=2304)

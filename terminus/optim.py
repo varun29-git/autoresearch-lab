@@ -22,8 +22,8 @@ class OptimizerConfig:
     betas: tuple[float, float] = (0.9, 0.95)
     eps: float = 1e-8
     momentum: float = 0.95
-    muon_lr_rule: str = "sqrt_fan_in"   # rule A of the width-transfer study
-    muon_fan_in_base: int | None = None  # rule B: extra fan_in_base/fan_in factor
+    muon_lr_rule: str = "spectral_unclamped"
+    muon_fan_in_base: int | None = None  # only for the legacy width-ratio rule
 
     def __post_init__(self):
         if self.kind not in {"adamw", "muon"}:
@@ -35,8 +35,8 @@ class OptimizerConfig:
             raise ValueError("weight decay must be finite and nonnegative")
         if len(self.betas) != 2 or any(not 0 <= beta < 1 for beta in self.betas) or not 0 <= self.momentum < 1:
             raise ValueError("optimizer moment coefficients must lie in [0, 1)")
-        if self.muon_lr_rule not in {"sqrt_fan_in", "sqrt_fan_in_ratio"}:
-            raise ValueError("muon_lr_rule must be sqrt_fan_in (rule A) or sqrt_fan_in_ratio (rule B)")
+        if self.muon_lr_rule not in {"spectral_unclamped", "sqrt_fan_in", "sqrt_fan_in_ratio"}:
+            raise ValueError("muon_lr_rule must be spectral_unclamped, sqrt_fan_in, or sqrt_fan_in_ratio")
         if self.muon_lr_rule == "sqrt_fan_in_ratio":
             if (isinstance(self.muon_fan_in_base, bool) or not isinstance(self.muon_fan_in_base, int)
                     or self.muon_fan_in_base <= 0):
@@ -45,17 +45,22 @@ class OptimizerConfig:
             raise ValueError("muon_fan_in_base only applies to sqrt_fan_in_ratio")
 
 
-def muon_update_scale_for_param(parameter, *, rule="sqrt_fan_in", fan_in_base=None):
+def muon_update_scale_for_param(parameter, *, rule="spectral_unclamped", fan_in_base=None):
     """Per-group Muon LR scale.
 
-    Rule A ("sqrt_fan_in"): 0.2 * sqrt(fan_in) — constant elementwise update
-    RMS with upstream's sqrt(max(1, out/in)) factor. Rule B
-    ("sqrt_fan_in_ratio"): rule A times fan_in_base/fan_in, the μP-style
-    width-ratio correction the width-transfer study compares against rule A.
+    Spectral scaling keeps the group LR equal to eta. The optimizer applies
+    sqrt(logical_fan_out / fan_in) to each raw NS update, including packed slices.
+    Legacy "sqrt_fan_in" uses 0.2 * sqrt(fan_in) here plus the upstream
+    clamped aspect factor. "sqrt_fan_in_ratio" adds fan_in_base/fan_in;
+    it is an archived empirical rule, not the Muon spectral parameterization.
     Weight decay is divided by the same scale so lr*wd is rule-independent.
     """
     if parameter.ndim != 2:
         raise ValueError("Muon requires a matrix")
+    if rule == "spectral_unclamped":
+        if fan_in_base is not None:
+            raise ValueError("muon_fan_in_base only applies to sqrt_fan_in_ratio")
+        return 1.0
     scale = 0.2 * math.sqrt(parameter.shape[1])
     if rule == "sqrt_fan_in_ratio":
         if not fan_in_base:
@@ -132,7 +137,8 @@ def build_optimizer(model, config=None):
             raise RuntimeError("Muon must match the pinned commit; its shape scaling is part of the optimizer contract")
         from .logical_muon import LogicalMuonWithAuxAdam
 
-        optimizer = LogicalMuonWithAuxAdam(groups, logical_rows)
+        adjust_lr_fn = "spectral_unclamped" if config.muon_lr_rule == "spectral_unclamped" else "original"
+        optimizer = LogicalMuonWithAuxAdam(groups, logical_rows, adjust_lr_fn=adjust_lr_fn)
     else:
         use_cuda = all(parameter.is_cuda for parameter in model.parameters())
         optimizer = torch.optim.AdamW(groups, fused=use_cuda, foreach=not use_cuda)
