@@ -35,8 +35,8 @@ class OptimizerConfig:
             raise ValueError("weight decay must be finite and nonnegative")
         if len(self.betas) != 2 or any(not 0 <= beta < 1 for beta in self.betas) or not 0 <= self.momentum < 1:
             raise ValueError("optimizer moment coefficients must lie in [0, 1)")
-        if self.muon_lr_rule not in {"spectral_unclamped", "sqrt_fan_in", "sqrt_fan_in_ratio"}:
-            raise ValueError("muon_lr_rule must be spectral_unclamped, sqrt_fan_in, or sqrt_fan_in_ratio")
+        if self.muon_lr_rule not in {"spectral_unclamped", "hyperball", "sqrt_fan_in", "sqrt_fan_in_ratio"}:
+            raise ValueError("muon_lr_rule must be spectral_unclamped, hyperball, sqrt_fan_in, or sqrt_fan_in_ratio")
         if self.muon_lr_rule == "sqrt_fan_in_ratio":
             if (isinstance(self.muon_fan_in_base, bool) or not isinstance(self.muon_fan_in_base, int)
                     or self.muon_fan_in_base <= 0):
@@ -50,14 +50,18 @@ def muon_update_scale_for_param(parameter, *, rule="spectral_unclamped", fan_in_
 
     Spectral scaling keeps the group LR equal to eta. The optimizer applies
     sqrt(logical_fan_out / fan_in) to each raw NS update, including packed slices.
+    Hyperball also keeps the group LR equal to eta, but interprets it as an
+    angular LR; it normalizes each logical update and retracts each weight.
     Legacy "sqrt_fan_in" uses 0.2 * sqrt(fan_in) here plus the upstream
     clamped aspect factor. "sqrt_fan_in_ratio" adds fan_in_base/fan_in;
     it is an archived empirical rule, not the Muon spectral parameterization.
-    Weight decay is divided by the same scale so lr*wd is rule-independent.
+    For legacy rules, weight decay is divided by the same scale so lr*wd is
+    rule-independent. Hyperball uses zero hidden-matrix weight decay because
+    retraction fixes each logical matrix's Frobenius radius.
     """
     if parameter.ndim != 2:
         raise ValueError("Muon requires a matrix")
-    if rule == "spectral_unclamped":
+    if rule in {"spectral_unclamped", "hyperball"}:
         if fan_in_base is not None:
             raise ValueError("muon_fan_in_base only applies to sqrt_fan_in_ratio")
         return 1.0
@@ -101,7 +105,7 @@ def build_optimizer(model, config=None):
             scale = muon_update_scale_for_param(parameter, rule=config.muon_lr_rule,
                                                 fan_in_base=config.muon_fan_in_base)
             groups.append({"params": [parameter], "lr": config.muon_lr * scale,
-                           "weight_decay": config.weight_decay / scale,
+                           "weight_decay": 0.0 if config.muon_lr_rule == "hyperball" else config.weight_decay / scale,
                            "momentum": config.momentum, "use_muon": True})
             logical_rows.append(logical_muon_rows(name, parameter, model))
         elif name.endswith((".attn.q_norm.weight", ".attn.k_norm.weight")):
@@ -137,7 +141,8 @@ def build_optimizer(model, config=None):
             raise RuntimeError("Muon must match the pinned commit; its shape scaling is part of the optimizer contract")
         from .logical_muon import LogicalMuonWithAuxAdam
 
-        adjust_lr_fn = "spectral_unclamped" if config.muon_lr_rule == "spectral_unclamped" else "original"
+        adjust_lr_fn = (config.muon_lr_rule if config.muon_lr_rule in {"spectral_unclamped", "hyperball"}
+                        else "original")
         optimizer = LogicalMuonWithAuxAdam(groups, logical_rows, adjust_lr_fn=adjust_lr_fn)
     else:
         use_cuda = all(parameter.is_cuda for parameter in model.parameters())

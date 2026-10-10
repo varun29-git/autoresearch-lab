@@ -10,8 +10,8 @@ class LogicalMuonWithAuxAdam(SingleDeviceMuonWithAuxAdam):
     def __init__(self, param_groups, logical_rows, batched=True, *, adjust_lr_fn="spectral_unclamped"):
         if len(param_groups) != len(logical_rows):
             raise ValueError("logical Muon metadata must match optimizer groups")
-        if adjust_lr_fn not in {"spectral_unclamped", "original"}:
-            raise ValueError("adjust_lr_fn must be spectral_unclamped or original")
+        if adjust_lr_fn not in {"spectral_unclamped", "hyperball", "original"}:
+            raise ValueError("adjust_lr_fn must be spectral_unclamped, hyperball, or original")
         # The pinned upstream constructor checks exact group keys. Add the
         # slice metadata after it has established the ordinary Muon groups.
         super().__init__(param_groups)
@@ -56,6 +56,17 @@ class LogicalMuonWithAuxAdam(SingleDeviceMuonWithAuxAdam):
             self._step_reference()
         return loss
 
+    @staticmethod
+    def _muon_state(state, parameter, group):
+        if not state:
+            state["momentum_buffer"] = torch.zeros_like(parameter)
+            if group["adjust_lr_fn"] == "hyperball":
+                # The stored FP32 radius belongs to each logical matrix, not
+                # the physically packed QKV or gate/up parameter as a whole.
+                parts = parameter.split(group.get("logical_rows", (parameter.shape[0],)), dim=0)
+                state["hyperball_radii"] = torch.stack([torch.linalg.vector_norm(part.float()) for part in parts])
+        return state
+
     def _collect_muon_slices(self):
         """Per logical slice: exact reference momentum/Nesterov semantics, grouped for launch efficiency.
 
@@ -73,15 +84,14 @@ class LogicalMuonWithAuxAdam(SingleDeviceMuonWithAuxAdam):
             for parameter in group["params"]:
                 if parameter.grad is None:
                     parameter.grad = torch.zeros_like(parameter)
-                state = self.state[parameter]
-                if len(state) == 0:
-                    state["momentum_buffer"] = torch.zeros_like(parameter)
+                state = self._muon_state(self.state[parameter], parameter, group)
                 momentum = state["momentum_buffer"]
                 start = 0
-                for rows in group.get("logical_rows", (parameter.shape[0],)):
+                for index, rows in enumerate(group.get("logical_rows", (parameter.shape[0],))):
                     stop = start + rows
                     slices.append({"parameter": parameter, "momentum": momentum,
-                                   "start": start, "stop": stop, "group": group})
+                                   "start": start, "stop": stop, "group": group,
+                                   "radius": state["hyperball_radii"][index] if group["adjust_lr_fn"] == "hyperball" else None})
                     start = stop
         by_beta = defaultdict(list)
         for item in slices:
@@ -115,6 +125,19 @@ class LogicalMuonWithAuxAdam(SingleDeviceMuonWithAuxAdam):
             if adjust_lr_fn == "original":
                 # Preserve the archived BF16 multiply and its rounding exactly.
                 update *= max(1, rows / cols) ** 0.5
+            if adjust_lr_fn == "hyperball":
+                weights = [m["parameter"][m["start"]:m["stop"]] for m in members]
+                updates = list(update.float().unbind(0))
+                radii = [m["radius"] for m in members]
+                norms = torch._foreach_norm(updates)
+                scales = [(-m["group"]["lr"] * radius) / norm.clamp_min(1e-30)
+                          for m, radius, norm in zip(members, radii, norms)]
+                torch._foreach_mul_(updates, scales)
+                torch._foreach_add_(weights, updates)
+                new_norms = torch._foreach_norm(weights)
+                torch._foreach_mul_(weights, [radius / norm.clamp_min(1e-30)
+                                              for radius, norm in zip(radii, new_norms)])
+                continue
             shape_scale = (rows / cols) ** 0.5 if adjust_lr_fn == "spectral_unclamped" else 1.0
             by_rate = defaultdict(list)
             for member in members:
@@ -173,24 +196,31 @@ class LogicalMuonWithAuxAdam(SingleDeviceMuonWithAuxAdam):
                 for parameter in group["params"]:
                     if parameter.grad is None:
                         parameter.grad = torch.zeros_like(parameter)
-                    state = self.state[parameter]
-                    if len(state) == 0:
-                        state["momentum_buffer"] = torch.zeros_like(parameter)
+                    state = self._muon_state(self.state[parameter], parameter, group)
                     momentum = state["momentum_buffer"]
                     start = 0
-                    for rows in group.get("logical_rows", (parameter.shape[0],)):
+                    for index, rows in enumerate(group.get("logical_rows", (parameter.shape[0],))):
                         stop = start + rows
-                        if group["adjust_lr_fn"] == "spectral_unclamped":
+                        if group["adjust_lr_fn"] in {"spectral_unclamped", "hyperball"}:
                             grad_slice = parameter.grad[start:stop]
                             momentum_slice = momentum[start:stop]
                             momentum_slice.lerp_(grad_slice, 1 - group["momentum"])
                             direction = grad_slice.lerp_(momentum_slice, group["momentum"])
                             update = zeropower_via_newtonschulz5(direction, steps=5).float()
-                            shape_scale = (rows / parameter.shape[1]) ** 0.5
+                            shape_scale = ((rows / parameter.shape[1]) ** 0.5
+                                           if group["adjust_lr_fn"] == "spectral_unclamped" else 1.0)
                         else:
                             update = muon_update(parameter.grad[start:stop], momentum[start:stop], beta=group["momentum"])
                             shape_scale = 1.0
                         logical_weight = parameter[start:stop]
+                        if group["adjust_lr_fn"] == "hyperball":
+                            radius = state["hyperball_radii"][index]
+                            update.mul_((-group["lr"] * radius) /
+                                        torch.linalg.vector_norm(update).clamp_min(1e-30))
+                            logical_weight.add_(update)
+                            logical_weight.mul_(radius / torch.linalg.vector_norm(logical_weight).clamp_min(1e-30))
+                            start = stop
+                            continue
                         logical_weight.mul_(1 - group["lr"] * group["weight_decay"])
                         logical_weight.add_(update.reshape(logical_weight.shape), alpha=-group["lr"] * shape_scale)
                         start = stop
