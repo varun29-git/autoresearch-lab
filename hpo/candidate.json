@@ -1,0 +1,6 @@
+{
+  "optimizer": {
+    "muon_lr": 0.003
+  },
+  "training": {}
+}
