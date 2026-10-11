@@ -4,7 +4,7 @@
     "adamw_lr": 0.006,
     "norm_lr": 0.0003,
     "qk_norm_lr": 0.0001,
-    "weight_decay": 0.02,
+    "weight_decay": 0.05,
     "embedding_weight_decay": 0.0
   },
   "training": {}
