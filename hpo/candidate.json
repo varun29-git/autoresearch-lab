@@ -1,6 +1,6 @@
 {
   "optimizer": {
-    "muon_lr": 0.0085,
+    "muon_lr": 0.017,
     "adamw_lr": 0.003,
     "norm_lr": 0.0003,
     "qk_norm_lr": 0.0001,
