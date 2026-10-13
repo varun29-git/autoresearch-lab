@@ -1,4 +1,6 @@
 import json
+from dataclasses import asdict
+from pathlib import Path
 
 import pytest
 
@@ -6,6 +8,29 @@ from production.build_dense_config import build_config
 from terminus.data import TokenDataConfig, TokenManifest
 from terminus.preflight import count_model
 from terminus.train import load_config
+
+
+def test_recipe_matches_pre_handoff_refactor(tmp_path):
+    # Historical reference is test evidence only, never a production dependency.
+    root = Path(__file__).resolve().parents[1]
+    old = json.loads((root / "hpo/reference_200m.json").read_text())["config"]
+    old["model"].update(dim=2304, ffn_dim=5760, n_heads=18, n_kv_heads=6)
+    old["optimizer"] = dict(kind="muon", muon_lr_rule="spectral_unclamped",
+                            muon_fan_in_base=None, muon_lr=.017, adamw_lr=.003,
+                            norm_lr=.0003, qk_norm_lr=.0001, weight_decay=.02,
+                            embedding_weight_decay=0.)
+    old["training"].update(gradient_accumulation_steps=8, warmup_tokens=20_000_000,
+                           decay_tokens=100_000_000, checkpoint_interval=1000,
+                           validation_interval=1000, validation_batches_per_language=8,
+                           log_interval=10, stability_log_interval=10, time_limit_seconds=None)
+    new = build_config(manifest=manifest(), world_size=32, global_batch_tokens=4_194_304,
+                       warmup_tokens=20_000_000, decay_tokens=100_000_000)
+    normalized = []
+    for name, config in (("old", old), ("new", new)):
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps(config))
+        normalized.append([asdict(section) for section in load_config(path)])
+    assert normalized[0] == normalized[1]
 
 
 def manifest(*, batch_size=4, seq_len=4096, total_tokens=1_000_000_000):

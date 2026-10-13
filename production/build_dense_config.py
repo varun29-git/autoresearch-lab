@@ -7,26 +7,15 @@ global batch, or long-horizon learning-rate schedule for the operator.
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 from pathlib import Path
 
-from hpo.loop import DEFAULT_REFERENCE, ROOT, load_reference
+from production.recipe import SELECTED_MODEL, SELECTED_OPTIMIZER, SELECTED_TRAINING
 from terminus.data import TokenManifest
 from terminus.train import load_config
 
 
-SELECTED_OPTIMIZER = {
-    "kind": "muon",
-    "muon_lr_rule": "spectral_unclamped",
-    "muon_fan_in_base": None,
-    "muon_lr": 0.017,
-    "adamw_lr": 0.003,
-    "norm_lr": 0.0003,
-    "qk_norm_lr": 0.0001,
-    "weight_decay": 0.02,
-    "embedding_weight_decay": 0.0,
-}
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def build_config(*, manifest: TokenManifest, world_size: int,
@@ -47,14 +36,8 @@ def build_config(*, manifest: TokenManifest, world_size: int,
             or warmup_tokens + decay_tokens > total_tokens):
         raise ValueError("warmup and decay must fit the manifest's usable token budget")
 
-    config = copy.deepcopy(load_reference(DEFAULT_REFERENCE)["config"])
-    model = config["model"]
-    if (model["n_layers"], model["dim"], model["ffn_dim"], model["n_heads"],
-            model["n_kv_heads"], model["branch_norm"], model["value_residual"],
-            model["weight_mode"]) != (25, 768, 1920, 6, 2, "peri", "learned", "dense"):
-        raise ValueError("the selected Stack 4 reference changed")
-    model.update(dim=2304, ffn_dim=5760, n_heads=18, n_kv_heads=6)
-    config["optimizer"] = SELECTED_OPTIMIZER.copy()
+    config = {"model": SELECTED_MODEL.copy(), "optimizer": SELECTED_OPTIMIZER.copy(),
+              "training": SELECTED_TRAINING.copy()}
     training = config["training"]
     training.update(gradient_accumulation_steps=global_batch_tokens // microstep_tokens,
                     warmup_tokens=warmup_tokens, decay_tokens=decay_tokens,
