@@ -2,6 +2,12 @@
 
 This folder is the entry point for the selected Terminus Stack 4 implementation. The standalone `CI-1` checkout contains the full model, optimizer, FP8 kernels, streaming data loader, DDP trainer, checkpointing, tests, scripts, completed research history, and `manuscript/terminus_draft.md`. It was created from `paper/technical-draft-v1` at `fa84773`, which includes the final 200M HPO winner at `36d3de9`, the spectral-Muon change, and the E3/E4/E9 speed stack. Historical research files remain available, but the 30-layer/96K configs and pre-spectral 25-layer configs in `configs/` are not the selected production recipe.
 
+The selected settings now live in [`recipe.py`](recipe.py); config generation
+does not import the archived HPO campaign. Follow
+[`PARALLELISM.md`](PARALLELISM.md) for the initial DDP strategy, CPU run inspection,
+startup scaling issue and cluster acceptance procedure. It also identifies the
+runtime, recovery, evaluation and QAT work beyond data and parallelization.
+
 ## Selected dense starting point
 
 The model has 25 layers; width 2304; FFN width 5760; 18 query and 6 KV heads; a tied 65,536-token embedding/readout; 4096-token context; 1024-token local attention in 20 layers and global attention in 5; Peri-LN; learned value residual; and 1,500,456,496 trainable parameters. It uses the measured single-GPU dense path: FA3 attention, DeepGEMM FP8 linear operations, packed QKV/MLP and pointwise kernels, BF16 residuals, and streaming loss. The dense optimizer is spectral Muon (`eta × sqrt(d_out/d_in)` on each logical matrix, without Moonshot's width-growing factor) plus AdamW for the tied embedding and scalar/norm groups. See `docs/MUON_SPECTRAL_IMPLEMENTATION.md` for the exact update.
