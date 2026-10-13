@@ -1,0 +1,31 @@
+# CI-1 production handoff
+
+This folder is the entry point for the selected Terminus Stack 4 implementation. The standalone `CI-1` checkout contains the full model, optimizer, FP8 kernels, streaming data loader, DDP trainer, checkpointing, tests, scripts, completed research history, and `manuscript/terminus_draft.md`. It was created from `paper/technical-draft-v1` at `fa84773`, which includes the final 200M HPO winner at `36d3de9`, the spectral-Muon change, and the E3/E4/E9 speed stack. Historical research files remain available, but the 30-layer/96K configs and pre-spectral 25-layer configs in `configs/` are not the selected production recipe.
+
+## Selected dense starting point
+
+The model has 25 layers; width 2304; FFN width 5760; 18 query and 6 KV heads; a tied 65,536-token embedding/readout; 4096-token context; 1024-token local attention in 20 layers and global attention in 5; Peri-LN; learned value residual; and 1,500,456,496 trainable parameters. It uses the measured single-GPU dense path: FA3 attention, DeepGEMM FP8 linear operations, packed QKV/MLP and pointwise kernels, BF16 residuals, and streaming loss. The dense optimizer is spectral Muon (`eta × sqrt(d_out/d_in)` on each logical matrix, without Moonshot's width-growing factor) plus AdamW for the tied embedding and scalar/norm groups. See `docs/MUON_SPECTRAL_IMPLEMENTATION.md` for the exact update.
+
+The *starting* rates are Muon 0.017; tied-embedding AdamW 0.003; ordinary norm 0.0003; learned Q/K norm 0.0001; hidden-matrix weight decay 0.02; tied-embedding weight decay 0. The Muon and small-group settings come from the completed 200M campaign. In the 700M width bridge at 500M tokens, embedding LR 0.003 had lower English cross-entropy than 0.00424 or 0.006 under matched settings. This supports 0.003 as a production starting point, not a proven width law or a full µP guarantee. The 700M records remain external to Git. The dense stage has no QAT; its later recipe must be handled separately.
+
+## Make a runnable config
+
+The operator must first choose the production token manifest, global batch, warmup, and decay horizon. The builder reads the manifest's per-rank microbatch and token budget, derives gradient accumulation for the chosen world size, and refuses a batch or schedule that does not fit. It writes the run config outside Git. Its checkpoint/validation intervals are starting operational defaults in *updates*, to review for the actual run.
+
+```bash
+python -m production.build_dense_config \
+  --manifest /external/production/manifest.json \
+  --world-size 32 \
+  --global-batch-tokens <chosen_multiple_of_32_x_manifest_batch_x_4096> \
+  --warmup-tokens <chosen_warmup> \
+  --decay-tokens <chosen_decay> \
+  --output /external/production/dense_config.json
+```
+
+`<...>` marks decisions still to make; do not paste the example as a launch command. The manifest controls total dense tokens and data mixture. Check its tokenizer and shards against the model and data contract. `python -m terminus.preflight --config /external/production/dense_config.json --count-only` checks the parameter count without allocating the model. The native CUDA preflight produces the report consumed by `scripts/train.sh`. The launcher uses `CONFIG`, `MANIFEST`, `DATA_ROOT`, `OUTPUT_DIR`, `PREFLIGHT_REPORT`, and `NPROC_PER_NODE`; multi-node runs also set `NNODES`, `NODE_RANK`, `MASTER_ADDR`, and `MASTER_PORT`. The human controls any paid GPU launch.
+
+## What still needs production validation
+
+The measured single-H100 NVL dense rate is about 41,000 tokens/s on the optimized 25-layer stack (three complete paired 20-update receipts; see `docs/speed/TRANSFER_32GPU.md`). At that rate, 6,000 GPU-hours would yield about 886B dense tokens before QAT, communication, checkpoints, and downtime. The 1.5T minimum needs an average of 69,444 tokens/s/GPU across *all* production GPU-hours, and the 2T target needs 92,593. These are arithmetic requirements, not achieved rates. The 32-GPU H100 NVL/PCIe topology, global batch, communication overlap, sustained throughput, and dense/QAT time split still need measured decisions. A single-GPU winner does not establish the production target.
+
+Do not start a 1.5T run from an old config. First validate native kernels and count, then measure full 32-rank updates at the actual batch and data path, inspect slowest-rank and checkpoint costs, and calculate the dense plus QAT token forecast within the 6,000-hour aggregate budget. Save run manifests, generated configs, preflight reports, token shards, and checkpoints outside Git. This handoff prepared code and configuration tooling; it has not launched cloud GPUs or validated a 32-GPU run.

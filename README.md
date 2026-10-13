@@ -1,22 +1,5 @@
-# Terminus Stack 4 hyperparameter autoresearch
+# Terminus CI-1
 
-This worktree prepares the dense HPO campaign on the completed E3/E4/E9
-single-GPU speed implementation and the selected spectral-Muon rule.
-Start with [the HPO README](hpo/README.md),
-[the operating program](hpo/program.md), and [the Kimi prompt](hpo/KIMI_START.md).
+This independent folder contains the full Terminus Stack 4 codebase, optimized dense training path, tests, research history, and [technical-paper draft](manuscript/terminus_draft.md). Use the [production handoff](production/README.md) to prepare a 1.5B dense run. The older architecture, speed, and HPO campaigns remain available for provenance; their run configurations are not production launch configurations.
 
-The 200M English proxy loop, width-bridge generator, and matched-decay
-AdamW transfer generator live in `hpo/`.
-Every valid 200M candidate trains for 500,170,752 tokens under a total
-eight-allocated-GPU-hour cap. Kimi begins with its own optimizer research from
-[the factual model profile](hpo/MODEL_PROFILE.md), then chooses rates and
-weight decay; the reference config's numbers are placeholders.
-The source includes the completed speed implementation at `8a62293` and
-the direct spectral-Muon update at `8153a78`; optional later numerical
-speed candidates are disabled in the HPO reference. The architecture is
-still the 25-layer Peri-LN plus learned-value-residual Stack 4 model.
-
-The old [speed program](speed_program.md) and [architecture program](program.md)
-remain for provenance and do not govern this HPO branch. The earlier five-hour
-speed cap is unrelated to this HPO campaign. No token shards, checkpoints,
-trial results, credentials, or generated evaluation records belong in Git.
+The handoff does not start a paid GPU run or assert that the 32-GPU throughput target has been reached. Data manifests, token shards, checkpoints, credentials, and trial results remain outside Git.

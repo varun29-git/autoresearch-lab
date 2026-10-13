@@ -54,8 +54,9 @@ def test_candidate_only_changes_allowed_hyperparameters():
     assert reference == reference_before
     with pytest.raises(ValueError, match="explicitly choose"):
         candidate_config(reference, {"optimizer": {"muon_lr": 0.003}, "training": {}})
-    with pytest.raises(ValueError, match="explicitly choose"):
-        candidate_config(reference, json.loads(DEFAULT_CANDIDATE.read_text()))
+    # The archived final winner now specifies every required optimizer choice.
+    archived_winner = json.loads(DEFAULT_CANDIDATE.read_text())
+    assert candidate_config(reference, archived_winner)["optimizer"]["muon_lr"] == 0.017
     without_small_group_rates = copy.deepcopy(candidate)
     without_small_group_rates["optimizer"].pop("norm_lr")
     without_small_group_rates["optimizer"].pop("qk_norm_lr")
