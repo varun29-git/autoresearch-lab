@@ -1,0 +1,254 @@
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=0.82in]{geometry}
+\usepackage{microtype}
+\usepackage{array,booktabs,tabularx}
+\usepackage{float}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\definecolor{navy}{HTML}{17324D}
+\definecolor{blue}{HTML}{24588D}
+\definecolor{teal}{HTML}{16716A}
+\definecolor{soft}{HTML}{F1F6F9}
+\definecolor{line}{HTML}{D5E1E8}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue,
+  pdftitle={Terminus: Research Progress and Architecture for Offline Indic AI},
+  pdfauthor={Compact Intelligence}
+}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.48em}
+\renewcommand{\arraystretch}{1.24}
+\newcommand{\flowbox}[2]{\fcolorbox{line}{soft}{\parbox[c][1.4cm][c]{#1}{\centering\small\color{navy}#2}}}
+
+\begin{document}
+\begin{center}
+{\LARGE\bfseries\color{navy} Terminus: Research Progress and Architecture\\[0.18em]
+for Offline Indic AI}\par
+\vspace{0.55em}
+{\large Compact Intelligence}\par
+\vspace{0.2em}
+{\color{blue} Progress attachment \quad | \quad October 2026}
+\end{center}
+\vspace{0.3em}
+{\color{teal}\rule{\linewidth}{1.1pt}}
+
+\begin{abstract}
+Terminus is a small language model being developed for useful text assistance
+in seven Indic languages, with offline use as the intended deployment
+direction. Our research has moved from comparing possible model designs to
+selecting and implementing a specific architecture. The selected model has
+roughly one and a half billion trainable parameters. It is designed to learn
+first with dense weights using efficient eight-bit calculations, then adapt
+its main projection weights to a three-value form for compact inference.
+The training program targets one trillion valid token presentations across
+these stages. This document records what has been tested and built, explains
+the architecture in everyday language, and shows the applications it is
+intended to support. It does not claim that the final model has completed
+training or passed mobile-device evaluation.
+\end{abstract}
+
+\section{The problem and the goal}
+
+Many people need help reading forms, understanding public information,
+learning from local-language material, or completing routine tasks when
+reliable connectivity is unavailable. A language model that can eventually
+run on a personal device could make some of that assistance available
+without sending every request to a remote server. The practical challenge
+is to preserve useful language ability while keeping the model and its
+runtime small enough for the intended hardware.
+
+Terminus focuses on \textbf{Hindi, Bengali, Tamil, Telugu, Kannada, Marathi,
+and Gujarati} as its first seven Indic-language targets. English remains
+part of the broader training and evaluation program. We will assess each
+language separately, including relevant code-mixed text, rather than treat
+``Indic'' as a single score. Offline availability, accuracy, safety, memory
+use, and speed are release measurements; they are not implied by the
+architecture alone.
+
+\section{What the research has produced}
+
+We first examined alternative sequence-model directions, including a
+hybrid approach, and selected an attention-based transformer as the clearer
+foundation for the present system. We then ran smaller-scale training and
+quantization studies, inspected their losses and internal behavior, and
+used those findings to revise the architecture and optimizer. The result
+is a concrete model definition and training implementation rather than only
+a concept diagram.
+
+\begin{itemize}
+\item \textbf{Architecture research:} compared alternative designs and selected an attention-based model with nearby and whole-passage attention.
+\item \textbf{Smaller-model training:} completed a dense run and ternary continuation that exposed a measurable quality gap at conversion.
+\item \textbf{Model selection:} implemented the current twenty-five-layer architecture, revised normalization and value reuse, and tuned its dense optimizer on smaller models.
+\item \textbf{Training software:} built tokenizer integration, data loading, efficient eight-bit computation, distributed training, checkpointing, and a ternary path.
+\item \textbf{Hardware checks:} measured short complete updates on one H100-class GPU; full-cluster speed remains unmeasured.
+\end{itemize}
+
+One earlier proxy model trained on about ten billion dense tokens and then
+continued on about two billion ternary-training tokens. Conversion to
+three-value weights caused a large immediate rise in held-out prediction
+loss. Further training recovered much of that loss, but the final proxy
+still scored worse than its dense parent on the tracked held-out sources.
+The training mixture also changed between stages, so this result cannot be
+assigned to quantization alone. It is evidence for careful transition tests,
+not a forecast of the selected larger model's final quality.
+
+\section{The selected architecture, in plain language}
+
+The selected Terminus model has \textbf{about one and a half billion
+trainable parameters} arranged in \textbf{twenty-five transformer layers}.
+It accepts passages of just over four thousand tokens at the starting
+training context length and uses a frozen vocabulary of roughly sixty-five
+thousand pieces. Its input word-piece table and output prediction table
+share weights, saving model capacity and storage.
+
+\begin{center}
+\flowbox{0.20\linewidth}{\textbf{Input text}\\in a target language}
+\hspace{0.6em}$\longrightarrow$\hspace{0.6em}
+\flowbox{0.35\linewidth}{\textbf{Terminus model}\\nearby + whole-passage attention\\stable updates + value reuse}
+\hspace{0.6em}$\longrightarrow$\hspace{0.6em}
+\flowbox{0.20\linewidth}{\textbf{Text response}\\reviewed by the user}
+\end{center}
+\vspace{-0.4em}
+\begin{center}\small\color{blue}Illustration of the intended text workflow; it is not a deployed application screenshot.\end{center}
+
+\textbf{Nearby and whole-passage attention.} Most layers look at a moving
+window of roughly one thousand recent tokens, which limits the amount of
+history they need to hold. Every fifth layer can look across the full
+starting context. The pattern lets the model attend locally most of the
+time while periodically connecting distant parts of a passage. A grouped
+query design reduces the key/value memory required for that attention.
+
+\textbf{Stable information flow.} Each layer contains an attention step
+and a feed-forward step. Learned normalization is placed both before those
+steps and just before their outputs are added back to the main stream.
+This design, called Peri-LN, helps control the scale of changes passing
+through many layers. It is an implemented architectural choice, not a claim
+that every long training run has already been proven stable.
+
+\textbf{Reuse of early information.} Later attention layers can mix their
+own value representation with a value representation produced near the
+start of the model. The two mixing strengths are learned. This gives deeper
+layers direct access to an earlier reading of the same token, rather than
+forcing all information to pass only through successive layer outputs.
+
+\textbf{A staged route to a smaller model.} During the first training stage,
+the model learns dense weights while efficient eight-bit floating-point
+calculations handle much of the matrix work. During a later
+quantization-aware stage, selected weights are represented using three
+values: minus one, zero, and plus one, with a scale factor. The two stages
+must be compared on the same held-out material. Three-value projection
+weights do not automatically make the entire loaded application tiny: the
+vocabulary table, scales, and working memory also count.
+
+\section{Training and language plan}
+
+The program's training target is \textbf{one trillion valid token
+presentations across dense learning and ternary adaptation}. A token is a
+small piece of text used for learning; a presentation is one time the
+trainer uses that piece. Padding and held-out evaluation data do not count
+toward the target, and repeated exposure is tracked separately from unique
+source material. The final language and source proportions are recorded in
+the production data manifests instead of being inferred from an old
+proposal table.
+
+Data preparation includes script and language checks, duplicate removal,
+source and license review, screening of sensitive material, and separation
+of training material from evaluation tasks. For each of the seven target
+languages, we plan to measure native-script and relevant code-mixed
+behavior. We will also retain English, code, and mathematics evaluations so
+a gain in one area cannot hide a serious loss elsewhere.
+
+The completed implementation provides the selected dense starting model
+and a QAT mechanism. The one-trillion-token production run, the final split
+between dense and ternary stages, and the full-cluster performance record
+remain parts of the planned training program. This attachment reports the
+target without representing it as completed training.
+
+\section{Applications: what the model is being built to support}
+
+The applications below are \textbf{intended uses for a tested offline
+release}, not claims that a finished app or a validated model already
+performs them. They show why local-language understanding, compact storage,
+and offline operation matter together. For high-stakes information, a local
+application should supply current, trusted documents and expose their
+sources; the language model should explain those documents rather than
+invent current rules from memory.
+
+\begin{table}[H]
+\centering\small
+\caption{Illustrative offline applications and the required safeguards.}
+\label{tab:applications}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries\raggedright\arraybackslash}p{0.20\linewidth}>{\raggedright\arraybackslash}X >{\raggedright\arraybackslash}X@{}}
+\toprule
+Application & Example of useful assistance & What the surrounding application provides \\
+\midrule
+Public-service and form guidance & Explain an official form or scheme notice in the user's language; identify which fields need attention. & A versioned copy of the official document, its date and source, and a route to the responsible authority for final eligibility or policy decisions. \\
+Education & Summarize a local-language lesson, explain a paragraph at a simpler level, or create practice questions from supplied material. & Source text, age-appropriate controls, and teacher or learner review of answers. \\
+Small-business records & Help a shopkeeper read a stock list, organize an invoice draft, or explain a spreadsheet field in Hindi, Gujarati, or another target language. & Local files, a deterministic calculator for totals, and verified tax or pricing rules when those rules matter. \\
+Field and community work & Summarize instructions from locally stored manuals and turn them into a short checklist in the worker's language. & Approved, up-to-date manuals and a human decision-maker for safety-critical actions. \\
+Personal document assistance & Search a user's own locally stored documents, summarize passages, and answer questions with a pointer to the source passage. & A local document index and clear boundaries on which files the model may access. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\textbf{Illustrative workflow.} A user asks, in Hindi, how to complete a
+field in a locally stored public-service form. The application retrieves
+the relevant instructions from an official copy already on the device.
+Terminus explains the instructions in Hindi and points back to the source
+paragraph. If the document does not settle an eligibility question, the
+application directs the user to the official channel. This combines a
+language model with local retrieval; it does not ask the model to invent
+policy or silently submit the form.
+
+The software illustration above is intentionally text-based. Speech input,
+automatic form submission, a general-purpose tool agent, and live access
+to government databases are outside the selected model specification.
+They would require separate software, permissions, and evaluation.
+
+\section{How progress will be judged}
+
+\textbf{Model quality.} We will compare the dense checkpoint, its immediate
+conversion to ternary weights, and the trained ternary checkpoint on the
+same held-out data. Each target language receives its own scores for text
+prediction and relevant tasks. Evaluation also covers English, code,
+mathematics, code mixing, factual answers, and safety-sensitive prompts.
+An overall average cannot substitute for a language-by-language report.
+
+\textbf{Training reliability.} The production record will include valid
+training tokens, source mix, checkpoint history, loss and stability traces,
+recovery tests, and speed over complete updates on the actual GPU cluster.
+Short one-GPU measurements provide engineering evidence, but they do not
+establish the speed or total cost of a long distributed run.
+
+\textbf{Offline readiness.} An exported model must be tested on the intended
+devices. The report will separate file size from memory used while running
+and measure response speed, battery cost, and correctness. A compact weight
+format is a design goal; a phone-ready memory figure requires a real export
+and device measurement.
+
+\section{Current status}
+
+Terminus has advanced from architectural exploration to a selected and
+implemented dense model, a frozen tokenizer, a training stack, and a
+separate ternary-training path. Smaller runs exposed a quality gap at the
+dense-to-ternary transition; the current design responds through revised
+normalization, value reuse, and optimizer tuning. The next decisive
+evidence is a measured large-scale run, controlled ternary continuation,
+per-language evaluation, and on-device testing.
+
+\vspace{0.5em}
+{\color{teal}\rule{\linewidth}{0.8pt}}
+\small\textbf{Research foundations.} The design draws on published work on
+grouped-query attention, Peri-LN normalization, value residual learning,
+low-bit language models, and efficient attention kernels. The technical
+implementation and research-stage analysis are documented in the Terminus
+project records; this attachment reports production outcomes only after
+they have been measured.
+
+\end{document}
