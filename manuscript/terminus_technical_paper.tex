@@ -1,0 +1,462 @@
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=0.9in]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,tabularx,array}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\definecolor{paperblue}{HTML}{17365D}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=paperblue,
+  citecolor=paperblue,
+  urlcolor=paperblue,
+  pdftitle={Terminus 1.5B: A Peri-Normalized Value-Residual Transformer for Dense-to-Ternary Training},
+  pdfauthor={Compact Intelligence}
+}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.55em}
+\renewcommand{\arraystretch}{1.15}
+\newcommand{\model}{Terminus 1.5B}
+\newcommand{\QAT}{quantization-aware training}
+
+\title{\vspace{-1.0cm}\textbf{Terminus 1.5B: A Peri-Normalized Value-Residual Transformer for Dense-to-Ternary Training}}
+\author{Compact Intelligence}
+\date{Technical design paper \quad 14 October 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We present the selected architecture and training method for \model{}, a
+1,500,456,496-parameter decoder-only transformer intended for a staged
+dense-to-ternary language-model program. The model combines a 4:1 local/global
+attention schedule, grouped-query attention, Peri-LN branch normalization,
+learned Q/K normalization, a cross-layer learned value residual, and a tied
+65,536-token embedding and readout. Dense training uses FP8 E4M3 projection
+arithmetic with FP32 master projection weights and spectral Muon updates;
+ternary-weight continuation is a separate \QAT{} phase. The program targets
+one trillion valid training-token presentations across both stages and
+evaluates Hindi, Bengali, Tamil, Telugu, Kannada, Marathi, and Gujarati as its
+initial Indic-language support set. We give the exact model geometry,
+quantizer and optimizer rules, parameter and storage accounting, evaluation
+protocol, and limits of the existing evidence. Production training, final
+ternary quality, distributed throughput, and on-device performance are not
+reported as completed results.
+\end{abstract}
+
+\noindent\textbf{Keywords:} small language model; dense-to-ternary training;
+FP8; grouped-query attention; Peri-LN; Indic languages; offline inference
+
+\section{Introduction}
+
+Offline language assistance imposes two distinct constraints. A model must
+learn useful multilingual behavior, and its exported form must fit the memory,
+latency, and energy limits of its target device. A small parameter count alone
+does not establish either property. Ternary storage can reduce the byte cost
+of selected projection matrices, but a tied vocabulary table, scale metadata,
+KV caches, activations, and runtime workspaces remain. Likewise, fast FP8
+training arithmetic does not establish the quality of a later ternary model.
+
+\model{} therefore follows a two-stage method: dense-weight pretraining with
+FP8 computation, followed by ternary-weight \QAT{}. This sequence permits
+learning in the dense model before testing how much function survives
+conversion and adaptation. The selected architecture adds Peri-LN-style
+normalization of residual branches and a learned value path from the first
+attention layer to later layers. Both mechanisms are motivated by residual
+scale and attention-value behavior observed in earlier proxy work; their
+full-scale effects must be evaluated on the trained model
+\cite{peri,valueresidual}.
+
+This paper is a technical design and measurement protocol. It identifies
+implemented model and optimizer choices, the stated one-trillion-token
+training target, and the evidence needed for release claims. It contains no
+claim that the production model has already processed that budget or reached
+a specified multilingual benchmark score.
+
+\section{Model architecture}
+
+\subsection{Geometry and parameter allocation}
+
+The model is a causal decoder with 25 blocks. Its hidden width is 2,304 and
+the SwiGLU intermediate width is 5,760. Each attention layer has 18 query
+heads and six key/value heads, with head dimension 128 and a uniform 3:1
+query-to-KV ratio. The tied input embedding and output classifier use a frozen
+65,536-token vocabulary. The starting sequence length is 4,096 tokens.
+
+\begin{table}[ht]
+\centering
+\caption{Selected model and dense-stage implementation. Values describe the
+selected configuration, not a completed production checkpoint.}
+\label{tab:model}
+\small
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{0.39\linewidth}X@{}}
+\toprule
+Property & Selection \\
+\midrule
+Trainable parameters & 1,500,456,496 \\
+Decoder layers; hidden width & 25; 2,304 \\
+SwiGLU intermediate width & 5,760 \\
+Query / KV heads; head dimension & 18 / 6; 128 \\
+Vocabulary and readout & 65,536 tokens; input and output weights tied \\
+Starting context; local window & 4,096 tokens; 1,024 tokens \\
+Attention schedule & Four local layers followed by one global layer, repeated five times \\
+Normalization & Pre-attention and pre-FFN RMSNorm; Peri-LN branch-output RMSNorm; learned Q/K RMSNorm \\
+Value path & Learned mixture of layer-zero and current-layer values in layers 2--25 \\
+Dense linear computation & Block-scaled FP8 E4M3 through DeepGEMM; full FP8 projection backward \\
+Residual stream; attention kernel & BF16; FlashAttention-3 where supported \\
+Projection optimizer & Spectral Muon on complete logical matrices \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+For this configuration, 1,349,222,400 parameters belong to the projection
+matrices eligible for later ternary storage. The tied embedding/readout has
+150,994,944 parameters; other learned parameters total 239,152. These three
+counts sum exactly to 1,500,456,496. The tied table is not part of the
+present ternary projection set.
+
+\subsection{Local and global attention}
+
+Twenty layers use causal sliding-window attention over 1,024 tokens; every
+fifth layer uses full causal attention over the 4,096-token starting context.
+This four-local/one-global pattern gives bounded local-layer KV history and
+periodic mixing across the full context. The head geometry and GQA ratio are
+identical in both layer types. Grouped-query attention reduces KV-cache
+storage relative to one KV head per query head \cite{gqa}. The chosen 4,096
+context is an initial training specification; longer-context behavior
+requires a separate training and evaluation record.
+
+Query and key vectors are normalized with learned gains before rotary
+position encoding. Values are not Q/K-normalized. The selected path has no
+post-optimizer Q/K rescaling rule; global gradient clipping is part of the
+optimizer configuration and serves a different purpose.
+
+\subsection{Peri-LN residual blocks}
+
+Write $R_{\gamma}(z)=\gamma\odot z/\sqrt{\operatorname{mean}(z^2)+\epsilon}$
+for RMS normalization, with $\epsilon=10^{-5}$ and a learned gain. For block
+$\ell$, let $x_\ell$ denote its input, and define
+\begin{align}
+u_\ell &= R_{\gamma^{\mathrm{in,a}}_\ell}(x_\ell),\\
+a_\ell &= x_\ell +
+  R_{\gamma^{\mathrm{out,a}}_\ell}
+  \!\left(W^O_\ell\,\operatorname{Attn}_\ell(u_\ell)\right),\\
+h_\ell &= R_{\gamma^{\mathrm{in,f}}_\ell}(a_\ell),\\
+x_{\ell+1} &= a_\ell +
+  R_{\gamma^{\mathrm{out,f}}_\ell}
+  \!\left(W^D_\ell
+  [\operatorname{SiLU}(W^G_\ell h_\ell)\odot(W^U_\ell h_\ell)]\right).
+\end{align}
+The two output normalizers act immediately before residual addition and
+have gains independent of the input normalizers. This is the Peri-LN
+component. The attention-output and FFN-down projection weights also receive
+the selected initialization multiplier 0.14078571632817444. It is an
+initialization rule, not a runtime multiplier. The model uses no SubLN
+branch \cite{rmsnorm,swiglu,peri}.
+
+\subsection{Cross-layer value residual}
+
+Let $v_\ell$ be the value projection of the token at layer $\ell$. The first
+layer keeps $\widetilde v_0=v_0$; every later layer uses
+\begin{equation}
+\widetilde v_\ell=\lambda_{\ell,0}v_0+
+\lambda_{\ell,1}v_\ell,\qquad \ell\geq1.
+\end{equation}
+The two scalars per later layer are learned, initialized to 0.5 each, and
+are not constrained to sum to one. Mixing occurs before attention masking
+and aggregation. Training preserves the gradient path to the first value
+projection. Cached inference maintains a rolling buffer of the first-layer
+values for the new positions. The mechanism reuses low-layer information
+without adding an MTP drafter or changing the attention cadence
+\cite{valueresidual}.
+
+\section{Dense-to-ternary training method}
+
+\subsection{Dense FP8 stage}
+
+The selected dense mode keeps FP32 master projection weights. Linear
+operands use block-scaled FP8 E4M3 weights and activations through DeepGEMM;
+the selected backward path uses FP8 projection arithmetic. The residual
+stream is BF16. Attention uses FlashAttention-3 where supported, packed
+Q/K/V and gate/up projections reduce launch and memory overhead, and the
+tied output classifier uses streaming cross-entropy rather than an FP8
+readout head \cite{fa3,deepgemm}. The training objective is ordinary
+next-token cross-entropy on tokenized text streams.
+
+The precise distinction matters: ``dense FP8'' describes arithmetic applied
+to dense-weight operands, not a model whose only stored parameters are FP8.
+Master projection weights and optimizer state retain higher precision.
+
+\subsection{Ternary continuation}
+
+In the currently implemented QAT path, each 128-by-128 projection-weight
+tile $B$ has a statistical scale
+\begin{equation}
+s_B=\max\!\left(\frac{1}{|B|}\sum_{i,j\in B}|W_{ij}|,10^{-6}\right),
+\qquad
+Q_B(W)=s_B\operatorname{clip}
+\!\left(\operatorname{round}(W_B/s_B),-1,1\right).
+\end{equation}
+The forward path encodes these scaled ternary values for FP8 matrix
+multiplication; FP8 activations remain in use. A straight-through rule
+passes projection-weight gradients to FP32 master weights. The scale is
+recomputed from weights, so it is not a separate learned scale parameter.
+The tied embedding/readout and learned normalization gains are outside the
+ternary projection set. One scale per tile covers 16,384 weights, a
+representation choice that must be assessed by final loss and tasks rather
+than by code sparsity alone \cite{bitnet}.
+
+The QAT transition changes the effective projection weights and can
+produce an immediate loss increase. A measured transition report separates
+loss at the conversion point from recovery during QAT and from final
+post-QAT quality. Its learning rates, stable/decay duration, data mixture,
+and optimizer-state policy are phase-specific. No dense-stage rate is
+silently reused as a QAT prescription.
+
+\subsection{Spectral Muon and auxiliary AdamW}
+
+Packed Q/K/V and gate/up physical parameters are split into their logical
+matrices for the Muon update. For a logical matrix $W$ with dimensions
+$(d_{\mathrm{out}},d_{\mathrm{in}})$, let $U_t$ be the pinned five-step
+Newton--Schulz direction calculated from its momentum-adjusted gradient.
+The selected update is
+\begin{equation}
+W_{t+1}=(1-\eta_t\lambda)W_t-
+\eta_t\sqrt{d_{\mathrm{out}}/d_{\mathrm{in}}}\,U_t.
+\end{equation}
+The aspect-ratio factor applies to each logical matrix, including each
+slice of a packed projection. Weight decay uses the base $\eta_t$. This
+rule has no additional width-growing Muon factor \cite{muon}.
+
+\begin{table}[ht]
+\centering
+\caption{Selected dense-stage starting settings. Production batch and token
+horizons are bound to the run manifest.}
+\label{tab:optimizer}
+\small
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{0.65\linewidth}X@{}}
+\toprule
+Setting & Value \\
+\midrule
+Muon base learning rate & 0.017 \\
+Tied embedding/readout AdamW learning rate & 0.003 \\
+Ordinary, Peri-LN, final-norm, value-mix AdamW learning rate & 0.0003 \\
+Learned Q/K norm AdamW learning rate & 0.0001 \\
+Hidden-matrix weight decay; tied-table decay & 0.02; 0 \\
+Global gradient-norm clip & 1.0 \\
+Schedule form; final learning-rate fraction & Warmup--stable--decay with cosine decay; 0.1 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+These values are starting coordinates selected from smaller-width dense
+research. A 200M-parameter campaign selected the matrix and small-group
+rates; a matched 700M-width bridge favored the 0.003 embedding rate over
+0.00424 and 0.006 at 500M tokens of English training. Those observations do
+not establish a universal width law or a one-trillion-token optimizer
+trajectory.
+
+\section{Data scope and language coverage}
+
+The program target is \textbf{1,000,000,000,000 valid training-token
+presentations across the dense and QAT stages}. Padding and held-out
+evaluation tokens do not count toward this total. Presented tokens and
+distinct source tokens are separate quantities: any reuse is recorded as
+exposure rather than described as new unique data. The production manifests
+bind tokenizer identity, shards, data order, source proportions, and stage
+boundaries. No fixed 40\% Indic allocation or inherited source-token table
+is asserted for this revised program.
+
+The initial Indic-language support and reporting set comprises \textbf{Hindi,
+Bengali, Tamil, Telugu, Kannada, Marathi, and Gujarati}. English and
+relevant code and mathematics are included in broader training and
+evaluation. The seven-language set identifies intended coverage; it is not
+a substitute for native-language benchmark results.
+
+\begin{table}[ht]
+\centering
+\caption{Initial Indic-language evaluation set.}
+\label{tab:languages}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+Language & ISO code & Primary script \\
+\midrule
+Hindi & hi & Devanagari \\
+Bengali & bn & Bengali \\
+Tamil & ta & Tamil \\
+Telugu & te & Telugu \\
+Kannada & kn & Kannada \\
+Marathi & mr & Devanagari \\
+Gujarati & gu & Gujarati \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The frozen 65,536-piece tokenizer has explicit Indic and English/code/math
+handling. Corpus preparation requires language identification, script and
+Unicode checks, near-duplicate removal, source-overlap accounting,
+license/provenance review, sensitive-data filtering, and evaluation-set
+decontamination. Synthetic and translated material must be labeled so that
+native-language results cannot be inferred from translated-English scores.
+The final data record reports per-language and per-source exposure,
+tokenizer fertility, and train/validation boundaries. A claimed supported
+language is evaluated individually, including relevant code-mixed use.
+
+\section{Distributed execution and compute accounting}
+
+The starting distributed strategy is replicated data parallelism on 32
+H100-class ranks, with tensor, pipeline, and context parallel degrees of
+one. Each rank retains the model and optimizer state. Accumulation keeps a
+reviewed global valid-token batch, and DDP reduces FP32 gradients before
+global clipping and the optimizer update. A microbatch of four 4,096-token
+sequences is the first memory candidate, not a selected global batch.
+Changing world size or microbatch must preserve the intended global batch
+and numerical update contract.
+
+For $W$ ranks, per-rank microbatch $m$, context $S=4096$, and accumulation
+$a$, the nominal update has $B=WmSa$ valid tokens when all positions are
+valid. The run configuration must derive $a$ from the chosen manifest and
+global batch. A 32-rank system requires validation of rank-local data
+ordering, all-reduce semantics, kernel parity, checkpoint recovery, and
+full-update timing on its actual NVL/PCIe topology.
+
+At a planning envelope of 6,000 aggregate GPU-hours, one trillion valid
+tokens require
+\begin{equation}
+\bar r=\frac{10^{12}}{6000\times3600}
+=46{,}296\ \text{tokens s}^{-1}\text{ GPU}^{-1}
+\end{equation}
+\emph{including} all allocated time consumed by dense training, QAT,
+distributed communication, evaluation, checkpoints, and recovery. Thirty-two
+GPUs would provide 187.5 wall-clock allocation hours under that envelope.
+An optimized single-H100 NVL dense measurement averaged 40,996 tokens/s
+over three complete 20-update receipts, with 55.5 GB peak allocated memory
+at its measured batch. If that dense rate held without any overhead for all
+6,000 GPU-hours, it would yield roughly 886B tokens. This arithmetic does
+not establish cluster performance or the QAT rate. The one-trillion-token
+target is therefore a program target whose schedule must be accepted from
+measured full-cluster, all-in throughput, not from device peak FLOPs.
+
+\section{Evidence and evaluation protocol}
+
+\subsection{Evidence already available}
+
+The prior 146,423,680-parameter proxy is informative about conversion risk,
+but differs from the selected 1.5B architecture and optimizer. It completed
+10B dense tokens and a 2B ternary-QAT continuation without a recorded
+nonfinite incident. Under one fixed held-out weighting, its mean per-token
+negative log-likelihood moved from 2.4194 at the dense checkpoint to 2.6042
+at the final QAT checkpoint. The QAT training mixture also changed because
+fresh English material was limited, so the final difference cannot be
+attributed to quantization alone. At the exact conversion point, before any
+QAT update, held-out loss rose sharply, demonstrating that the weight-mode
+change perturbed model function. The proxy result motivates a controlled
+QAT transition; it is not a prediction of 1.5B final quality.
+
+Architecture selection, dense optimizer tuning, the older 146M run, and
+future production training have different model or optimizer contracts.
+Their losses are not pooled into a single comparison. Reported numerical
+results state the checkpoint, data mixture, scorer, token count, and
+precision path that produced them.
+
+\subsection{Required model-quality comparisons}
+
+Evaluation uses a fixed tokenizer and held-out data for dense-versus-QAT
+comparisons. Each of the seven Indic languages receives its own language
+loss and task score, with a macro view that does not conceal low-resource
+regressions. The scorecard also covers English, code, mathematics, native
+script, transliteration where relevant, and code-mixed instructions.
+Downstream tasks include understanding, instruction following, factual
+answers, generation, and representative offline document workflows. Safety
+and refusal behavior are assessed by language. Every task result records
+dataset version, prompt, scoring method, decoding settings, checkpoint,
+tokenizer, and contamination review.
+
+Quantization is evaluated at three points: the dense parent, the immediate
+ternary conversion before an optimizer update, and the final QAT checkpoint.
+The same held-out weighting is applied to each. A matched dense continuation
+provides a control for extra training and schedule changes. Report both
+per-token likelihood and task outcomes; a lower weight-reconstruction error
+or higher ternary zero fraction is not by itself a language-quality result.
+
+\subsection{Systems and device evaluation}
+
+Systems reporting uses valid tokens divided by elapsed time across all
+ranks, plus slowest-rank step time, p50/p95 update latency, allocated and
+reserved GPU memory, data waits, exposed communication, and scheduled
+checkpoint and evaluation costs. Exact-resume tests compare model,
+optimizer, RNG, and next-data position with an uninterrupted control.
+The dense and QAT phases have separate speed and quality accounting.
+
+For offline deployment, report exported weight-file bytes, scale metadata,
+loaded peak RAM, KV-cache growth, prefill and decode latency, energy use,
+and device compatibility on actual target hardware. No speculative drafter,
+special ``thinking mode,'' Android-specific ternary kernel, or mobile speed
+gain is part of the selected training model or reported as implemented here.
+
+\section{Ternary storage and deployment limits}
+
+With simple two-bit packing, the 1,349,222,400 eligible projection weights
+need 337,305,600 bytes. A BF16 copy of the 150,994,944 tied-table weights
+needs 301,989,888 bytes; the other 239,152 parameters add 478,304 BF16
+bytes. Thus the arithmetic lower bound for that representation is
+\begin{equation}
+337{,}305{,}600+301{,}989{,}888+478{,}304
+=639{,}773{,}792\ \text{bytes}
+\end{equation}
+\emph{before} ternary scales, file metadata, alignment, activations, and
+runtime state. A fixed-rate base-3 code at $\log_2(3)$ bits per eligible
+weight lowers the projection term but still does not establish device RAM.
+Quantizing the tied table would require its own accuracy and storage
+evaluation. A sub-700 MB loaded-RAM claim cannot be inferred from the
+two-bit weight arithmetic and is not made here.
+
+The training system and exported inference system have different storage
+requirements. A packed inference artifact cannot be used to estimate
+training-state memory, and a training throughput receipt cannot predict
+on-device token generation. The release record must include the exact
+artifact format, export parity against the trained QAT model, and device
+measurements before describing the model as deployable on a given memory
+class.
+
+\section{Limitations and conclusion}
+
+The selected geometry, dense optimizer, and computational implementation
+are specified and supported by smaller-scale research and short single-GPU
+measurements. They do not prove one-trillion-token feasibility within the
+planning GPU-hour envelope, full-scale dense stability, preservation of
+quality after ternary QAT, useful performance in every target language,
+or offline device readiness. The current quantizer uses a coarse
+128-by-128 scale tile; the best ternary grouping and QAT schedule at
+1.5B have not been measured. Training data mixture and phase token
+allocation are bound by versioned external run manifests rather than by
+the model definition.
+
+\model{} is a concrete dense-to-ternary design: a 25-layer,
+1.500B-parameter transformer with Peri-LN and a learned cross-layer value
+residual, trained first with FP8 arithmetic and then evaluated through
+ternary continuation. The one-trillion-token program and seven-language
+Indic scope define the intended experiment and reporting boundaries.
+Final claims of language capability, compression, runtime memory, and
+compute efficiency follow only from the completed checkpoints and device
+measurements.
+
+\begin{thebibliography}{10}
+\bibitem{rmsnorm} B. Zhang and R. Sennrich. Root Mean Square Layer Normalization. \emph{NeurIPS}, 2019. \url{https://arxiv.org/abs/1910.07467}.
+\bibitem{swiglu} N. Shazeer. GLU Variants Improve Transformer. 2020. \url{https://arxiv.org/abs/2002.05202}.
+\bibitem{gqa} J. Ainslie et al. GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints. 2023. \url{https://arxiv.org/abs/2305.13245}.
+\bibitem{bitnet} S. Ma et al. The Era of 1-bit LLMs: All Large Language Models are in 1.58 Bits. 2024. \url{https://arxiv.org/abs/2402.17764}.
+\bibitem{fa3} J. Shah et al. FlashAttention-3: Fast and Accurate Attention with Asynchrony and Low-precision. 2024. \url{https://arxiv.org/abs/2407.08608}.
+\bibitem{peri} J. Kim et al. Peri-LN: Revisiting Normalization Layer in the Transformer Architecture. 2025. \url{https://arxiv.org/abs/2502.02732}.
+\bibitem{valueresidual} Z. Zhou et al. Value Residual Learning. 2024. \url{https://arxiv.org/abs/2410.17897}.
+\bibitem{muon} J. Liu et al. Muon is Scalable for LLM Training. 2025. \url{https://arxiv.org/abs/2502.16982}.
+\bibitem{deepgemm} DeepGEMM: Clean and Efficient FP8 GEMM Kernels with Fine-grained Scaling. \url{https://github.com/deepseek-ai/DeepGEMM}.
+\end{thebibliography}
+
+\end{document}
