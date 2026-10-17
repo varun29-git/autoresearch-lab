@@ -189,6 +189,44 @@ class TransitionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.convert(out="qat_corrupt")
 
+    def test_same_shape_architecture_change_is_rejected(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.train_dense(updates=1)
+        config = json.loads((self.root / "qat.json").read_text())
+        config["model"]["local_attention_window"] = 2
+        (self.root / "qat.json").write_text(json.dumps(config))
+        with self.assertRaisesRegex(ValueError, "model settings"):
+            self.convert()
+
+    def test_changed_optimizer_settings_require_explicit_reset(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.train_dense(updates=1)
+        config = json.loads((self.root / "qat.json").read_text())
+        config["optimizer"]["weight_decay"] = .123
+        (self.root / "qat.json").write_text(json.dumps(config))
+        with self.assertRaisesRegex(ValueError, "LR changes only"):
+            self.convert()
+        self.convert(intentional_resets=("optimizer",))
+        child = checkpoint_payload(self.root / "qat_run")
+        self.assertTrue(any(group["weight_decay"] == .123 for group in child["optimizer"]["param_groups"]))
+        self.assertFalse(child["optimizer"]["state"])
+
+    def test_rng_reset_is_honored_without_world_size_change(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.train_dense(updates=1)
+        receipt = self.convert(intentional_resets=("rng",))
+        self.assertIn("rng", receipt["intentional_resets"])
+        child = checkpoint_payload(self.root / "qat_run")
+        generator = torch.Generator().manual_seed(1337)
+        torch.testing.assert_close(child["rank_rng"][0]["torch"], generator.get_state())
+
+    def test_schedule_must_fit_remaining_qat_tokens(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.train_dense(updates=2)
+        # Eight tokens remain; configured warmup+decay require 24.
+        with self.assertRaisesRegex(ValueError, "warmup|budget"):
+            self.convert()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -73,7 +73,17 @@ def convert_checkpoint(parent_run_dir, qat_config_path, qat_manifest_path, qat_d
         raise FileExistsError("the QAT run directory must be fresh")
     parent_run = json.loads((parent_run_dir / "run.json").read_text())
     parent_contract = parent_run["contract"]
+    if parent_run["contract_sha256"] != fingerprint(parent_contract):
+        raise ValueError("parent run contract digest mismatch")
+    if parent_contract["model"]["weight_mode"] != "dense":
+        raise ValueError("dense-to-QAT transition requires a dense parent")
     parent_source = parent_checkpoint or parent_run_dir / "checkpoints"
+    parent_source = Path(parent_source)
+    if parent_source.is_dir():
+        latest = json.loads((parent_source / "latest.json").read_text())
+        if Path(latest["file"]).name != latest["file"]:
+            raise ValueError("invalid parent checkpoint filename")
+        parent_source = parent_source / latest["file"]
     parent_payload = load_checkpoint(parent_source, parent_contract)
     parent_state = parent_payload["state"]
 
@@ -93,6 +103,19 @@ def convert_checkpoint(parent_run_dir, qat_config_path, qat_manifest_path, qat_d
     optimizer_config = OptimizerConfig(**config_payload["optimizer"])
     if model_config.weight_mode != "ternary":
         raise ValueError("the QAT phase must run the ternary weight mode")
+    parent_model = BitNetLlamaConfig(**parent_contract["model"])
+    architectural_changes = _diff(asdict(parent_model), asdict(model_config))
+    # A phase transition is not an implicit architecture/checkpoint migration.
+    if set(architectural_changes) - {"weight_mode", "quantization_strength"}:
+        raise ValueError("QAT transition changes model settings beyond weight quantization")
+    if "data_cursor" in resets and data_policy != "restart":
+        raise ValueError("a data_cursor reset requires data_policy='restart'")
+    if "optimizer" not in resets:
+        parent_optimizer = asdict(OptimizerConfig(**parent_contract["optimizer"]))
+        child_optimizer = asdict(optimizer_config)
+        changes = _diff(json.loads(json.dumps(parent_optimizer)), json.loads(json.dumps(child_optimizer)))
+        if any(not key.endswith("_lr") for key in changes):
+            raise ValueError("carrying optimizer state permits LR changes only; explicitly reset optimizer otherwise")
     manifest = TokenManifest.load(qat_manifest_path)
     manifest_report = validate_manifest(manifest, qat_data_root, model_config,
                                         development_mode=training.development_mode)
@@ -122,6 +145,15 @@ def convert_checkpoint(parent_run_dir, qat_config_path, qat_manifest_path, qat_d
             group["base_lr"] = child_lr
             group["lr"] = child_lr
     total_tokens = manifest.config.usable_train_tokens
+    from .train import schedule_scale
+    schedule_scale(0, total_tokens - expected_offset, training.warmup_tokens,
+                   training.final_lr_fraction, schedule=training.schedule,
+                   decay_tokens=training.decay_tokens, decay_style=training.decay_style)
+    if training.quantization_warmup_tokens > total_tokens - expected_offset:
+        raise ValueError("quantization warmup exceeds the QAT phase budget")
+    if model_config.linear_backend == "deepgemm" and (training.quantization_warmup_tokens
+            or training.quantization_start_strength != 1):
+        raise ValueError("native DeepGEMM does not support a quantization curriculum")
     micro_tokens = manifest.config.tokens_per_step * world_size
     total_micro_steps = -(-manifest.config.total_examples //
                           (manifest.config.batch_size * world_size))
@@ -145,9 +177,9 @@ def convert_checkpoint(parent_run_dir, qat_config_path, qat_manifest_path, qat_d
             if state["tokens_seen"] not in boundaries:
                 raise ValueError("phase_mix requires a phase boundary exactly at the parent's "
                                  f"consumed tokens ({state['tokens_seen']}); boundaries: {boundaries}")
-    if len(parent_payload["rank_rng"]) != world_size:
-        if "rng" not in resets:
-            raise ValueError("world size changed; request intentional_resets=('rng',) explicitly")
+    if len(parent_payload["rank_rng"]) != world_size and "rng" not in resets:
+        raise ValueError("world size changed; request intentional_resets=('rng',) explicitly")
+    if "rng" in resets:
         resets_done.append("rng")
         import random as random_module
 
@@ -173,8 +205,8 @@ def convert_checkpoint(parent_run_dir, qat_config_path, qat_manifest_path, qat_d
     parent_receipt_path = parent_payload_receipt(parent_source)
     parent_receipt = json.loads(parent_receipt_path.read_text()) if parent_receipt_path else {}
     child_training = asdict(training)
-    for name in ("checkpoint_interval", "validation_interval", "validation_batches_per_language",
-                 "log_interval", "prefetch_batches", "time_limit_seconds"):
+    from .train import OPERATIONAL_TRAINING_FIELDS
+    for name in OPERATIONAL_TRAINING_FIELDS:
         child_training.pop(name)
     changed = {"model": _diff(parent_contract["model"], asdict(model_config)),
                "training": _diff(parent_contract["training"], child_training),
