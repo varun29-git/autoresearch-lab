@@ -43,6 +43,12 @@ class EncodePairTests(unittest.TestCase):
         tokenizer = ToyTokenizer()
         _, targets, meta = encode_pair(tokenizer, "", "abc", max_seq_len=64)
         self.assertTrue(all(t != IGNORE_INDEX for t in targets.tolist()[0]))
+        self.assertEqual(meta["output_tokens"], 2)
+        self.assertEqual(meta["unscored_reference_prefix_tokens"], 1)
+
+    def test_single_token_without_prompt_cannot_be_scored(self):
+        with self.assertRaisesRegex(ValueError, "predictable"):
+            encode_pair(ToyTokenizer(), "", "a", max_seq_len=64)
 
     def test_left_truncation_keeps_reference(self):
         tokenizer = ToyTokenizer()

@@ -53,6 +53,7 @@ def encode_pair(tokenizer, prompt, reference, *, max_seq_len):
     """
     prompt_ids = tokenizer.encode(prompt)
     reference_ids = tokenizer.encode(reference)
+    original_reference_tokens = len(reference_ids)
     if not reference_ids:
         raise ValueError("empty reference cannot be scored")
     total = len(prompt_ids) + len(reference_ids)
@@ -68,8 +69,13 @@ def encode_pair(tokenizer, prompt, reference, *, max_seq_len):
     targets = torch.tensor([tokens[1:]], dtype=torch.long)
     if prompt_ids:
         targets[0, :len(prompt_ids) - 1] = IGNORE_INDEX
-    meta = {"output_tokens": len(reference_ids), "prompt_tokens": len(prompt_ids),
+    scored_tokens = int(targets.ne(IGNORE_INDEX).sum())
+    if not scored_tokens:
+        raise ValueError("reference has no predictable tokens; provide a prompt")
+    meta = {"output_tokens": scored_tokens, "prompt_tokens": len(prompt_ids),
             "truncated_prompt_tokens": truncated_prompt,
+            "truncated_reference_tokens": original_reference_tokens - len(reference_ids),
+            "unscored_reference_prefix_tokens": int(not prompt_ids),
             "reference_utf8_bytes": len(reference.encode("utf-8"))}
     return inputs, targets, meta
 
@@ -79,15 +85,17 @@ def score_item(model, tokenizer, item: TaskItem, *, device, max_seq_len):
     inputs, targets, meta = encode_pair(tokenizer, item.prompt, item.reference,
                                         max_seq_len=max_seq_len)
     inputs, targets = inputs.to(device), targets.to(device)
-    output = model(inputs, targets=targets)
+    output = model(inputs, targets=targets, return_logits=False)
     loss_sum = float(output["loss_sum"].double())
     record = {"task": item.task, "item_id": item.item_id, "language": item.language,
               "role": item.role, "loss": loss_sum / meta["output_tokens"], **meta,
-              "bits_per_byte": loss_sum / math.log(2) / max(1, meta["reference_utf8_bytes"])}
+              "bits_per_byte": (loss_sum / math.log(2) / max(1, meta["reference_utf8_bytes"])
+                                if not meta["truncated_reference_tokens"] and
+                                not meta["unscored_reference_prefix_tokens"] else None)}
     if item.answer is not None and item.answer != item.reference:
         a_inputs, a_targets, a_meta = encode_pair(tokenizer, item.prompt, item.answer,
                                                   max_seq_len=max_seq_len)
-        a_output = model(a_inputs.to(device), targets=a_targets.to(device))
+        a_output = model(a_inputs.to(device), targets=a_targets.to(device), return_logits=False)
         a_sum = float(a_output["loss_sum"].double())
         record["answer_loss"] = a_sum / a_meta["output_tokens"]
     return record
@@ -102,7 +110,7 @@ def choice_margins(model, tokenizer, item: TaskItem, *, device, max_seq_len):
     for choice in item.choices:
         inputs, targets, meta = encode_pair(tokenizer, item.prompt, choice,
                                             max_seq_len=max_seq_len)
-        output = model(inputs.to(device), targets=targets.to(device))
+        output = model(inputs.to(device), targets=targets.to(device), return_logits=False)
         losses.append(float(output["loss_sum"].double()) / meta["output_tokens"])
     correct = losses[item.correct_choice]
     best_wrong = min(loss for index, loss in enumerate(losses) if index != item.correct_choice)
