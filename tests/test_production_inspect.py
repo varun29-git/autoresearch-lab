@@ -20,10 +20,10 @@ def inputs(tmp_path, *, total_tokens=10_000_123):
 
 def test_inspector_accounts_for_partial_update_without_certifying_data_or_gpu(tmp_path):
     result = inspect_run(*inputs(tmp_path), world_size=32, expected_global_batch_tokens=4_194_304)
-    assert result["parameters"] == 1_500_456_496
+    assert result["parameters"] == 1_446_478_126
     assert result["parallelism"]["accumulation_steps"] == 8
     assert result["parallelism"]["tokens_per_rank_per_full_update"] == 131_072
-    assert result["parallelism"]["ring_allreduce_bytes_per_rank_per_full_update"] == 11_628_537_844
+    assert result["parallelism"]["ring_allreduce_bytes_per_rank_per_full_update"] == 11_210_205_476.5
     schedule = result["schedule"]
     assert schedule["total_updates"] == 3
     assert schedule["full_updates"] == 2

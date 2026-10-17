@@ -16,7 +16,7 @@ Clipping happens after reduction, then spectral Muon/auxiliary AdamW runs on
 each rank. Preserve logical Q/K/V and gate/up matrix slices, tied embedding
 updates and cache invalidation after the optimizer step.
 
-Microbatch 4 at context 4096 is the first memory candidate. The research run
+Microbatch 4 at context 4096 is the first memory candidate. The original 25-layer research run
 allocated 55.5 GB at that batch; production NCCL buffers, allocator reservations,
 runtime workspaces and optimizer temporaries still need measurement. Microbatch
 8 allocated 87.4 GB and is not a suitable default for an 80 GB H100. NVLink
@@ -34,9 +34,9 @@ These are examples, not newly selected hyperparameters. Preserve the reviewed
 global batch when changing microbatch or world size. Do not compare these local
 profiles with the archived mb4 × accum32 rate as if the workloads were equal.
 
-The 1,500,456,496 FP32 gradients occupy 6,001,825,984 bytes/rank. A ring model
-moves `2 × (W−1)/W × gradient_bytes`, or 11.63 GB/rank/update at W=32. At an
-effective *per-rank* 50 GB/s this is 233 ms of service before latency/contention,
+The selected 24-layer model's 1,446,478,126 FP32 gradients occupy 5,785,912,504 bytes/rank. A ring model
+moves `2 × (W−1)/W × gradient_bytes`, or 11.21 GB/rank/update at W=32. At an
+effective *per-rank* 50 GB/s this is 224 ms of service before latency/contention,
 with an unmeasured exposed portion. A node's NIC bandwidth is shared and cannot
 be assigned in full to every rank. NCCL may choose another algorithm. Measure
 bucket readiness and the last reduction's completion on the actual topology;

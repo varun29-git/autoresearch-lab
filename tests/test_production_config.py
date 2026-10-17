@@ -3,14 +3,16 @@ from dataclasses import asdict
 from pathlib import Path
 
 import pytest
+import torch
 
 from production.build_dense_config import build_config
 from terminus.data import TokenDataConfig, TokenManifest
 from terminus.preflight import count_model
+from terminus.model import BitNetLlama
 from terminus.train import load_config
 
 
-def test_recipe_matches_pre_handoff_refactor(tmp_path):
+def test_recipe_changes_only_reviewed_architecture_fields(tmp_path):
     # Historical reference is test evidence only, never a production dependency.
     root = Path(__file__).resolve().parents[1]
     old = json.loads((root / "hpo/reference_200m.json").read_text())["config"]
@@ -25,6 +27,10 @@ def test_recipe_matches_pre_handoff_refactor(tmp_path):
                            log_interval=10, stability_log_interval=10, time_limit_seconds=None)
     new = build_config(manifest=manifest(), world_size=32, global_batch_tokens=4_194_304,
                        warmup_tokens=20_000_000, decay_tokens=100_000_000)
+    assert {key: value for key, value in new["model"].items()
+            if value != old["model"].get(key)} == {
+        "n_layers": 24, "global_attention_every": 6, "local_attention_window": 512}
+    old["model"].update(n_layers=24, global_attention_every=6, local_attention_window=512)
     normalized = []
     for name, config in (("old", old), ("new", new)):
         path = tmp_path / f"{name}.json"
@@ -45,8 +51,13 @@ def test_selected_dense_recipe_and_global_batch(tmp_path):
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config))
     model, training, optimizer = load_config(path)
-    assert count_model(model)["total"] == 1_500_456_496
-    assert (model.n_layers, model.dim, model.ffn_dim, model.n_heads, model.n_kv_heads) == (25, 2304, 5760, 18, 6)
+    assert count_model(model)["total"] == 1_446_478_126
+    assert (model.n_layers, model.dim, model.ffn_dim, model.n_heads, model.n_kv_heads) == (24, 2304, 5760, 18, 6)
+    assert (model.global_attention_every, model.local_attention_window, model.max_seq_len) == (6, 512, 4096)
+    with torch.device("meta"):
+        instance = BitNetLlama(model)
+    assert [index + 1 for index, layer in enumerate(instance.layers)
+            if layer.attn.is_global_layer] == [6, 12, 18, 24]
     assert (model.branch_norm, model.value_residual, model.weight_mode) == ("peri", "learned", "dense")
     assert (optimizer.muon_lr_rule, optimizer.muon_lr, optimizer.adamw_lr) == ("spectral_unclamped", 0.017, 0.003)
     assert (optimizer.weight_decay, optimizer.embedding_weight_decay) == (0.02, 0.0)

@@ -1,4 +1,4 @@
-"""Build the selected 1.5B dense config for an explicit production manifest.
+"""Build the selected 1.446B dense config for an explicit production manifest.
 
 This prepares a config; it does not launch training or choose the data,
 global batch, or long-horizon learning-rate schedule for the operator.
