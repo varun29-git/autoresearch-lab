@@ -12,6 +12,12 @@ evaluation, QAT transition and packed ternary CPU inference commands, plus the
 remaining hardware checks. QAT learning rates and the dense/QAT token split
 are deliberately unset at the operator's request.
 
+For the proposed **eight-MI325X, 5,760 GPU-hour** allocation, start with
+[`amd/README.md`](amd/README.md). It contains the new gfx942 candidates, pinned
+build recipe, native test gates, measurement tools, research and optimization
+plan. AMD execution and throughput remain unmeasured. The H100 history and
+6,000-hour calculations below describe the original allocation.
+
 ## Selected dense starting point
 
 The model has 24 layers; width 2304; FFN width 5760; 18 query and 6 KV heads; a tied 65,536-token embedding/readout; 4096-token context; 512-token local attention in 20 layers and global attention at layers 6, 12, 18 and 24; Peri-LN; learned value residual; and 1,446,478,126 trainable parameters. The operator-reviewed change is documented in [`ARCHITECTURE.md`](ARCHITECTURE.md). The new geometry has not been benchmarked on H100. It retains the original implementation: FA3 attention, DeepGEMM FP8 linear operations, packed QKV/MLP and pointwise kernels, BF16 residuals, and streaming loss. The dense optimizer is spectral Muon (`eta × sqrt(d_out/d_in)` on each logical matrix, without Moonshot's width-growing factor) plus AdamW for the tied embedding and scalar/norm groups. See `docs/MUON_SPECTRAL_IMPLEMENTATION.md` for the exact update.
