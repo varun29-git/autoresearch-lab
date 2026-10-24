@@ -7,6 +7,7 @@ Keep shards/tokenizer read-only for the run; changing any file invalidates it.
 import argparse
 from dataclasses import asdict
 import json
+import os
 from pathlib import Path
 import stat
 
@@ -27,11 +28,13 @@ def snapshot(manifest, root):
         if root not in path.parents:
             raise ValueError("staged files must resolve inside the data root")
         st = path.stat()
-        if not stat.S_ISREG(st.st_mode) or st.st_mode & 0o222:
+        readonly_mount = bool(os.statvfs(path).f_flag & os.ST_RDONLY)
+        if not stat.S_ISREG(st.st_mode) or (st.st_mode & 0o222 and not readonly_mount):
             raise ValueError(f"staging requires read-only regular files: {name}")
         result[str(name)] = {"path": str(path), "device": st.st_dev, "inode": st.st_ino,
                              "size": st.st_size, "mtime_ns": st.st_mtime_ns,
-                             "ctime_ns": st.st_ctime_ns, "mode": st.st_mode}
+                             "ctime_ns": st.st_ctime_ns, "mode": st.st_mode,
+                             "read_only_filesystem": readonly_mount}
     return result
 
 

@@ -50,6 +50,7 @@ class TrainConfig:
     stability_log_interval: int = 0
     compile: bool = False
     cuda_graphs: bool = False
+    ddp_bucket_cap_mb: int = 25
     time_limit_seconds: float | None = None
 
     def __post_init__(self):
@@ -62,7 +63,7 @@ class TrainConfig:
             raise ValueError("CPU training is an FP32 correctness reference")
         if self.cuda_graphs and (self.device != "cuda" or self.compile):
             raise ValueError("CUDA graphs require CUDA and cannot be combined with full-model compile")
-        for name in ("gradient_accumulation_steps", "prefetch_batches", "checkpoint_interval", "validation_interval", "validation_batches_per_language", "log_interval"):
+        for name in ("gradient_accumulation_steps", "prefetch_batches", "checkpoint_interval", "validation_interval", "validation_batches_per_language", "log_interval", "ddp_bucket_cap_mb"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
@@ -140,7 +141,8 @@ def native_source_contract():
     suffixes = {".py", ".so", ".pyd", ".dll", ".h", ".hpp", ".cu", ".cuh", ".cpp", ".cubin", ".ptx", ".hsaco", ".co", ".csv"}
     names = ["flash_attn_interface", "flash_attn_3_cuda", "flash_attn_3", "deep_gemm", "triton", "muon", "quack"]
     if torch.version.hip:
-        names += ["aiter", "flash_attn", "flash_attn_2_cuda", "transformer_engine", "transformer_engine_torch"]
+        suffixes |= {".hip", ".s", ".S", ".json", ".cmake"}
+        names += ["aiter", "aiter_meta", "flash_attn", "flash_attn_2_cuda", "transformer_engine", "transformer_engine_torch"]
     for name in names:
         spec = importlib.util.find_spec(name)
         if spec is None or (spec.origin is None and not spec.submodule_search_locations):
@@ -505,7 +507,8 @@ def prepare_training(config_path, manifest_path, data_root, output_dir, *, resum
         forward_model = torch.compile(model) if training.compile else model
         if world_size > 1:
             forward_model = DistributedDataParallel(forward_model, device_ids=[local_rank] if device.type == "cuda" else None,
-                                                    broadcast_buffers=False, gradient_as_bucket_view=True)
+                                                    broadcast_buffers=False, gradient_as_bucket_view=True,
+                                                    bucket_cap_mb=training.ddp_bucket_cap_mb)
         if payload is not None:
             if len(payload["rank_rng"]) != world_size:
                 raise ValueError("checkpoint rank RNG states do not match world size")

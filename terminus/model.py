@@ -204,6 +204,8 @@ class BitLinear(nn.Module):
             raise ValueError("invalid FP8 wgrad split count")
         if fp8_wgrad_splits and (linear_backend not in {"deepgemm", "rocm_fp8", "rocm_fp8_triton", "rocm_fp8_te"} or fp8_backward != "full"):
             raise ValueError("split-K FP8 wgrad requires DeepGEMM with full FP8 backward")
+        if linear_backend == "rocm_fp8_te" and fp8_wgrad_splits:
+            raise ValueError("TE owns its split-K scheduling; fp8_wgrad_splits must be zero")
         if not isinstance(fp8_cache_weights, bool):
             raise ValueError("fp8_cache_weights must be a boolean")
         if linear_backend not in {"deepgemm", "rocm_fp8", "rocm_fp8_triton", "rocm_fp8_te"} and (fp8_backward != "bf16" or fp8_quantizer != "torch" or fp8_cache_weights):

@@ -15,6 +15,8 @@ def validate_recipe(config):
             or (config.n_kv_heads * config.head_dim) % 128 or config.fp8_wgrad_recipe != "1d1d"
             or config.fused_fp8_producers):
         raise ValueError("ROCm FP8 requires dense full-backward 128-block scaling; QAT/producer fusion is not certified")
+    if config.linear_backend == "rocm_fp8_te" and config.fp8_wgrad_splits:
+        raise ValueError("TE owns its split-K scheduling; fp8_wgrad_splits must be zero")
 
 
 def quantize_directions(values, *, rowwise=True, transposed=False, eps=1e-5):

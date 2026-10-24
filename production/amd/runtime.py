@@ -54,7 +54,7 @@ def hip_contract(device):
             "fp8_format": "float8_e4m3fnuz", "fp8_max": torch.finfo(torch.float8_e4m3fnuz).max}
 
 
-def capture_runtime(device="cuda"):
+def capture_runtime(device="cuda", *, include_inventory=True):
     from terminus.train import runtime_contract
 
     properties = require_gfx942(torch.device(device))
@@ -68,7 +68,7 @@ def capture_runtime(device="cuda"):
     inventory = {"amd_smi": _command(["amd-smi", "static", "--json"]),
                  "topology": _command(["amd-smi", "topology", "--json"]),
                  "gpu_name": properties.name, "gpu_memory_bytes": properties.total_memory,
-                 "visible_devices": torch.cuda.device_count()}
+                 "visible_devices": torch.cuda.device_count()} if include_inventory else None
     return {"schema": 1, "kind": "ci1_amd_runtime", "identity": identity,
             "identity_sha256": fingerprint(identity), "inventory": inventory,
             "scope": "Identity and inventory only; no throughput, numerical or quality certification"}
