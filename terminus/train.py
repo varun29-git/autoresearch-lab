@@ -100,7 +100,7 @@ def load_config(path):
     if set(payload) != {"model", "training", "optimizer"}:
         raise ValueError("configuration must contain exactly model, training and optimizer sections")
     model, training = BitNetLlamaConfig(**payload["model"]), TrainConfig(**payload["training"])
-    if model.linear_backend == "deepgemm" and training.compile:
+    if model.linear_backend in {"deepgemm", "rocm_fp8", "rocm_fp8_triton", "rocm_fp8_te"} and training.compile:
         raise ValueError("native DeepGEMM uses its own JIT; full-model torch.compile is not validated")
     if training.cuda_graphs and (model.gradient_checkpointing or model.dropout):
         raise ValueError("CUDA graphs require retained activations and zero dropout")
@@ -137,8 +137,11 @@ def native_source_contract():
     import importlib.util
 
     result = {}
-    suffixes = {".py", ".so", ".pyd", ".dll", ".h", ".hpp", ".cu", ".cuh", ".cpp", ".cubin", ".ptx"}
-    for name in ("flash_attn_interface", "flash_attn_3_cuda", "flash_attn_3", "deep_gemm", "triton", "muon", "quack"):
+    suffixes = {".py", ".so", ".pyd", ".dll", ".h", ".hpp", ".cu", ".cuh", ".cpp", ".cubin", ".ptx", ".hsaco", ".co", ".csv"}
+    names = ["flash_attn_interface", "flash_attn_3_cuda", "flash_attn_3", "deep_gemm", "triton", "muon", "quack"]
+    if torch.version.hip:
+        names += ["aiter", "flash_attn", "flash_attn_2_cuda", "transformer_engine", "transformer_engine_torch"]
+    for name in names:
         spec = importlib.util.find_spec(name)
         if spec is None or (spec.origin is None and not spec.submodule_search_locations):
             result[name] = None
@@ -164,12 +167,17 @@ def runtime_contract(device):
         except importlib.metadata.PackageNotFoundError:
             packages[name] = None
     properties = torch.cuda.get_device_properties(device) if device.type == "cuda" else None
-    return {"torch": str(torch.__version__), "cuda": torch.version.cuda, "packages": packages,
+    result = {"torch": str(torch.__version__), "cuda": torch.version.cuda, "packages": packages,
             "gpu_memory_bytes": properties.total_memory if properties else None,
             "gpu_multiprocessors": properties.multi_processor_count if properties else None,
             "python": platform.python_version(), "native_sources": native_source_contract(),
             "device": device.type, "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
             "capability": list(torch.cuda.get_device_capability(device)) if device.type == "cuda" else None}
+    if torch.version.hip and device.type == "cuda":
+        from production.amd.runtime import hip_contract
+
+        result["rocm"] = hip_contract(device)
+    return result
 
 
 def make_resume_contract(model_config, training, optimizer_config, manifest_report, world_size, device):
@@ -395,7 +403,7 @@ class PreparedTraining:
 @contextlib.contextmanager
 def prepare_training(config_path, manifest_path, data_root, output_dir, *, resume=None,
                      preflight_report=None, operational_overrides=None,
-                     research_timing_only=False):
+                     research_timing_only=False, staging_receipt=None):
     model_config, training, optimizer_config = load_config(config_path)
     if operational_overrides is not None:
         unknown = set(operational_overrides) - set(OPERATIONAL_TRAINING_FIELDS)
@@ -432,7 +440,13 @@ def prepare_training(config_path, manifest_path, data_root, output_dir, *, resum
     old_handlers = {}
     try:
         manifest = TokenManifest.load(manifest_path)
-        manifest_report = validate_manifest(manifest, data_root, model_config, development_mode=training.development_mode)
+        if staging_receipt is None:
+            manifest_report = validate_manifest(manifest, data_root, model_config, development_mode=training.development_mode)
+        else:
+            from production.amd.staging import verify as verify_staging
+
+            manifest_report = verify_staging(json.loads(Path(staging_receipt).read_text()), manifest,
+                                             data_root, model_config, development_mode=training.development_mode)
         total_tokens = manifest.config.usable_train_tokens
         if training.warmup_tokens >= total_tokens:
             raise ValueError("warmup token budget must be shorter than the total budget")

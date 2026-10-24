@@ -88,12 +88,22 @@ class StabilityMonitor:
             values = inputs[0].detach().reshape(-1, inputs[0].shape[-1])[:self.max_tokens]
             finite = torch.isfinite(values)
             safe = torch.where(finite, values, torch.zeros_like(values))
-            codes, scales = quantize_activation_fp8_e4m3(safe)
-            recovered = dequantize_activation_fp8_e4m3(codes, scales).float()
+            if _module.linear_backend.startswith("rocm_fp8"):
+                from production.amd.reference import quantize, dequantize
+
+                codes, scales = quantize(safe, eps=1e-5)
+                recovered = dequantize((codes, scales))
+            elif self.model.config.attention_backend.startswith("rocm_") and not _module.quantize_activations:
+                self.records[f"{name}.bf16_input"] = {"values": values.numel(), **_stats(values)}
+                return
+            else:
+                codes, scales = quantize_activation_fp8_e4m3(safe)
+                recovered = dequantize_activation_fp8_e4m3(codes, scales).float()
             relative_rms = ((recovered - safe.float()).square().mean().sqrt()
                             / safe.float().square().mean().sqrt().clamp_min(1e-12))
             self.records[f"{name}.fp8_input"] = {
                 "values": values.numel(), "relative_rms_error": relative_rms,
+                "format": str(codes.dtype),
                 "scale_min": scales.amin(), "scale_max": scales.amax(),
                 "nonfinite_fraction": 1 - finite.float().mean(),
                 "zero_fraction": (codes.float() == 0).float().mean()}

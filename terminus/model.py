@@ -74,7 +74,7 @@ class BitNetLlamaConfig:
         validate_fp8_options(self.fp8_backward, self.fp8_quantizer)
         if isinstance(self.fp8_wgrad_splits, bool) or not isinstance(self.fp8_wgrad_splits, int) or self.fp8_wgrad_splits not in {0, 1, 2, 4, 8, 16}:
             raise ValueError("fp8_wgrad_splits must be 0 (DeepGEMM), 1, 2, 4, 8 or 16")
-        if self.fp8_wgrad_splits and (self.linear_backend != "deepgemm" or self.fp8_backward != "full"):
+        if self.fp8_wgrad_splits and (self.linear_backend not in {"deepgemm", "rocm_fp8", "rocm_fp8_triton", "rocm_fp8_te"} or self.fp8_backward != "full"):
             raise ValueError("split-K FP8 wgrad requires DeepGEMM with full FP8 backward")
         if self.fp8_wgrad_recipe not in {"1d1d", "1d2d_bf16"}:
             raise ValueError("fp8_wgrad_recipe must be 1d1d or 1d2d_bf16")
@@ -84,7 +84,7 @@ class BitNetLlamaConfig:
             raise ValueError("fused_mlp requires fused pointwise, fused projections and SwiGLU")
         if self.fused_qkv and (not self.fused_pointwise or not self.fuse_projections):
             raise ValueError("fused_qkv requires fused pointwise and fused projections")
-        if self.linear_backend != "deepgemm" and (self.fp8_backward != "bf16" or self.fp8_quantizer != "torch" or self.fp8_cache_weights):
+        if self.linear_backend not in {"deepgemm", "rocm_fp8", "rocm_fp8_triton", "rocm_fp8_te"} and (self.fp8_backward != "bf16" or self.fp8_quantizer != "torch" or self.fp8_cache_weights):
             raise ValueError("FP8 backward and fused quantizers require the explicit DeepGEMM backend")
         if self.loss_backend not in {"checkpoint", "streaming", "triton", "triton_fp8", "triton_fp8_quack"}:
             raise ValueError("unknown linear cross entropy backend")
@@ -116,9 +116,9 @@ class BitNetLlamaConfig:
             raise ValueError("require complete local/global cycles and window <= context")
         if not 0 <= self.dropout < 1 or not 0 <= self.quantization_strength <= 1:
             raise ValueError("invalid dropout or quantization strength")
-        if self.attention_backend not in {"fa3", "flex", "sdpa_reference"}:
+        if self.attention_backend not in {"fa3", "flex", "sdpa_reference", "rocm_aiter", "rocm_ck"}:
             raise ValueError("unknown attention backend")
-        if self.local_attention_backend not in {"", "fa3", "flex", "sdpa_reference"}:
+        if self.local_attention_backend not in {"", "fa3", "flex", "sdpa_reference", "rocm_aiter", "rocm_ck"}:
             raise ValueError("unknown local attention backend")
         if self.local_attention_backend == "sdpa_reference" and self.attention_backend != "sdpa_reference":
             raise ValueError("a reference local backend cannot be mixed into a production run")
@@ -140,7 +140,7 @@ class BitNetLlamaConfig:
             raise ValueError("the packed learned-gain Q/K path requires fused_pointwise")
         if self.pad_token_id is not None and not 0 <= self.pad_token_id < self.vocab_size:
             raise ValueError("pad_token_id is outside the vocabulary")
-        if self.weight_scale_layout not in {"rowwise", "blockwise"} or self.linear_backend not in {"torch", "deepgemm"}:
+        if self.weight_scale_layout not in {"rowwise", "blockwise"} or self.linear_backend not in {"torch", "deepgemm", "rocm_fp8", "rocm_fp8_triton", "rocm_fp8_te"}:
             raise ValueError("unknown quantization layout or linear backend")
         if self.weight_mode not in {"ternary", "dense"}:
             raise ValueError("weight_mode must be ternary (QAT) or dense (FP8/BF16 dense-weight pretraining)")
@@ -150,6 +150,10 @@ class BitNetLlamaConfig:
             or self.dim % 128 or self.ffn_dim % 128 or (self.n_kv_heads * self.head_dim) % 128
         ):
             raise ValueError("DeepGEMM requires full FP8, blockwise 128 scales and aligned dimensions")
+        if self.linear_backend.startswith("rocm_fp8"):
+            from production.amd.backend import validate_recipe
+
+            validate_recipe(self)
 
     @property
     def head_dim(self):
@@ -198,22 +202,28 @@ class BitLinear(nn.Module):
             raise ValueError("weight_mode must be ternary or dense")
         if isinstance(fp8_wgrad_splits, bool) or not isinstance(fp8_wgrad_splits, int) or fp8_wgrad_splits not in {0, 1, 2, 4, 8, 16}:
             raise ValueError("invalid FP8 wgrad split count")
-        if fp8_wgrad_splits and (linear_backend != "deepgemm" or fp8_backward != "full"):
+        if fp8_wgrad_splits and (linear_backend not in {"deepgemm", "rocm_fp8", "rocm_fp8_triton", "rocm_fp8_te"} or fp8_backward != "full"):
             raise ValueError("split-K FP8 wgrad requires DeepGEMM with full FP8 backward")
         if not isinstance(fp8_cache_weights, bool):
             raise ValueError("fp8_cache_weights must be a boolean")
-        if linear_backend != "deepgemm" and (fp8_backward != "bf16" or fp8_quantizer != "torch" or fp8_cache_weights):
+        if linear_backend not in {"deepgemm", "rocm_fp8", "rocm_fp8_triton", "rocm_fp8_te"} and (fp8_backward != "bf16" or fp8_quantizer != "torch" or fp8_cache_weights):
             raise ValueError("FP8 backward and fused quantizers require DeepGEMM")
         validate_block(alpha_group_size, eps)
         if min(in_features, out_features) <= 0 or weight_init not in {"normal", "orthogonal"}:
             raise ValueError("invalid linear dimensions or initialization")
         if not 0 <= quantization_strength <= 1 or not math.isfinite(init_scale) or init_scale <= 0:
             raise ValueError("invalid strength or initialization scale")
-        if weight_scale_layout not in {"rowwise", "blockwise"} or linear_backend not in {"torch", "deepgemm"}:
+        if weight_scale_layout not in {"rowwise", "blockwise"} or linear_backend not in {"torch", "deepgemm", "rocm_fp8", "rocm_fp8_triton", "rocm_fp8_te"}:
             raise ValueError("unknown quantization layout or linear backend")
         if linear_backend == "deepgemm" and (eps != 1e-6 or weight_scale_layout != "blockwise" or alpha_group_size != 128
                 or not quantize_activations or quantization_strength != 1 or in_features % 128 or out_features % 128):
             raise ValueError("DeepGEMM requires full FP8 quantization and aligned 128x128 weight blocks")
+        if linear_backend.startswith("rocm_fp8") and (
+                weight_mode != "dense" or fp8_backward != "full" or fp8_quantizer != "triton_split"
+                or weight_scale_layout != "blockwise" or alpha_group_size != 128
+                or not quantize_activations or quantization_strength != 1
+                or in_features % 128 or out_features % 128 or fp8_wgrad_recipe != "1d1d"):
+            raise ValueError("ROCm FP8 requires dense full-backward 128-block scaling; QAT is not certified")
         self.in_features, self.out_features = in_features, out_features
         self.eps, self.alpha_group_size = eps, alpha_group_size
         self.quantize_activations = quantize_activations
@@ -269,12 +279,25 @@ class BitLinear(nn.Module):
                     self.weight.dtype, self.weight.shape, self.weight.stride(), self.fp8_quantizer, transposed,
                     self.weight_mode, torch.is_inference_mode_enabled())
         if self._fp8_weight_cache is None or self._fp8_weight_cache[0] != identity:
-            operands = quantize_weight_directions(self.weight, weight_mode=self.weight_mode,
-                                                  transposed=transposed, backend=self.fp8_quantizer)
+            if self.linear_backend.startswith("rocm_fp8"):
+                from production.amd.backend import quantize_weight
+
+                operands = quantize_weight(self.weight, transposed=transposed)
+            else:
+                operands = quantize_weight_directions(self.weight, weight_mode=self.weight_mode,
+                                                      transposed=transposed, backend=self.fp8_quantizer)
             self._fp8_weight_cache = (identity, operands)
         return self._fp8_weight_cache[1]
 
     def forward(self, values, activation_rows=None):
+        if self.linear_backend.startswith("rocm_fp8"):
+            from production.amd.backend import linear
+
+            if activation_rows is not None:
+                raise ValueError("Hopper FP8 producer sidecars cannot be used by ROCm")
+            return linear(values.to(torch.bfloat16), self.weight,
+                          weight_operands=self._weight_operands(values),
+                          backend=self.linear_backend, splits=self.fp8_wgrad_splits or 1)
         if self.linear_backend == "deepgemm":
             return deepgemm_bitlinear(values.to(torch.bfloat16), self.weight,
                                      backward_mode=self.fp8_backward, quantizer=self.fp8_quantizer,

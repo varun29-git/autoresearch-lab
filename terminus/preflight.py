@@ -180,6 +180,12 @@ def graph_numerical_preflight(config, device):
 
 
 def validate_preflight_report(path, config, device, *, cuda_graphs=False):
+    if config.attention_backend in {"rocm_aiter", "rocm_ck"} or config.linear_backend.startswith("rocm_fp8"):
+        from production.amd.preflight import validate_report
+
+        if cuda_graphs:
+            raise ValueError("AMD graph replay is not certified")
+        return validate_report(path, config, device)
     if path is None:
         raise ValueError("production requires --preflight-report from this exact code, configuration and GPU runtime")
     report = json.loads(Path(path).read_text())
@@ -203,6 +209,12 @@ def validate_preflight_report(path, config, device, *, cuda_graphs=False):
 
 
 def run_preflight(config, device, *, cuda_graphs=False):
+    if config.attention_backend in {"rocm_aiter", "rocm_ck"}:
+        from production.amd.preflight import run
+
+        if cuda_graphs:
+            raise ValueError("AMD graph replay is not certified")
+        return run(config, device)
     if device.type != "cuda" or not torch.cuda.is_available():
         raise RuntimeError("GPU preflight requires CUDA; CPU tests do not certify production kernels")
     if config.attention_backend == "sdpa_reference":

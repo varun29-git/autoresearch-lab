@@ -1,0 +1,82 @@
+import pytest
+import torch
+
+from production.amd import backend, reference
+from terminus.model import BitLinear
+
+torch.set_num_threads(1)
+
+
+@pytest.fixture
+def emulated(monkeypatch):
+    def weights(w, transposed=False):
+        p = reference.quantize(w, group_rows=128)
+        return p, (p[0].T.contiguous(), p[1].T.contiguous()) if transposed else None
+
+    monkeypatch.setattr(backend, "quantize_directions", reference.directional)
+    monkeypatch.setattr(backend, "quantize_weight", weights)
+    monkeypatch.setattr(backend, "gemm", reference.gemm)
+
+
+def test_fnuz_scale_format_zero_blocks_and_nonfinite():
+    x = torch.zeros(128, 256)
+    x[5, 3] = 2.4
+    codes, scales = reference.quantize(x, group_rows=128)
+    assert codes.dtype == torch.float8_e4m3fnuz
+    assert scales[0, 0] == pytest.approx(.01)
+    assert codes[5, 3].float() == 240
+    assert scales[0, 1] == 1
+    for v in (float("nan"), float("inf"), -float("inf")):
+        x[0, 0] = v
+        assert torch.isnan(reference.quantize(x, group_rows=128)[0][0, 0].float())
+
+
+@pytest.mark.parametrize("rows", [1, 17, 129])
+def test_full_backward_uses_independently_quantized_transposes(emulated, rows):
+    torch.manual_seed(123)
+    x = torch.randn(rows, 256, dtype=torch.bfloat16, requires_grad=True)
+    w = (torch.randn(384, 256) * .03).requires_grad_()
+    g = torch.randn(rows, 384, dtype=torch.bfloat16)
+    y = backend.linear(x, w)
+    dx, dw = torch.autograd.grad(y, (x, w), g)
+    xr, xt = reference.directional(x, transposed=True)
+    wr = reference.quantize(w, group_rows=128)
+    gr, gt = reference.directional(g, transposed=True, eps=0.)
+    torch.testing.assert_close(y, reference.gemm(xr, wr), rtol=0, atol=0)
+    torch.testing.assert_close(dx, reference.gemm(gr, (wr[0].T.contiguous(), wr[1].T.contiguous())), rtol=0, atol=0)
+    torch.testing.assert_close(dw, reference.gemm(gt, xt, rhs_group_size=1, out_dtype=torch.float32), rtol=0, atol=0)
+    assert dw.dtype == torch.float32
+    assert not xt[0].float()[:, rows:].count_nonzero()
+    # dW uses a quantization of X.T, not X's already-rounded row codes.
+    assert reference.dequantize(xt).shape == (256, ((rows + 127) // 128) * 128)
+
+
+def test_accumulation_and_cache_refresh(emulated):
+    layer = BitLinear(256, 256, weight_mode="dense", linear_backend="rocm_fp8",
+                      weight_scale_layout="blockwise", quantize_activations=True,
+                      fp8_backward="full", fp8_quantizer="triton_split", fp8_cache_weights=True)
+    x = torch.randn(17, 256, dtype=torch.bfloat16, requires_grad=True)
+    first = layer(x)
+    first.backward(torch.ones_like(first))
+    g1 = layer.weight.grad.clone()
+    second = layer(x)
+    second.backward(torch.ones_like(second))
+    torch.testing.assert_close(layer.weight.grad, 2 * g1)
+    with torch.no_grad():
+        layer.weight.mul_(2.)
+    changed = layer(x)
+    layer.clear_fp8_weight_cache()
+    torch.testing.assert_close(changed, layer(x), rtol=0, atol=0)
+    assert not torch.equal(first, changed)
+    with torch.inference_mode():
+        assert torch.isfinite(layer(x)).all()
+
+
+@pytest.mark.skipif(not torch.version.hip or not torch.cuda.is_available(), reason="native gfx942 GPU required")
+def test_native_quantizer_gemm_and_full_backward():
+    from production.amd.preflight import fp8_gate
+    from production.amd.recipe import model_for
+    from dataclasses import replace
+
+    small = replace(model_for("fp8_triton"), dim=256, n_heads=4, n_kv_heads=2, ffn_dim=640)
+    assert fp8_gate(small, torch.device("cuda"))["fp32_wgrad"]

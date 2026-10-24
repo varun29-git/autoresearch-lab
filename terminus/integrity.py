@@ -59,7 +59,12 @@ def fingerprint(payload):
 
 def source_hashes():
     root = Path(__file__).parent
-    return {path.name: file_sha256(path) for path in sorted(root.glob("*.py"))}
+    result = {path.name: file_sha256(path) for path in sorted(root.glob("*.py"))}
+    # The isolated AMD backends are executable model/optimizer dependencies.
+    amd = root.parent / "production" / "amd"
+    result.update({"production/amd/" + path.name: file_sha256(path)
+                   for path in sorted(amd.glob("*.py"))})
+    return result
 
 
 def fsync_directory(path):
