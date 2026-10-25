@@ -1,0 +1,158 @@
+from dataclasses import asdict, replace
+import json
+from pathlib import Path
+import subprocess
+
+import numpy as np
+import pytest
+import torch
+
+from production.amd.prepare import prepare
+from production.amd.profiles import (BRIDGE_END_TOKENS, CADENCE_TOKENS, GLOBAL_BATCH_TOKENS,
+                                    PROFILES, VALIDATION_SEQUENCES, WARMUP_TOKENS, select)
+from production.amd.recipe import validate_production
+from production.recipe import SELECTED_OPTIMIZER
+from terminus.data import TokenBatcher, TokenDataConfig, TokenManifest, TokenShardSpec
+from terminus.optim import OptimizerConfig
+from terminus.train import load_config, schedule_scale
+
+
+def manifest(tokens=10**12):
+    # Metadata fixture only; no fabricated data is passed through staging.
+    validation = VALIDATION_SEQUENCES * 4096 + 1
+    return TokenManifest(
+        TokenDataConfig(batch_size=7, seq_len=4096, total_train_tokens=tokens,
+                        validation_tokens=validation - 1, source_mix={"en": .8, "code": .2}),
+        [TokenShardSpec("en.bin", "en", "train", tokens + 1, language="en"),
+         TokenShardSpec("code.bin", "code", "train", tokens + 1, language="en"),
+         TokenShardSpec("en-val.bin", "en", "val", validation, language="en"),
+         TokenShardSpec("code-val.bin", "code", "val", validation, language="en")],
+        tokenizer={"sha256": "a" * 64},
+        provenance={"scope": {"name": "test-en-code-v1", "languages": ["en"], "domains": ["code"]}})
+
+
+@pytest.mark.parametrize("name", PROFILES)
+def test_selected_profiles_roundtrip_and_comparison_contract(tmp_path, name):
+    original = manifest()
+    before = asdict(original)
+    derived, config, report = select(original, profile=name)
+    selected = PROFILES[name]
+    # The actual data/phase contract survives; only grouping into batches changes.
+    expected = asdict(original)
+    expected["config"]["batch_size"] = selected.microbatch
+    assert asdict(derived) == expected
+    assert asdict(original) == before
+    training = config["training"]
+    assert selected.world_size * derived.config.tokens_per_step * training["gradient_accumulation_steps"] == selected.global_batch_tokens
+    assert training["validation_batches_per_language"] * selected.microbatch * selected.world_size == 1024
+    assert report["validation_tokens_per_check"] == 2 * 1024 * 4096
+    assert report["bridge_stop_after_updates"] * selected.global_batch_tokens == BRIDGE_END_TOKENS
+    assert report["cadence_tokens"] == CADENCE_TOKENS
+    assert WARMUP_TOKENS < BRIDGE_END_TOKENS < report["decay_start_tokens"]
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    model, loaded, optimizer = load_config(path)
+    assert validate_production(model, loaded, optimizer) == selected.candidate
+    assert optimizer == OptimizerConfig(**SELECTED_OPTIMIZER)
+    assert report["allocation"]["measured_rate"] is None
+
+
+def test_schedule_token_alignment_and_manifest_horizon_are_preserved():
+    original = manifest(tokens=1_000_000_000_001)
+    derived, config, report = select(original)
+    assert derived.config.total_train_tokens == 1_000_000_000_001
+    total, decay = derived.config.usable_train_tokens, report["decay_tokens"]
+    assert 0 <= decay - total / 10 < 4096
+    assert report["discarded_subsequence_tail_tokens"] == original.config.total_train_tokens % 4096
+    settings = {key: config["training"][key] for key in
+                ("warmup_tokens", "final_lr_fraction", "schedule", "decay_tokens", "decay_style")}
+    assert schedule_scale(WARMUP_TOKENS // 2, total, **settings) == .5
+    assert schedule_scale(WARMUP_TOKENS, total, **settings) == 1
+    assert schedule_scale(BRIDGE_END_TOKENS, total, **settings) == 1
+    assert schedule_scale(total - decay, total, **settings) == 1
+    assert schedule_scale(total, total, **settings) == .1
+    assert select(manifest(tokens=10_000_000_000))[2]["bridge_end_tokens"] == BRIDGE_END_TOKENS
+
+
+def test_fail_closed_on_short_heldouts_or_incompatible_inputs():
+    original = manifest()
+    short = replace(original.shards[-1], num_tokens=1024 * 4096)  # Needs one next-token target.
+    with pytest.raises(ValueError, match="code"):
+        select(replace(original, shards=original.shards[:-1] + [short]))
+    with pytest.raises(ValueError, match="10B"):
+        select(manifest(tokens=10**9))
+    with pytest.raises(ValueError, match="26 complete"):
+        select(manifest(tokens=25 * GLOBAL_BATCH_TOKENS), purpose="smoke")
+    with pytest.raises(ValueError, match="4096-token uint16"):
+        select(replace(original, config=replace(original.config, seq_len=2048)))
+    with pytest.raises(ValueError, match="unknown"):
+        select(original, profile="auto")
+
+
+def test_smoke_is_explicit_and_does_not_claim_a_quality_bridge():
+    _, config, report = select(manifest(tokens=26 * GLOBAL_BATCH_TOKENS), purpose="smoke")
+    training = config["training"]
+    assert training["warmup_tokens"] == 2 * GLOBAL_BATCH_TOKENS
+    assert training["stability_log_interval"] == 1
+    assert report["bridge_stop_after_updates"] is None
+    assert report["purpose"] == "smoke"
+
+
+def test_explicit_backend_fallback_keeps_selected_batch_and_data_phases():
+    original = manifest(tokens=10_000_000_000)
+    original = replace(original, config=replace(original.config, source_mix={}, phase_source_mixes=[
+        {"name": "first", "tokens": 4_096_000_000, "source_mix": {"en": .8, "code": .2}},
+        {"name": "second", "tokens": 5_904_000_000, "source_mix": {"en": .5, "code": .5}},
+    ]))
+    derived, config, report = select(original, profile="mb8", candidate="fp8")
+    assert derived.config.phase_source_mixes == original.config.phase_source_mixes
+    assert config["training"]["gradient_accumulation_steps"] == 8
+    assert config["model"]["linear_backend"] == "rocm_fp8"
+    assert config["model"]["fp8_wgrad_splits"] == 4
+    assert report["candidate_override"] == report["selection"]["candidate"] == "fp8"
+
+
+def test_external_bundle_is_consumable_and_shell_safe(tmp_path):
+    source = tmp_path / "input.json"
+    manifest().save(source)
+    before = source.read_bytes()
+    output = tmp_path / "bundle ' with $(touch BAD)"
+    report = prepare(manifest_path=source, output_dir=output)
+    assert source.read_bytes() == before
+    assert load_config(output / "config.json")[1].gradient_accumulation_steps == 4
+    assert TokenManifest.load(output / "manifest.json").config.batch_size == 16
+    assert json.loads((output / "selection.json").read_text()) == report
+    # Source the generated shell file using positional arguments, never string interpolation.
+    result = subprocess.run(["bash", "-c", 'source "$1"; printf "%s" "$CONFIG"', "bash", str(output / "env.sh")],
+                            cwd=tmp_path, capture_output=True, text=True, check=True)
+    assert result.stdout == str(output / "config.json")
+    assert not (tmp_path / "BAD").exists()
+    with pytest.raises(FileExistsError):
+        prepare(manifest_path=source, output_dir=output)
+    with pytest.raises(ValueError, match="outside"):
+        prepare(manifest_path=source, output_dir=Path(__file__).parent / "generated-do-not-create")
+
+
+def test_real_loader_preserves_global_update_under_microbatch_and_rank_changes(tmp_path):
+    # Exercise actual mmap/rank-striding, not just the batch multiplication.
+    tokens = np.random.default_rng(19).integers(0, 65536, GLOBAL_BATCH_TOKENS + 1, dtype=np.uint16)
+    tokens.tofile(tmp_path / "train.bin")
+    tokens[:4097].tofile(tmp_path / "val.bin")
+    specs = [TokenShardSpec("train.bin", "en", "train", len(tokens), language="en"),
+             TokenShardSpec("val.bin", "en", "val", 4097, language="en")]
+    reference_x = torch.from_numpy(tokens[:-1].astype(np.int64)).reshape(-1, 4096)
+    reference_y = torch.from_numpy(tokens[1:].astype(np.int64)).reshape(-1, 4096)
+    for name in ("balanced", "mb4", "mb8", "mb32", "single_gpu"):
+        chosen = PROFILES[name]
+        data = TokenManifest(TokenDataConfig(batch_size=chosen.microbatch, seq_len=4096,
+                             total_train_tokens=GLOBAL_BATCH_TOKENS, validation_tokens=4096), specs)
+        batchers = [TokenBatcher(data, root=tmp_path, rank=rank, world_size=chosen.world_size)
+                    for rank in range(chosen.world_size)]
+        steps = GLOBAL_BATCH_TOKENS // (chosen.world_size * data.config.tokens_per_step)
+        xs, ys = [], []
+        for step in range(steps):
+            rank_batches = [batcher.train_batch(step) for batcher in batchers]
+            xs.append(torch.stack([pair[0] for pair in rank_batches], dim=1).flatten(0, 1))
+            ys.append(torch.stack([pair[1] for pair in rank_batches], dim=1).flatten(0, 1))
+        assert torch.equal(torch.cat(xs), reference_x), name
+        assert torch.equal(torch.cat(ys), reference_y), name
