@@ -138,6 +138,8 @@ Suggested QAT starting candidate for the later native configuration builder:
 - Keep global batch 2,097,152, world size 8 and initially microbatch 16 /
   accumulation 4, provided the QAT memory test passes. Preserve initialization
   lineage, optimizer moments, RNG and the exact next-token cursor.
+  If the dense 3,145,728-token batch is promoted, review the QAT batch and
+  schedule separately; dense speed alone does not qualify its QAT transfer.
 - Switch effective projection weights to full ternary immediately. Use LR
   re-warmup, not an unvalidated gradual weight/activation interpolation.
 - Re-warm over `min(1,006,632,960 tokens, 5% of Tq)`, rounded to full updates;

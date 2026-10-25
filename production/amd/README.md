@@ -19,6 +19,9 @@ Use [CONFIG_SELECTION.md](CONFIG_SELECTION.md) for the researched eight-GPU
 starting settings and named comparisons selected on 2026-10-25: microbatch 16,
 accumulation 4, global batch 2,097,152, TE FP8, roughly 1B-token warmup and a
 final 10% WSD decay. These choices await native fit, speed and quality evidence.
+Microbatch 16 is not a measured optimum; the paired 3,145,728-token
+`batch_3m_mb16`/`batch_3m_mb24` profiles test whether more HBM use reduces
+complete-update time without conflating microbatch and global-batch effects.
 For a final ternary model, [QAT_ALLOCATION.md](QAT_ALLOCATION.md) recommends
 60% dense / 40% QAT by tokens and prices both stages together. Native AMD
 ternary execution still needs implementation and qualification.
@@ -130,9 +133,12 @@ other [named profiles](CONFIG_SELECTION.md). Each is an explicit run; there
 is no automatic sweep. `balanced` selects TE and needs `INSTALL_TE=1`.
 The lower-level `production.amd.build_config` remains available for explicit
 experiments and retains its original `fp8` default; it does not apply the new
-profile policies. Compare microbatch 8 and 16 first; test 32 only after a
-memory profile shows headroom. Recreate data staging receipts for each derived
-manifest, even if its shards are shared.
+profile policies. Compare microbatch 8 and 16 first. If full-update memory
+leaves headroom, compare `batch_3m_mb16` and `batch_3m_mb24` at the same
+3.146M-token global batch; qualify that batch against the 2M baseline before
+promotion. Test microbatch 32 only after a memory profile shows headroom.
+Recreate data staging receipts for each derived manifest, even if its shards
+are shared.
 
 Before the paid interval, make shard/tokenizer **files** read-only on the
 staged snapshot (or use an immutable read-only mount), then fully verify once

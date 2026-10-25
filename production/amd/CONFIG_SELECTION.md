@@ -10,12 +10,21 @@ tokens and a combined 480 GPU-hour qualification reserve. The forecasts in
 this document remain standalone dense-only scenarios. The lower-level builder remains
 available for explicitly reviewed experiments.
 
+**Microbatch 16 is a starting point, not an optimum.** Neither complete-update
+throughput nor peak memory has been measured on MI325X. In particular, it is
+incorrect to claim that 65,536 tokens per GPU saturate the compute units or
+fit in cache. One BF16 residual tensor alone is
+`16 × 4096 × 2304 × 2 = 301,989,888` bytes (288 MiB), larger than the
+advertised 256 MB LLC. Kernels tile and stream data through HBM; LLC capacity
+and the 256 GB HBM capacity are different constraints. Filling HBM is not
+itself an optimization objective.
+
 ## Main choice: `balanced`
 
 | Setting | Selected value | Reason |
 | --- | --- | --- |
 | Node / parallelism | One node, 8 MI325X, DDP; TP=PP=1, no FSDP/ZeRO | Replicate this small model and use xGMI for gradients; avoid parameter gathers and pipeline bubbles |
-| Context / microbatch | 4096 tokens / 16 sequences per GPU | Large GEMM rows, retained activations; actual fit still requires a full update |
+| Context / microbatch | 4096 tokens / 16 sequences per GPU | Measurable starting point; larger microbatches remain candidates |
 | Accumulation | 4 microsteps | 8 × 16 × 4096 × 4 = **2,097,152 tokens/update**, 512 sequences |
 | Projection backend | `fp8_te`, pinned ROCm TE HipKittens | Vendor implementation of forward, dgrad and FP32 wgrad; test against the independent AITER path |
 | FP8 recipe | E4M3 FNUZ; activation/gradient scales 1×128; weight scales 128×128; FP32 scales | Preserve the existing explicit AMD numerical candidate; no per-tensor/delayed/MXFP8 substitution |
@@ -67,6 +76,13 @@ the largest batch fitting memory need not provide the best loss per compute
 it does not establish that arbitrarily large global batches learn efficiently.
 There is no verified Muon-specific batch scaling law here.
 
+The older 25-layer H100 run allocated 55.5 GB at microbatch 4 and 87.4 GB at
+8. A linear extrapolation gives roughly **151 GB at 16, 215 GB at 24 and
+279 GB at 32**. These are screening numbers, not MI325X predictions: the
+selected model has 24 layers, different attention windows and AMD kernels.
+They do show why leaving nominal HBM unused at 16 does not establish that
+32 will fit with checkpoint/validation headroom.
+
 At the selected batch, each rank processes 262,144 tokens/update. Moving from
 microbatch 8 to 16 reduces eight microsteps to four, with the same number of
 optimizer updates and gradient reductions. Moving the *global* batch to 4M
@@ -90,9 +106,10 @@ decay [S20]; we borrow the latter duration as a starting point while retaining
 CI-1's selected cosine shape and 0.1 floor. We do not copy SmolLM2's AdamW
 rates, linear-to-zero decay or 2,000-step warmup.
 
-The common boundary 6,291,456 is the LCM of the three batch sizes under review.
-Aligning warmup and operational checkpoints to it gives exact matched-token
-milestones for the 393k, 2M and 4M trajectories. It is accounting precision,
+The accounting quantum is 6,291,456 tokens. The configured warmup, bridge
+boundary and operational cadences are even multiples of that quantum and
+therefore divisible by all four reviewed global batches (393k, 2M, 3.146M
+and 4M). This gives exact matched-token milestones. It is accounting precision,
 not a claim that those exact token counts are statistically optimal.
 
 `purpose=training` requires a roughly 10B-token or larger manifest; a 10B
@@ -105,11 +122,16 @@ at **4,026,531,840 tokens**, after warmup and before decay:
 | `batch_bridge` | 4 | 393,216 | 3 | 10,240 |
 | `balanced` | 16 | 2,097,152 | 4 | 1,920 |
 | `large_batch` | 16 | 4,194,304 | 8 | 960 |
+| `batch_3m_mb16` | 16 | 3,145,728 | 6 | 1,280 |
+| `batch_3m_mb24` | 24 | 3,145,728 | 4 | 1,280 |
 
-This compares the selected full architecture at different batches, not a
-small archived model against a new full model. A short plateau bridge tests
-early transfer only; it cannot certify final convergence. Check matched
-GPU-hour quality as well as matched-token quality.
+The two 3.146M profiles are a fixed-global-batch execution pair: they process
+the same token stream with six or four microsteps respectively. Both also
+change the global batch relative to `balanced`, so promotion needs a
+matched-token and matched-GPU-hour quality bridge. This compares the selected
+full architecture at different batches, not a small archived model against a
+new full model. A short plateau bridge tests early transfer only; it cannot
+certify final convergence.
 
 The final **dense token horizon remains conditional on measured throughput**.
 Choosing 2T in a file cannot make it finish. Reserve **320 of 5,760 GPU-hours**
@@ -143,13 +165,14 @@ later requires a reviewed migration, not editing JSON mid-run.
 
 All comparisons keep **1,024 full sequences globally per language/domain**,
 4,194,304 scored tokens per scope key. The generator derives the per-rank
-validation batch count: 32/16/8/4 for microbatch 4/8/16/32 on eight ranks.
-It refuses short or missing held-outs instead of silently changing coverage.
-Changing microbatch previously changed coverage through the trainer's
-`max_batches × microbatch × world_size` limit. The chosen profiles compensate
-for that behavior without changing the trainer. They preserve the exact
-evenly spaced held-out sequence selection. Full staging still verifies
-actual bytes, token IDs, tokenizer, provenance and train/validation coverage.
+validation batch count: 32/16/8/4 for microbatch 4/8/16/32, or 6 for
+microbatch 24 on eight ranks. The trainer caps the selected global sequences
+at 1,024, so the last microbatch-24 evaluation step contains eight sequences
+per rank. The cap is an operational setting; the trainer's default behavior
+for older configurations remains unchanged. It refuses short or missing
+held-outs instead of silently changing coverage and preserves the exact
+evenly spaced held-out sequence selection. Full staging still verifies actual
+bytes, token IDs, tokenizer, provenance and train/validation coverage.
 
 For ten scope keys this is 41.94M validation tokens per check. Measure the
 actual forward-only cost. Stability scans run at a lower cadence than the
@@ -184,6 +207,8 @@ stated field(s) relative to `balanced` and derive accumulation/cadence.
 | `mb4` | microbatch 4, accumulation 16 | First conservative full-size memory/update check |
 | `mb8` | microbatch 8, accumulation 8 | Memory fallback and fixed-global-batch speed control |
 | `mb32` | microbatch 32, accumulation 2 | Only after measured full-update HBM headroom |
+| `batch_3m_mb16` | global batch 3,145,728, accumulation 6 | Quality and execution control for the 3.146M batch |
+| `batch_3m_mb24` | global batch 3,145,728, microbatch 24, accumulation 4 | Conditional larger-microbatch candidate at the matched 3.146M batch |
 | `aiter` | AITER forward/dgrad, local wgrad split-K 4 | Primary backend comparison/fallback |
 | `bf16` | Removes projection FP8 quantization | Independent quality and timing control |
 | `triton` | Local Triton forward/dgrad/wgrad, splits 4 | Diagnosis if vendor kernels disagree; not mandatory tuning spend |
@@ -201,15 +226,17 @@ validation and checkpoint paths, and initially keep at least **15% of actual
 usable HBM free**, including device-level usage visible in `amd-smi` that
 PyTorch's allocator counters do not capture. Nominal 256 GB capacity is not
 an activation-memory estimate.
-Test `mb32` only when it can meet that margin. If `mb16` fails, use `mb8` or
-`mb4` at the same global batch before considering rematerialization. Head
-chunk 4096 and TE-owned split-K 0 stay fixed initially; further sweeps need
+Test `batch_3m_mb24` and `mb32` only when they can meet that margin. If `mb16`
+fails, use `mb8` or `mb4` at the same global batch before considering
+rematerialization. Head chunk 4096 and TE-owned split-K 0 stay fixed initially;
+further sweeps need
 profile evidence, as described in [OPTIMIZATION.md](OPTIMIZATION.md).
 
 Order: native preflight → conservative full update → RCCL/rank correctness →
-`mb8`/`balanced` and TE/AITER paired complete updates → conditional larger
-microbatch/bucket/attention tests → batch and BF16 quality bridges → cadence,
-backup and exact-resume rehearsal → measured horizon selection. Prefer at
+`mb8`/`balanced` and TE/AITER paired complete updates → conditional
+`batch_3m_mb16`/`batch_3m_mb24`, `mb32`, bucket and attention tests → batch
+and BF16 quality bridges → cadence, backup and exact-resume rehearsal →
+measured horizon selection. Prefer at
 least **3% median paired throughput improvement**, no repeated p95 regression
 and the same quality/memory gates before paying for a more complex execution
 choice. Three alternating 20-update pairs and a 40-update soak remain the

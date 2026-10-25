@@ -85,6 +85,13 @@ small updates can be wrong while whole-weight relative error looks small.
 The researched choices in [CONFIG_SELECTION.md](CONFIG_SELECTION.md) and
 `profiles.py` are selected for testing, not native certification. Local checks:
 
+- Microbatch-24 follow-up: **23 profile tests and the two-process resume
+  regression passed** together (24 tests, 113 seconds). They cover the
+  3.146M-token fixed-global-batch pair, equal held-out examples with a partial
+  final evaluation batch, and the operational resume contract. A broader CPU
+  run passed 71 checks, overlapping this set, and had a resume identity
+  mismatch while the source file was edited during that run; the clean rerun
+  passed. MI325X fit, full-update speed and batch-quality gates remain unrun.
 - AMD tests plus production config, real data-loader and training regressions:
   **67 passed, 1 skipped, 7 subtests passed** in 115 seconds. This included CPU
   DDP and exact-resume checks; the skipped test needs native AMD hardware.
