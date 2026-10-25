@@ -13,6 +13,9 @@ Read [RESEARCH.md](RESEARCH.md) for the code/hardware analysis,
 [SOURCES.md](SOURCES.md) for the checked upstream revisions and evidence limits.
 The original H100 recipe in `production/recipe.py` remains unchanged.
 
+Use [LAUNCH_CHECKLIST.md](LAUNCH_CHECKLIST.md) for the ordered readiness list,
+including production data, S3 backup integration and the native gates still due.
+
 ## What is selected, and what is a candidate
 
 All candidates keep 24 layers, width 2304, FFN 5760, 18 query/6 KV heads,
