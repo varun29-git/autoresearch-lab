@@ -4,7 +4,10 @@ Decision: 2026-10-25. These are concrete starting settings for the selected
 1,446,478,126-parameter model. They are ready to generate and test; they are
 not native measurements or permission to launch paid hardware. The executable
 choices are in [profiles.py](profiles.py), with [prepare.py](prepare.py)
-writing actual manifests/configs outside Git. The lower-level builder remains
+writing actual manifests/configs outside Git. For a final ternary model,
+[QAT_ALLOCATION.md](QAT_ALLOCATION.md) now recommends 60% dense / 40% QAT by
+tokens and a combined 480 GPU-hour qualification reserve. The forecasts in
+this document remain standalone dense-only scenarios. The lower-level builder remains
 available for explicitly reviewed experiments.
 
 ## Main choice: `balanced`

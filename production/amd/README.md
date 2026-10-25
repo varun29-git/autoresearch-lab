@@ -19,6 +19,9 @@ Use [CONFIG_SELECTION.md](CONFIG_SELECTION.md) for the researched eight-GPU
 starting settings and named comparisons selected on 2026-10-25: microbatch 16,
 accumulation 4, global batch 2,097,152, TE FP8, roughly 1B-token warmup and a
 final 10% WSD decay. These choices await native fit, speed and quality evidence.
+For a final ternary model, [QAT_ALLOCATION.md](QAT_ALLOCATION.md) recommends
+60% dense / 40% QAT by tokens and prices both stages together. Native AMD
+ternary execution still needs implementation and qualification.
 
 ## What is selected, and what is a candidate
 
@@ -51,9 +54,9 @@ silently falls back to a CPU/reference implementation.
 
 These are numerical migration candidates for review against the selected
 baseline. A faster candidate must pass matched-token quality checks before
-the month-long run. QAT rates and dense/QAT token allocations remain unset;
-the AMD FP8 constructor deliberately rejects ternary mode. Dense-to-QAT
-quality/format migration is still a separate gate.
+the month-long run. The mixed-phase recommendation is a planning policy;
+the AMD FP8 constructor still rejects ternary mode. Dense-to-QAT
+quality/format migration is a separate implementation and qualification gate.
 
 ## Build without spending GPU time
 
@@ -238,6 +241,10 @@ backend or GPU count is a new reviewed migration, not an exact resume.
 
 ## Forecast the month from measured rates
 
+The example below is **dense-only**. For the recommended combined dense/QAT
+program, use `python3 -m production.amd.phase_plan` with both phase rates and
+the 480 GPU-hour total qualification reserve in [QAT_ALLOCATION.md](QAT_ALLOCATION.md).
+
 ```bash
 python3 -m production.amd.budget --dense-rate 60000 \
   --reserve-gpu-hours 320 --duty-cycle 0.9
@@ -249,7 +256,7 @@ gross averages are **72,338 tokens/s/GPU for 1.5T** and **96,451 for 2T**.
 With the example reserve/duty cycle, the 1.5T requirement becomes **85,103**.
 Increasing GPU count changes elapsed days, not tokens per GPU-hour.
 Do not apply a second scaling-efficiency penalty to an already measured
-8-rank rate. For a later selected QAT allocation, pass both `--qat-tokens`
+8-rank rate. For a fixed mixed-phase target, pass both `--qat-tokens`
 and its measured `--qat-rate`; QAT is not free additional time.
 
 ## Local validation status

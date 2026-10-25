@@ -42,6 +42,21 @@ was also inspected. Its checked-in global sequence batch differs from widely
 quoted training descriptions; it was not used to assert a final TinyLlama
 production batch. No third-party throughput number was transferred to CI-1.
 
+## Dense/QAT allocation research
+
+Follow-up sources inspected **2026-10-25**:
+
+| ID | Primary source | What was checked / implication |
+| --- | --- | --- |
+| S25 | [ParetoQ §2.1](https://arxiv.org/html/2502.02631v1) | MobileLLM-125M fixed 100B-token allocation experiment favors roughly 90/10; separate LR cycles. Its quantizers and gradients differ from our absmean/identity-STE recipe. |
+| S26 | [Continual QAT §4–5](https://arxiv.org/html/2502.11895v1) | OLMo-1B, 10k updates at 4,194,304 tokens/update; 2k-step switch best among tested 2k/4k/6k switches. State carry/ramp reduce shock without guaranteeing a final advantage. |
+| S27 | [MiniCPM4 / BitCPM4 §3.3](https://arxiv.org/html/2506.07900v2) | 5M / 2B-token pilot, 150M verification; QAT share exceeding ~40% approaches ternary-from-scratch loss. Weight-only QAT, LR re-warmup and 350B-token final QAT. Not proof of dense parity or a universal “twice decay” law. |
+| S28 | [BitNet b1.58 2B4T](https://arxiv.org/html/2504.12285v1) | Native ternary training from scratch on 4T tokens; does not establish the best CI-1 phase split or GPU training speed. |
+| S29 | [Archived Lean 150M dense/QAT review](../../experiments/terminus_lean_150m_qat_2b/analysis/COMBINED_DENSE_QAT_SCALING_REVIEW.md) | Reports incomplete quality recovery after 10B dense + 2B QAT; different architecture/LRs and changed QAT mixture. Summary inspected, raw training not rerun; no causal conclusion that duration alone caused the gap. |
+
+These motivate the initial [60/40 planning policy](QAT_ALLOCATION.md); none
+certifies the selected model's AMD QAT convergence or an optimal split.
+
 ## Claims from the pasted dossier that were not promoted to facts
 
 - Its 43,873.9 tok/s H100 receipt, power/clock curves and per-phase timings

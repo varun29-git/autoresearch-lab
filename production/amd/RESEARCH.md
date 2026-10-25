@@ -218,7 +218,8 @@ one-GPU probe lasting an hour still consumes eight allocation GPU-hours.
 For a chosen dense target `Td` and QAT target `Tq`, the cost is
 `reserve + (Td/rd + Tq/rq)/(3600 × duty_cycle)`. A harmonic, token-weighted
 rate is appropriate; the arithmetic mean of dense and QAT rates is wrong.
-No QAT rate or token split has been selected. If the hardware misses the
+The follow-up [QAT_ALLOCATION.md](QAT_ALLOCATION.md) recommends 60/40 by tokens;
+the native QAT rate remains unmeasured. If the hardware misses the
 rate gate, revise the token horizon/data exposure and WSD decay schedule
 before production starts, or obtain more compute. Do not silently shorten
 context, layers, global-attention frequency, Muon iterations or quality checks.

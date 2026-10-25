@@ -124,10 +124,13 @@ building the multilingual/domain holdouts and contamination audit remains in
 the excluded data workstream. The same comparison tool can be used for dense
 versus QAT and native-QAT versus CPU export on matched evaluation inputs.
 
-## Dense-to-QAT: deliberately incomplete settings
+## Dense-to-QAT: planning and execution status
 
-The operator has not selected QAT rates or the dense/QAT token split. Keep these
-unset. Generate an external specification to fill later:
+The eight-MI325X planning recommendation is now **60% dense / 40% QAT by
+tokens**, with candidate phase rates/schedules in
+[amd/QAT_ALLOCATION.md](amd/QAT_ALLOCATION.md). This does not qualify native
+AMD ternary execution. Generate an external specification to fill with the
+actual budget and validated runtime settings:
 
 ```bash
 python -m production.qat_template --output /external/qat-specification.json

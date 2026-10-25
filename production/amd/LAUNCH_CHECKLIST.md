@@ -232,9 +232,13 @@ receipt alone does not clear the long production run.
 
 ## Separate later work, not a prerequisite for the initial dense run
 
-- [ ] **QAT:** choose phase tokens/rates and state/data policy; implement and
-  validate the AMD transition and ternary kernels, then measure quality and
-  throughput. Current AMD FP8 candidates deliberately reject ternary mode.
+- [x] **QAT allocation planning:** 60/40 by tokens is the recommended starting
+  policy, with 80/20 as a challenger; see [QAT_ALLOCATION.md](QAT_ALLOCATION.md)
+  for phase-rate accounting and the 480 GPU-hour combined qualification reserve.
+- [ ] **QAT execution:** implement and validate the AMD transition and ternary
+  kernels, data-prefix/state carry, recovery quality and throughput. This is
+  required before the full mixed campaign, though not before a bounded dense
+  bring-up trial. Current AMD FP8 candidates deliberately reject ternary mode.
 - [ ] **Multi-node scaling:** repeat network/RCCL, DDP equivalence, staging,
   sustained timing and recovery on each larger topology. Exact resume does
   not silently permit a world-size change.

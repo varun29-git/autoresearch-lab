@@ -107,6 +107,18 @@ an unsupported threshold from the migration dossier. Native tests, production
 data verification, actual HBM/throughput, S3 recovery and early quality bridges
 remain unrun. All native gates above still apply.
 
+## Dense/QAT allocation planning checks
+
+Allocation-planning follow-up (2026-10-25): **64 CPU tests passed** across
+the new dense/QAT budget planner, selected profiles, AMD contracts and existing
+CPU transition mechanics. The planner was cross-checked against the original
+fixed-token budget calculator; it preserves the requested token ratio,
+rounds to complete updates, and accounts for both phase rates and overhead.
+External JSON CLI output, local documentation links and `git diff --check`
+also passed. An extreme-input overflow found during testing was corrected.
+These checks do not enable native AMD ternary execution or resolve the data
+prefix-equivalence audit described in [QAT_ALLOCATION.md](QAT_ALLOCATION.md).
+
 ## Checkpoint and recovery drill
 
 1. Run a bounded real-data training job to a committed checkpoint; retain its
