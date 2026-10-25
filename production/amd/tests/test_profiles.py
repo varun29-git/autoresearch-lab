@@ -55,6 +55,7 @@ def test_selected_profiles_roundtrip_and_comparison_contract(tmp_path, name):
     assert validate_production(model, loaded, optimizer) == selected.candidate
     assert optimizer == OptimizerConfig(**SELECTED_OPTIMIZER)
     assert report["allocation"]["measured_rate"] is None
+    assert report["allocation"]["scope"] == "standalone_dense_only"
 
 
 def test_schedule_token_alignment_and_manifest_horizon_are_preserved():

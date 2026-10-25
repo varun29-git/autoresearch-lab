@@ -144,7 +144,7 @@ def select(manifest, *, profile="balanced", purpose="training", candidate=None):
         "validation_tokens_per_check": len(coverage) * VALIDATION_SEQUENCES * 4096,
         "bridge_stop_after_updates": BRIDGE_END_TOKENS // batch if purpose == "training" else None,
         "bridge_end_tokens": BRIDGE_END_TOKENS if purpose == "training" else None,
-        "allocation": {"gpu_hours": 5760, "gpus": 8, "reserve_gpu_hours": 320,
+        "allocation": {"scope": "standalone_dense_only", "gpu_hours": 5760, "gpus": 8, "reserve_gpu_hours": 320,
                        "assumed_production_duty_cycle": .9,
                        "required_steady_state_tokens_per_second_per_gpu": total / allocation_seconds,
                        "measured_rate": None, "feasibility": "unmeasured"},
