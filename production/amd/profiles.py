@@ -15,7 +15,8 @@ from .recipe import CANDIDATES, validate_production
 
 
 GLOBAL_BATCH_TOKENS = 2_097_152
-# Common update boundary for 393,216, 2,097,152 and 4,194,304-token batches.
+# Cadence multipliers below are even, so milestones align across 393k, 2M,
+# 3.146M and 4M-token batches. This quantum itself is not their LCM.
 COMPARISON_QUANTUM = 6_291_456
 WARMUP_TOKENS = 160 * COMPARISON_QUANTUM
 BRIDGE_END_TOKENS = 640 * COMPARISON_QUANTUM
@@ -45,6 +46,10 @@ PROFILES = {
     "mb4": Profile("First memory-conservative full update; same global batch.", microbatch=4),
     "mb8": Profile("Memory fallback / execution comparison; same global batch.", microbatch=8),
     "mb32": Profile("Use only after measured HBM headroom; same global batch.", microbatch=32),
+    "batch_3m_mb16": Profile("3.146M-token quality control with the same microbatch as balanced.",
+                            global_batch_tokens=3_145_728),
+    "batch_3m_mb24": Profile("Larger microbatch at the matched 3.146M global batch; HBM fit unmeasured.",
+                            microbatch=24, global_batch_tokens=3_145_728),
     "aiter": Profile("Independent AITER forward/dgrad plus local FP32 wgrad.", candidate="fp8"),
     "triton": Profile("Independent local GEMM diagnostic, not a mandatory speed trial.", candidate="fp8_triton"),
     "bf16": Profile("Quality control with projection quantization removed.", candidate="bf16"),
@@ -116,8 +121,10 @@ def select(manifest, *, profile="balanced", purpose="training", candidate=None):
     # Freeze training defaults too. Optimizer settings come from the baseline.
     training = asdict(TrainConfig(**config["training"]))
     training.update({name: max(1, tokens // batch) for name, tokens in CADENCE_TOKENS.items()})
-    training.update(validation_batches_per_language=VALIDATION_SEQUENCES //
-                    (selected.microbatch * selected.world_size), prefetch_batches=4)
+    per_validation_step = selected.microbatch * selected.world_size
+    training.update(validation_batches_per_language=(VALIDATION_SEQUENCES + per_validation_step - 1) //
+                    per_validation_step, validation_sequences_per_language=VALIDATION_SEQUENCES,
+                    prefetch_batches=4)
     if purpose == "smoke":
         training.update(checkpoint_interval=10, validation_interval=10,
                         stability_log_interval=1, log_interval=1)

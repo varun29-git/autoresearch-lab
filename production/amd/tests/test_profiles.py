@@ -1,4 +1,4 @@
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 import json
 from pathlib import Path
 import subprocess
@@ -14,7 +14,7 @@ from production.amd.recipe import validate_production
 from production.recipe import SELECTED_OPTIMIZER
 from terminus.data import TokenBatcher, TokenDataConfig, TokenManifest, TokenShardSpec
 from terminus.optim import OptimizerConfig
-from terminus.train import load_config, schedule_scale
+from terminus.train import TrainConfig, evaluate, load_config, make_resume_contract, schedule_scale
 
 
 def manifest(tokens=10**12):
@@ -44,7 +44,8 @@ def test_selected_profiles_roundtrip_and_comparison_contract(tmp_path, name):
     assert asdict(original) == before
     training = config["training"]
     assert selected.world_size * derived.config.tokens_per_step * training["gradient_accumulation_steps"] == selected.global_batch_tokens
-    assert training["validation_batches_per_language"] * selected.microbatch * selected.world_size == 1024
+    assert 1024 <= training["validation_batches_per_language"] * selected.microbatch * selected.world_size < 1024 + selected.microbatch * selected.world_size
+    assert training["validation_sequences_per_language"] == 1024
     assert report["validation_tokens_per_check"] == 2 * 1024 * 4096
     assert report["bridge_stop_after_updates"] * selected.global_batch_tokens == BRIDGE_END_TOKENS
     assert report["cadence_tokens"] == CADENCE_TOKENS
@@ -136,24 +137,81 @@ def test_external_bundle_is_consumable_and_shell_safe(tmp_path):
 
 def test_real_loader_preserves_global_update_under_microbatch_and_rank_changes(tmp_path):
     # Exercise actual mmap/rank-striding, not just the batch multiplication.
-    tokens = np.random.default_rng(19).integers(0, 65536, GLOBAL_BATCH_TOKENS + 1, dtype=np.uint16)
+    tokens = np.random.default_rng(19).integers(0, 65536, 3_145_728 + 1, dtype=np.uint16)
     tokens.tofile(tmp_path / "train.bin")
     tokens[:4097].tofile(tmp_path / "val.bin")
     specs = [TokenShardSpec("train.bin", "en", "train", len(tokens), language="en"),
              TokenShardSpec("val.bin", "en", "val", 4097, language="en")]
     reference_x = torch.from_numpy(tokens[:-1].astype(np.int64)).reshape(-1, 4096)
     reference_y = torch.from_numpy(tokens[1:].astype(np.int64)).reshape(-1, 4096)
-    for name in ("balanced", "mb4", "mb8", "mb32", "single_gpu"):
+    for name in ("balanced", "mb4", "mb8", "mb32", "batch_3m_mb16", "batch_3m_mb24", "single_gpu"):
         chosen = PROFILES[name]
         data = TokenManifest(TokenDataConfig(batch_size=chosen.microbatch, seq_len=4096,
-                             total_train_tokens=GLOBAL_BATCH_TOKENS, validation_tokens=4096), specs)
+                             total_train_tokens=chosen.global_batch_tokens, validation_tokens=4096), specs)
         batchers = [TokenBatcher(data, root=tmp_path, rank=rank, world_size=chosen.world_size)
                     for rank in range(chosen.world_size)]
-        steps = GLOBAL_BATCH_TOKENS // (chosen.world_size * data.config.tokens_per_step)
+        steps = chosen.global_batch_tokens // (chosen.world_size * data.config.tokens_per_step)
+        assert steps * chosen.world_size * data.config.tokens_per_step == chosen.global_batch_tokens
         xs, ys = [], []
         for step in range(steps):
             rank_batches = [batcher.train_batch(step) for batcher in batchers]
             xs.append(torch.stack([pair[0] for pair in rank_batches], dim=1).flatten(0, 1))
             ys.append(torch.stack([pair[1] for pair in rank_batches], dim=1).flatten(0, 1))
-        assert torch.equal(torch.cat(xs), reference_x), name
-        assert torch.equal(torch.cat(ys), reference_y), name
+        actual_x, actual_y = torch.cat(xs), torch.cat(ys)
+        assert torch.equal(actual_x, reference_x[:len(actual_x)]), name
+        assert torch.equal(actual_y, reference_y[:len(actual_y)]), name
+
+
+def test_validation_uses_same_examples_when_microbatch_has_partial_final_batch(tmp_path):
+    # The 24-sequence profile needs a partial last validation batch to preserve coverage.
+    values = np.arange(8 * 8 + 1, dtype=np.uint16)
+    values.tofile(tmp_path / "val.bin")
+
+    class Recorder:
+        training = True
+
+        def __init__(self):
+            self.starts = []
+            self.batch_sizes = []
+
+        def eval(self):
+            self.training = False
+
+        def train(self, mode):
+            self.training = mode
+
+        def __call__(self, inputs, targets, return_logits=False):
+            self.starts.extend(inputs[:, 0].tolist())
+            self.batch_sizes.append(len(inputs))
+            return {"loss_sum": targets.double().sum(), "loss_tokens": torch.tensor(targets.numel())}
+
+    traces = []
+    for batch_size in (2, 3):
+        data = TokenManifest(TokenDataConfig(seq_len=8, batch_size=batch_size, total_train_tokens=64,
+                             validation_tokens=64), [TokenShardSpec("val.bin", "en", "val", len(values), language="en")])
+        recorder = Recorder()
+        result = evaluate(recorder, data, tmp_path, torch.device("cpu"), torch.float32,
+                          max_batches=3, rank=0, world_size=1, sequences_per_language=5)
+        assert recorder.training
+        assert result["en"]["tokens"] == 40
+        traces.append((recorder.starts, recorder.batch_sizes))
+    assert traces == [([0, 8, 24, 40, 56], [2, 2, 1]),
+                      ([0, 8, 24, 40, 56], [3, 2])]
+    assert TrainConfig().validation_sequences_per_language is None
+    with pytest.raises(ValueError, match="validation_sequences"):
+        TrainConfig(validation_sequences_per_language=0)
+
+
+def test_validation_sequence_cap_is_operational_for_resume(monkeypatch):
+    monkeypatch.setattr("terminus.train.source_hashes", lambda: {})
+    monkeypatch.setattr("terminus.train.runtime_contract", lambda _device: {})
+
+    @dataclass
+    class StubConfig:
+        value: int = 1
+
+    training = TrainConfig()
+    args = (StubConfig(), StubConfig(), {}, 1, torch.device("cpu"))
+    original = make_resume_contract(args[0], training, *args[1:])
+    changed = make_resume_contract(args[0], replace(training, validation_sequences_per_language=1024), *args[1:])
+    assert original == changed

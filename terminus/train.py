@@ -46,6 +46,7 @@ class TrainConfig:
     checkpoint_interval: int = 1000
     validation_interval: int = 1000
     validation_batches_per_language: int = 8
+    validation_sequences_per_language: int | None = None
     log_interval: int = 10
     stability_log_interval: int = 0
     compile: bool = False
@@ -67,6 +68,9 @@ class TrainConfig:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
+        if self.validation_sequences_per_language is not None and (type(self.validation_sequences_per_language) is not int
+                or self.validation_sequences_per_language <= 0):
+            raise ValueError("validation_sequences_per_language must be a positive integer when set")
         if (isinstance(self.stability_log_interval, bool) or not isinstance(self.stability_log_interval, int)
                 or self.stability_log_interval < 0):
             raise ValueError("stability_log_interval must be a nonnegative integer")
@@ -184,7 +188,7 @@ def runtime_contract(device):
 
 def make_resume_contract(model_config, training, optimizer_config, manifest_report, world_size, device):
     training_values = asdict(training)
-    for name in ("checkpoint_interval", "validation_interval", "validation_batches_per_language", "log_interval", "stability_log_interval", "prefetch_batches", "time_limit_seconds"):
+    for name in OPERATIONAL_TRAINING_FIELDS:
         training_values.pop(name)
     return {"model": asdict(model_config), "training": training_values,
             "optimizer": json.loads(json.dumps(asdict(optimizer_config))), "data": manifest_report,
@@ -208,7 +212,7 @@ def append_record(path, payload):
 
 
 @torch.no_grad()
-def evaluate(model, manifest, root, device, amp_dtype, max_batches, rank, world_size):
+def evaluate(model, manifest, root, device, amp_dtype, max_batches, rank, world_size, *, sequences_per_language=None):
     was_training = model.training
     state = rng_state()
     model.eval()
@@ -223,7 +227,9 @@ def evaluate(model, manifest, root, device, amp_dtype, max_batches, rank, world_
         for language in languages:
             span = TokenSpan([spec for spec in val_shards if key_of(spec) == language], root=root)
             blocks = (span.num_tokens - 1) // manifest.config.seq_len
-            selected = min(blocks, max_batches * manifest.config.batch_size * world_size)
+            requested = (max_batches * manifest.config.batch_size * world_size
+                         if sequences_per_language is None else sequences_per_language)
+            selected = min(blocks, requested)
             totals = torch.zeros(2, device=device, dtype=torch.float64)
             local_indices = range(rank, selected, world_size)
             for start in range(0, len(local_indices), manifest.config.batch_size):
@@ -267,7 +273,7 @@ def collective_checkpoint(directory, model, optimizer, state, contract, rank, wo
 
 
 OPERATIONAL_TRAINING_FIELDS = ("checkpoint_interval", "validation_interval",
-                               "validation_batches_per_language", "log_interval",
+                               "validation_batches_per_language", "validation_sequences_per_language", "log_interval",
                                "stability_log_interval", "prefetch_batches", "time_limit_seconds")
 
 
@@ -391,7 +397,9 @@ class PreparedTraining:
         if state["updates"] % training.checkpoint_interval == 0 or stopped or complete:
             collective_checkpoint(self.output_dir / "checkpoints", self.model, self.optimizer, state, self.contract, self.rank, self.world_size)
         if state["updates"] % training.validation_interval == 0 or stopped or complete:
-            results = evaluate(self.model, self.manifest, self.data_root, self.device, self.amp_dtype, training.validation_batches_per_language, self.rank, self.world_size)
+            results = evaluate(self.model, self.manifest, self.data_root, self.device, self.amp_dtype,
+                               training.validation_batches_per_language, self.rank, self.world_size,
+                               sequences_per_language=training.validation_sequences_per_language)
             if self.rank == 0:
                 append_event(self.output_dir / "events.jsonl", {"event": "validation", **state, "languages": results})
         if stopped or complete:
