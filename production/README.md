@@ -17,6 +17,9 @@ For the proposed **eight-MI325X, 5,760 GPU-hour** allocation, start with
 build recipe, native test gates, measurement tools, research and optimization
 plan. AMD execution and throughput remain unmeasured. The H100 history and
 6,000-hour calculations below describe the original allocation.
+The eight-GPU batch, schedule and execution starting choices are now selected
+in [`amd/CONFIG_SELECTION.md`](amd/CONFIG_SELECTION.md); use
+`python3 -m production.amd.prepare` to generate them from an external manifest.
 
 ## Selected dense starting point
 

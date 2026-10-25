@@ -80,6 +80,33 @@ plus input-embedding gradient, learned Q/K gains, Peri-LN gains and value
 coefficients. Compare optimizer deltas and moments as well as final weights;
 small updates can be wrong while whole-weight relative error looks small.
 
+## Configuration-selection follow-up, 2026-10-25
+
+The researched choices in [CONFIG_SELECTION.md](CONFIG_SELECTION.md) and
+`profiles.py` are selected for testing, not native certification. Local checks:
+
+- AMD tests plus production config, real data-loader and training regressions:
+  **67 passed, 1 skipped, 7 subtests passed** in 115 seconds. This included CPU
+  DDP and exact-resume checks; the skipped test needs native AMD hardware.
+- After adding the explicit backend override: **19 profile tests passed**.
+  This overlaps the preceding run and is not an additional independent count.
+- The profile tests cover every named choice, real config serialization,
+  preservation of optimizer/phase data, exact global stream under microbatch
+  and rank changes, fixed held-out coverage, schedule endpoints, metadata
+  rejection and shell-safe external output paths.
+- Three CLI bundles (`balanced`, `mb8` with explicit AITER, and `mb4` smoke)
+  generated successfully from **metadata-only CPU fixtures** outside Git;
+  count-only preflight reported 1,446,478,126 parameters for each. No fixture
+  was passed off as a validated training corpus or GPU acceptance receipt.
+- Generated shell syntax, Python byte-compilation, local documentation links
+  and `git diff --check` passed.
+
+The profile policy now selects the initial paired-reference-NLL guardrail
+at 0.02 nats/token per task/language confidence bound, rather than borrowing
+an unsupported threshold from the migration dossier. Native tests, production
+data verification, actual HBM/throughput, S3 recovery and early quality bridges
+remain unrun. All native gates above still apply.
+
 ## Checkpoint and recovery drill
 
 1. Run a bounded real-data training job to a committed checkpoint; retain its

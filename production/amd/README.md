@@ -15,6 +15,10 @@ The original H100 recipe in `production/recipe.py` remains unchanged.
 
 Use [LAUNCH_CHECKLIST.md](LAUNCH_CHECKLIST.md) for the ordered readiness list,
 including production data, S3 backup integration and the native gates still due.
+Use [CONFIG_SELECTION.md](CONFIG_SELECTION.md) for the researched eight-GPU
+starting settings and named comparisons selected on 2026-10-25: microbatch 16,
+accumulation 4, global batch 2,097,152, TE FP8, roughly 1B-token warmup and a
+final 10% WSD decay. These choices await native fit, speed and quality evidence.
 
 ## What is selected, and what is a candidate
 
@@ -28,9 +32,9 @@ global token-mean loss, clipping, and checkpoint/data-cursor logic are reused.
 
 | Config candidate | Projection forward/dgrad | Projection wgrad | Numerical change from H100 |
 | --- | --- | --- | --- |
-| `fp8` (initial test default) | AITER block-scaled FP8 | Local Triton 1D×1D, FP32 output | E4M3 FNUZ/240 replaces E4M3 FN/448; explicit FP32 split-K |
+| `fp8` (independent comparison) | AITER block-scaled FP8 | Local Triton 1D×1D, FP32 output | E4M3 FNUZ/240 replaces E4M3 FN/448; explicit FP32 split-K |
 | `fp8_triton` | Local Triton block-scaled FP8 | Same local Triton path | Same FNUZ recipe; independent GEMM implementation |
-| `fp8_te` | Pinned ROCm TE HipKittens | TE 1D×1D, FP32 output | Same FNUZ operands and FP32 scales; TE owns scheduling |
+| `fp8_te` (selected lead to test) | Pinned ROCm TE HipKittens | TE 1D×1D, FP32 output | Same FNUZ operands and FP32 scales; TE owns scheduling |
 | `bf16` | PyTorch BF16 GEMMs | PyTorch autograd | Removes FP8 activation/weight/gradient quantization; separate quality candidate |
 
 FP8 scales remain 1×128 for activations and gradients and 128×128 for dense
@@ -98,26 +102,34 @@ Use the existing frozen tokenizer and immutable token shards. A 65,536-ID
 vocabulary fits `uint16`; preserve token IDs, NFC/continuous-EOS packing,
 mixture/phase order, deduplication, domain/language coverage and held-outs.
 All manifests, configs, receipts, checkpoints, traces and tuning results must
-be outside this repository. The manifest sets microbatch and total tokens.
-
-The following variables represent **operator choices**, not newly selected
-hyperparameters. A useful batch example is microbatch 16, world 8, global
-batch 4,194,304 tokens, giving accumulation 8; memory fit is unmeasured.
-Generate with the actual manifest and chosen schedule:
+be outside this repository. The manifest owns the data mixture and total
+tokens. The selected-profile generator derives a new manifest changing only
+its microbatch, plus the config, decision record and launcher environment:
 
 ```bash
-python3 -m production.amd.build_config \
-  --manifest "$MANIFEST" --world-size 8 \
-  --global-batch-tokens "$GLOBAL_BATCH_TOKENS" \
-  --warmup-tokens "$WARMUP_TOKENS" --decay-tokens "$DECAY_TOKENS" \
-  --candidate fp8 --output "$CONFIG"
+python3 -m production.amd.prepare \
+  --manifest /external/data/manifest.json \
+  --profile balanced --output-dir /external/mi325x/balanced
+source /external/mi325x/balanced/env.sh
+export DATA_ROOT=/external/data
 python3 -m production.amd.preflight --config "$CONFIG" --count-only
 ```
 
-Repeat config generation with distinct external output paths for `fp8_te`,
-`fp8_triton` and `bf16`. Each is an explicit run; there is no automatic sweep.
-Microbatch/world size must divide the same chosen global batch exactly.
-Compare 8 and 16 first; test 32 only after a memory profile shows headroom.
+`balanced` requires a roughly 10B-token or larger manifest and 1,024 validation
+sequences per language/domain. A representative 10B subset supports the
+bounded quality bridge; it is not the final corpus. For small-data bring-up,
+pass `--purpose smoke --profile mb4` using a separately validated test manifest
+with at least 26 full global updates. Smoke has an explicit short schedule
+and every-update diagnostics; do not use it as a convergence comparison.
+
+Use distinct external output directories for `mb8`, `aiter`, `bf16` and the
+other [named profiles](CONFIG_SELECTION.md). Each is an explicit run; there
+is no automatic sweep. `balanced` selects TE and needs `INSTALL_TE=1`.
+The lower-level `production.amd.build_config` remains available for explicit
+experiments and retains its original `fp8` default; it does not apply the new
+profile policies. Compare microbatch 8 and 16 first; test 32 only after a
+memory profile shows headroom. Recreate data staging receipts for each derived
+manifest, even if its shards are shared.
 
 Before the paid interval, make shard/tokenizer **files** read-only on the
 staged snapshot (or use an immutable read-only mount), then fully verify once

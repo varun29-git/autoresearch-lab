@@ -4,7 +4,8 @@ This is an ordered test plan, not a set of achieved speedups. It preserves
 the selected model and spectral optimizer; explicit numerical candidates are
 identified separately. Commands are human-operated and use external outputs.
 References and the hardware analysis are in [SOURCES.md](SOURCES.md) and
-[RESEARCH.md](RESEARCH.md).
+[RESEARCH.md](RESEARCH.md). [CONFIG_SELECTION.md](CONFIG_SELECTION.md) now
+selects the initial batch, backend, schedule and named comparison profiles.
 
 ## Optimize tokens per allocated GPU-hour
 
@@ -115,17 +116,18 @@ invalidate a throughput improvement.
 
 ## Use memory to reduce overhead, with a fixed update
 
-At 8 ranks and global batch 4,194,304, these are comparable full updates:
+At 8 ranks and the selected global batch 2,097,152, these are comparable full updates:
 
 | Microbatch per rank | Accumulation | Tokens/rank/update |
 | ---: | ---: | ---: |
-| 4 | 32 | 524,288 |
-| 8 | 16 | 524,288 |
-| 16 | 8 | 524,288 |
-| 32 | 4 | 524,288 |
+| 4 | 16 | 262,144 |
+| 8 | 8 | 262,144 |
+| 16 | 4 | 262,144 |
+| 32 | 2 | 262,144 |
 
-This is an example global batch, not a newly chosen optimization parameter.
-Microbatch 24 does not divide this example and must not be silently rounded.
+This is a selected starting batch, not a measured winner. The 4,194,304-token
+global batch is a separate quality-affecting `large_batch` comparison.
+Microbatch 24 does not divide either batch and must not be silently rounded.
 Larger batches can also hurt GEMM latency, resource overlap, allocator
 fragmentation or attention workspaces. Test steady state after optimizer
 state, both weight orientations and attention/BLAS workspaces have been used.

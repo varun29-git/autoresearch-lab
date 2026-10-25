@@ -27,6 +27,21 @@ responses were inspected outside the repository; none is a trial result.
 | S18 | [Selected production recipe](../recipe.py), [architecture review](../ARCHITECTURE.md), [original parallelism handoff](../PARALLELISM.md), [H100 transfer record](../../docs/speed/TRANSFER_32GPU.md) | Authoritative model and optimizer choices; identifies original shard-validation scale issue and the scope of historical H100 timing. |
 | S19 | [PyTorch releases API](https://api.github.com/repos/pytorch/pytorch/releases?per_page=3) | 2.13 and later releases exist. Existence of an upstream release does not verify the corresponding ROCm image/wheel/compiler/native-extension combination. |
 
+Additional configuration-selection research, accessed **2026-10-25**:
+
+| ID | Primary source | What was checked / implication |
+| --- | --- | --- |
+| S20 | [SmolLM2-1.7B training YAML, commit `438be18`](https://github.com/huggingface/smollm/blob/438be18dae658a638f3a6976fdf5190bb6d68619/text/pretraining/smollm2/config_smollm2_1B.yaml), [SmolLM2 paper §4 and Appendix A](https://arxiv.org/html/2502.02737v1) | Despite the filename, YAML run name is `smollm2-1700M`: DP 256 × microbatch 4 × sequence 2048 × accumulation 1 = 2,097,152 tokens/update. 2,000-step warmup; 524,000 decay steps out of 5,240,000; AdamW 5e-4, linear decay to zero. Supports our batch scale and 10% decay as starting choices; does not establish Muon transfer, a 4096-context optimum or AMD speed. |
+| S21 | [MiniCPM paper, §3.2 and §4](https://arxiv.org/html/2404.06395v2) | Batch selection trades update efficiency against data efficiency; WSD separates exploration from final decay. Its empirical scaling experiments and optimizer do not yield a validated CI-1/Muon batch law. Its flexible-horizon theory does not override our exact-resume contract. |
+| S22 | [McCandlish et al., An Empirical Model of Large-Batch Training](https://arxiv.org/html/1812.06162v1) | Gradient noise scale predicts a largest useful batch, which varies over training. This supports testing quality at matched tokens/compute instead of choosing global batch from HBM capacity. Not a measured CI-1 gradient noise scale or Muon-specific guarantee. |
+| S23 | [Archived local HPO profile](../../hpo/MODEL_PROFILE.md), [width bridge](../../hpo/bridge.py) | 393,216 tokens/update (96 × 4096); ~250M warmup in the archived schedule. Provides the batch-transfer control. These files describe prior research and do not govern the selected production geometry or replace `production/recipe.py`. |
+| S24 | [PyTorch DDP implementation/docs at v2.12.0](https://github.com/pytorch/pytorch/blob/v2.12.0/torch/nn/parallel/distributed.py) | 25 MiB default bucket cap, overlap purpose, gradient bucket-view behavior. Matches the pinned image's torch release. Does not demonstrate that 25, 64 or 128 MiB wins on the provider's eight-GPU topology. |
+
+The current [TinyLlama script at `bf12224`](https://github.com/jzhang38/TinyLlama/blob/bf122247c486b6b897050e98cbb7bedae8eeba73/pretrain/tinyllama.py)
+was also inspected. Its checked-in global sequence batch differs from widely
+quoted training descriptions; it was not used to assert a final TinyLlama
+production batch. No third-party throughput number was transferred to CI-1.
+
 ## Claims from the pasted dossier that were not promoted to facts
 
 - Its 43,873.9 tok/s H100 receipt, power/clock curves and per-phase timings

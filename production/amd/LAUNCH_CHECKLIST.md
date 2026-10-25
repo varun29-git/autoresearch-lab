@@ -1,6 +1,6 @@
 # Eight-MI325X production launch checklist
 
-Reviewed 2026-10-25 against the AMD handoff through `95ab7d7`.
+Reviewed 2026-10-25; updated with [selected configurations](CONFIG_SELECTION.md).
 The code is ready to begin native bring-up once an accessible host and test
 data are available. The month-long production run is not yet cleared.
 No AMD host, full production data snapshot, final run configuration or native
@@ -17,6 +17,10 @@ and stops paid GPU campaigns.
 - [x] Selected 24-layer, width-2304, 65,536-vocabulary, 4096-context model;
   1,446,478,126 parameters; Peri-LN, learned Q/K gains and value residual.
 - [x] Selected spectral Muon/auxiliary AdamW implementation and starting rates.
+- [x] Selected eight-GPU starting profiles: 2,097,152-token global batch,
+  microbatch 16 / accumulation 4, TE FP8, roughly 1B-token warmup, final 10%
+  decay, fixed evaluation coverage and token-based operational cadence.
+  Selection is complete; native qualification remains due.
 - [x] Frozen tokenizer artifact and tokenizer implementation.
 - [x] Three explicit AMD FP8 projection candidates and a BF16 control;
   AITER/CK attention choices, FNUZ reference and native numerical gates.
@@ -99,14 +103,15 @@ the full production corpus and held-outs must be ready before the long run.
      bottlenecks found by measurement.
 
 7. **Generate the bounded test configurations.**
-   - [ ] Preserve the selected architecture, optimizer, starting rates, clipping
-     and seed. Choose explicit test token budget, warmup/decay, global batch,
-     microbatch, accumulation and backend.
-   - [ ] Check `global batch = 8 × microbatch × 4096 × accumulation` exactly.
-     Microbatch 16 with accumulation 8 gives the example 4,194,304-token batch;
-     it is not yet a measured production winner.
-   - [ ] Set test update bounds, monitoring and checkpoint/validation cadence.
-     Use fresh external outputs for separate candidates.
+   - [ ] Use `production.amd.prepare` with the real manifest and fresh external
+     outputs. `balanced` selects microbatch 16, accumulation 4 and global batch
+     2,097,152; `mb4`/`mb8` preserve that global batch at smaller microbatches.
+   - [ ] For small-data bring-up use `--purpose smoke`; for matched-token
+     quality work use the shared long schedule and bounded update counts from
+     `selection.json`. Do not resume a smoke checkpoint into production.
+   - [ ] Confirm the generated manifest, fixed 1,024 validation sequences per
+     scope key, schedule and update bounds. The 4,194,304-token global batch
+     is now an explicit `large_batch` comparison, not the initial choice.
    - [ ] Run count-only verification and full data staging validation. Retain
      the staging receipt for the exact source/model/data snapshot.
 
@@ -169,9 +174,9 @@ receipt alone does not clear the long production run.
       freeze those protocols. The current production evaluator reports NLL.
 
 13. **Complete durable checkpoint operations.**
-    - [ ] Measure real checkpoint size/save duration; select cadence, acceptable
-      lost work, local free-space thresholds, retained milestones and archive
-      capacity for the actual run.
+    - [ ] Measure real checkpoint size/save duration; verify the selected
+      2.013B-token cadence and last-three local retention policy against
+      acceptable lost work, free space and durable archive capacity.
     - [ ] Implement or configure verified S3 upload and restore. Existing
       `production.checkpoints` accepts filesystem archives; `terminus.s3io`
       handles read-only ingestion, not checkpoint uploads.
@@ -214,9 +219,10 @@ receipt alone does not clear the long production run.
 17. **Freeze the attainable training plan.**
     - [ ] Calculate the token budget from measured eight-rank rates and the
       remaining 5,760 GPU-hour allocation, including tests, cadence and recovery.
-    - [ ] Choose the final dense token horizon and WSD warmup/decay lengths.
-      Exact resume binds the schedule; later arbitrary horizon changes need
-      an explicitly reviewed migration.
+    - [ ] Choose the attainable final dense token horizon. The selected policy
+      uses 1,006,632,960 warmup tokens and a final 10% cosine decay to 0.1× LR.
+      Generate it for the actual manifest. Exact resume binds the schedule;
+      later arbitrary horizon changes need an explicitly reviewed migration.
     - [ ] Freeze data mixture/order, candidate, batch/accumulation, monitoring,
       checkpoint policy, source, image and external configuration.
     - [ ] Regenerate/verify final staging, runtime and preflight receipts as
