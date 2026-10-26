@@ -6,6 +6,25 @@ The human controls paid GPU launches. The executable dense candidates are in
 [profiles.py](profiles.py); AMD ternary training remains unavailable until its
 native implementation and acceptance gates pass.
 
+## What the smaller-model HPO is meant to transfer
+
+The dense HPO is **not discarded or scheduled to be repeated at 1.446B**.
+It tunes the base rates on tractable models, then carries them through the
+selected width-transfer rules. In particular, spectral Muon updates each
+logical matrix with `η × sqrt(d_out / d_in)` times its NS5 direction. The
+Q/O, K/V, gate/up and down aspect ratios are the same at widths 768, 1536
+and 2304, so this factor has the same value across the width family; see
+[the derivation](../../docs/MUON_SPECTRAL_IMPLEMENTATION.md). The tied
+embedding has its own AdamW rate, supported by the 700M width bridge.
+
+This is the intended way to use the HPO rates on the larger model. The
+393,216-token HPO **global batch** is a separate training choice: no width
+formula makes 2,097,152 tokens/update equivalent to it. Keep that batch via
+`batch_bridge_mb12` if its full-model MI325X speed is acceptable, or qualify
+a larger global batch by a bounded learning comparison. Monitoring the
+production model checks the transfer; it is not a plan to retune every rate
+at full scale.
+
 ## Keep three batch quantities separate
 
 `microbatch` is sequences processed simultaneously **on each GPU**. One
@@ -41,9 +60,9 @@ the pair*. Moving from 2M to 3.146M still needs a learning comparison.
 The HPO rates were chosen on a **393,216-token** update. The dense production
 rates in [recipe.py](../recipe.py) are Muon 0.017, tied embedding AdamW 0.003,
 ordinary norms 0.0003 and Q/K norms 0.0001, with matrix decay 0.02 and
-embedding decay zero. These are selected starting rates, not a demonstrated
-batch-invariant optimum. No learning-rate multiplication by batch ratio is
-authorized by this plan.
+embedding decay zero. The width-transfer rule motivates using these rates
+without a full-scale HPO rerun. It does not make them batch-invariant, and
+no learning-rate multiplication by batch ratio is authorized by this plan.
 
 Holding rates fixed does **not** hold training dynamics fixed. Muon momentum
 0.95 has a roughly 13.5-update half-life: about 5.3M tokens at the HPO batch,

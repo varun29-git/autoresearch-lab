@@ -6,6 +6,11 @@ plan. Eight-MI325X throughput, memory fit, learning transfer and native AMD
 ternary execution have not been verified. The human launches and stops paid
 GPU work.
 
+The dense rates intentionally transfer from smaller-model HPO through the
+selected spectral Muon width rule and the embedding-rate bridge. A full-scale
+HPO rerun is not planned. The open batch decision is separate from that width
+transfer: `batch_bridge_mb12` preserves the HPO global batch on eight GPUs.
+
 Read this page before generating the final run configuration or starting a
 training campaign. The detailed evidence and test order are in
 [BATCH_STABILITY.md](../BATCH_STABILITY.md),
