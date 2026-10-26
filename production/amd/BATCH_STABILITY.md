@@ -19,11 +19,12 @@ embedding has its own AdamW rate, supported by the 700M width bridge.
 
 This is the intended way to use the HPO rates on the larger model. The
 393,216-token HPO **global batch** is a separate training choice: no width
-formula makes 2,097,152 tokens/update equivalent to it. Keep that batch via
-`batch_bridge_mb12` if its full-model MI325X speed is acceptable, or qualify
-a larger global batch by a bounded learning comparison. Monitoring the
-production model checks the transfer; it is not a plan to retune every rate
-at full scale.
+formula makes 2,097,152 tokens/update equivalent to it. The selected 2M
+batch can be tested directly on the full model with the transferred rates.
+`batch_bridge_mb12` preserves the old batch as an **optional diagnostic
+control** if later evidence calls for it; it is not a required production
+qualification run. Monitoring the production model checks the transfer; it
+is not a plan to retune every rate at full scale.
 
 ## Keep three batch quantities separate
 
@@ -37,8 +38,8 @@ The memory-optimal, speed-optimal and learning-optimal choices can differ.
 
 | Dense profile | Sequences/GPU/microstep | Microsteps/update | Global tokens/update | Updates per 1B tokens | Purpose |
 | --- | ---: | ---: | ---: | ---: | --- |
-| `batch_bridge` | 4 | 3 | 393,216 | 2,543 | HPO batch transfer control; slow execution possible |
-| `batch_bridge_mb12` | 12 | 1 | 393,216 | 2,543 | Same HPO global batch in one larger eight-GPU microstep; fit/speed unmeasured |
+| `batch_bridge` | 4 | 3 | 393,216 | 2,543 | Optional HPO-batch diagnostic; slow execution possible |
+| `batch_bridge_mb12` | 12 | 1 | 393,216 | 2,543 | Optional HPO-batch diagnostic in one eight-GPU microstep; fit/speed unmeasured |
 | `batch_1m_mb16` | 16 | 2 | 1,048,576 | 954 | Intermediate learning/speed candidate |
 | `balanced` | 16 | 4 | 2,097,152 | 477 | Initial eight-GPU baseline |
 | `batch_3m_mb16` | 16 | 6 | 3,145,728 | 318 | Fixed-global-batch control for microbatch 24 |
@@ -50,10 +51,9 @@ fixed-global-batch execution comparison with accumulation 8, 4 and 2. A
 microbatch-24 trial cannot use that 2M batch with constant-size microsteps.
 `batch_bridge`/`batch_bridge_mb12` pair keeps the HPO global batch and
 optimizer-update frequency unchanged while using three or one microstep.
-The latter is a concrete way to exploit more HBM **without** discarding the
-HPO batch choice. It still needs MI325X fit/speed and full-width quality
-checks; the HPO itself used a smaller model, an English-first data scope and
-a shorter warmup. The
+It is available if the batch effect needs to be isolated; its GPU-hour cost
+must be justified by the production decision. The HPO itself used a smaller
+model, an English-first data scope and a shorter warmup. The
 3,145,728-token pair tests microbatch 24 without changing the global batch *within
 the pair*. Moving from 2M to 3.146M still needs a learning comparison.
 
@@ -109,19 +109,29 @@ momentum fixed. Its result does **not** establish that our 2M candidate meets
 our quality guardrail; its best large-batch loss still rose relative to its
 small-batch reference at the same 1.7B-token budget.
 
-The smallest defensible qualification is a **batch comparison**, not another
-full hyperparameter search. Use the same full-size initialization, ordered
-data stream, 1,006,632,960-token warmup, long-horizon WSD schedule and held-out
-sets for `batch_bridge_mb12` (393,216) and `balanced` (2,097,152). If the
-393k one-microstep profile does not fit, use `batch_bridge` at the same global
-batch. Screen at 4,026,531,840 tokens, then extend a credible pair to
-8,053,063,680 tokens. The pre-decay bridge detects early learning and
-stability differences; it does not prove equal final quality over hundreds
-of billions of tokens. Compare matched tokens **and** matched allocated
-GPU-hours, and enforce the per-scope guardrail in `CONFIG_SELECTION.md`.
+The **minimum qualification** starts with `balanced` (2,097,152) alone on the
+full model, using the selected rates, representative data and held-outs.
+Pass native numerical checks and warm complete-update timing; inspect the
+1,006,632,960-token warmup and continue through the 4,026,531,840-token
+plateau milestone. Check finite gradients, clipping, update/weight ratios,
+FP8 scales, per-domain held-out loss and loss slope. These checks establish
+execution and an early learning trajectory, **not** equivalence to a smaller
+batch or final convergence. The 393k HPO batch is a reference for why we
+watch update frequency, not a mandatory full-model control.
 
-If unchanged 2M fails that comparison, test **one focused correction** before
-abandoning the batch: a *separate, explicitly reviewed* 2M matrix-decay
+If those measurements raise a stability or learning-efficiency concern, run
+`batch_1m_mb16` (1,048,576) from the same initialization with the same data
+prefix, token-based WSD milestones and 1,024 held-out sequences per scope
+key. Compare at 4,026,531,840 matched tokens and matched allocated GPU-hours;
+extend a credible pair to 8,053,063,680 tokens. Use the per-scope guardrail
+in `CONFIG_SELECTION.md` for this relative comparison. If a 1M result is
+ambiguous and the question is specifically whether the HPO batch improves
+learning, `batch_bridge_mb12` is a further optional control, with
+`batch_bridge` as its memory fallback. An early pre-decay comparison cannot
+prove equal final quality over hundreds of billions of tokens.
+
+If unchanged 2M shows a measured deficit against 1M, test **one focused
+correction** before abandoning it: a *separate, explicitly reviewed* 2M matrix-decay
 candidate `0.02 × (2,097,152 / 393,216) = 0.1066667`, with the same peak
 learning rates, momentum, Adam betas, embedding decay and schedule. This
 counteracts the nominal loss of decay updates per token and is motivated by
@@ -129,10 +139,9 @@ the language-model result in [S30], but its 1.7B-token setting and 80% LR
 cooldown differ from our long WSD plateau. It is **not** the selected recipe,
 an automatic config rewrite or a guaranteed improvement. It changes an
 optimizer value, so compare it against the selected 0.02 baseline before
-promotion. If it does not close the loss gap, compare `batch_1m_mb16` at the
-unchanged rates; retain the 393k batch if that yields the best accepted
-learning/throughput tradeoff. A later small LR multiplier trial is justified
-only by measured failure, with separate Muon and AdamW diagnostics.
+promotion. If it does not close the loss gap, retain 1M if its measured
+learning/throughput tradeoff is better. A later small LR multiplier trial is
+justified only by measured failure, with separate Muon and AdamW diagnostics.
 
 Do not use `5⅓ ×` Muon LR, `sqrt(5⅓) ×` every LR, or token-memory transport
 of Muon momentum/Adam betas as an automatic fix. The Adam square-root rule
@@ -200,13 +209,14 @@ eight-rank branch and exact resume before relying on this CPU-tested path.
    checkpoint and validation peaks. A larger microbatch needs at least 3%
    credible complete-update throughput gain, no repeated p95 regression and
    the same numerical/quality gates. Full-size headroom remains at least 15%.
-3. **Global-batch learning.** First compare the two 393k execution profiles,
-   then compare 393k and 2M at matched tokens; add 1M as an intermediate
-   candidate if the reserve permits or the 2M quality result is poor. Use
-   the same seed, data prefix, model, fixed dense peak rates, token-based WSD
-   milestones and 1,024 held-out sequences per scope key. Screen at the
-   existing 4,026,531,840-token plateau bridge; extend credible finalists to
-   a common later milestone before selecting a long-run batch. Test 3.146M
+3. **Global-batch learning.** Start with 2M alone and the unchanged dense
+   rates; inspect warmup, the 4,026,531,840-token plateau milestone and
+   held-out loss. If its stability or learning efficiency is in question,
+   compare 1M against 2M using the same seed, data prefix, model, fixed peak
+   rates, token-based WSD milestones and 1,024 held-out sequences per scope
+   key. Extend credible finalists to a common later milestone. Run the
+   393k HPO-batch control only if it answers a remaining batch-transfer
+   question worth its GPU hours. Test 3.146M
    only if its microbatch execution or update overhead makes it attractive;
    4M is a conditional stress comparison. Record **both** loss at matched
    tokens and loss at matched allocated GPU-hours. The 0.02-nat per-scope

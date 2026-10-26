@@ -261,12 +261,14 @@ comparison or use a second seed, rather than loosen the threshold after
 seeing the result. This does not claim generated accuracy or final quality.
 
 Cap initial qualification at the **40 node-hours** corresponding to 320 GPU-hours:
-roughly 8 runtime/native checks, 6 execution comparisons, 12 batch bridges,
-6 BF16 quality work, 4 recovery/cadence work, and 4 contingency. Reuse a bridge
-run's cadence/recovery evidence where it actually exercises the required
-paths. Charge all eight reserved cards even during a single-card check. If
-measured cost exceeds the envelope, drop low-priority sweeps before reducing
-correctness checks or consuming the production budget blindly.
+roughly 8 runtime/native checks, 6 execution comparisons, up to 12 conditional
+batch-comparison hours, 6 BF16 quality work, 4 recovery/cadence work, and 4
+contingency. The 2M profile is tested first; a full-model 393k control is
+optional. Reuse a trial's cadence/recovery evidence where it actually
+exercises the required paths. Charge all eight reserved cards even during a
+single-card check. If measured cost exceeds the envelope, drop low-priority
+sweeps before reducing correctness checks or consuming the production budget
+blindly. Return unspent qualification time to production.
 
 ## Generate the configurations without a GPU
 
