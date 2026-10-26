@@ -57,6 +57,20 @@ Follow-up sources inspected **2026-10-25**:
 These motivate the initial [60/40 planning policy](QAT_ALLOCATION.md); none
 certifies the selected model's AMD QAT convergence or an optimal split.
 
+## Batch-transfer research
+
+Follow-up sources inspected **2026-10-26**:
+
+| ID | Primary source | What was checked / implication |
+| --- | --- | --- |
+| S30 | [Dang, Wen and Malladi, *The Best Optimizer Depends on Batch Size*, v2](https://arxiv.org/pdf/2610.08975v2), §§3.2 and E.3, Tables 4–7 | Their 12-layer, width-768, 1024-context FineWeb model uses MuonW for hidden matrices and AdamW for other parameters. Among 216 transfer rules from 131,072 to 2,097,152 tokens/update, the best common language-model rule kept both LRs and Muon momentum fixed, scaled matrix weight decay with batch, and transported Adam second-moment retention. The best rule changed with target batch and task; even the best 2M rule did not erase the reference-batch loss difference at 1.7B tokens. Different architecture, Newton–Schulz iterations, auxiliary rates, data and LR schedule prevent copying its numerical result into CI-1. |
+| S31 | [Naganuma et al., *Adaptive Batch Sizes Using Non-Euclidean Gradient Noise Scales*, v2](https://arxiv.org/html/2602.03001v2), §§4–6 | Its Muon experiments on a 160M Llama model support optimizer-aware batch diagnostics, but §6 explicitly leaves stateful momentum and mixed Muon/AdamW extensions open. A Euclidean gradient-noise estimate alone cannot certify CI-1's 2M batch. |
+| S32 | [Malladi et al., *On the SDEs and Scaling Rules for Adaptive Gradient Algorithms*, v3](https://arxiv.org/html/2205.10287v3), §5 | The square-root LR and coordinated moment/epsilon rule is derived for RMSprop/Adam under its assumptions, not for Muon plus AdamW with CI-1's spectral update and token-based WSD. It is not an automatic batch-transfer formula for this recipe. |
+| S33 | [Sato et al., *Convergence Bound and Critical Batch Size of Muon Optimizer*, v5](https://arxiv.org/html/2507.01598v5), §4 | Muon's critical batch depends on gradient variance, target precision and effective rank; the paper does not provide an absolute critical batch for our workload. |
+
+See [the bounded transfer decision](BATCH_STABILITY.md) for how these sources
+affect the selected 393k, 1M and 2M comparisons.
+
 ## Claims from the pasted dossier that were not promoted to facts
 
 - Its 43,873.9 tok/s H100 receipt, power/clock curves and per-phase timings

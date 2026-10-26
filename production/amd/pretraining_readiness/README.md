@@ -10,6 +10,10 @@ The dense rates intentionally transfer from smaller-model HPO through the
 selected spectral Muon width rule and the embedding-rate bridge. A full-scale
 HPO rerun is not planned. The open batch decision is separate from that width
 transfer: `batch_bridge_mb12` preserves the HPO global batch on eight GPUs.
+The [batch-transfer decision](../BATCH_STABILITY.md#can-the-hpo-rates-reach-the-intended-2m-batch-without-full-retuning)
+uses the unchanged rates first, then a bounded matched-token comparison;
+published Muon results support this as a starting protocol but do not certify
+the 2M batch for CI-1.
 
 Read this page before generating the final run configuration or starting a
 training campaign. The detailed evidence and test order are in
@@ -27,13 +31,14 @@ training campaign. The detailed evidence and test order are in
   `batch_3m_mb24`. Require at least 15% of usable HBM free through optimizer,
   validation and checkpoint peaks. Microbatch 16 is a starting point, not a
   measured optimum.
-- [ ] **Global batch and learning:** Compare the HPO 393,216-token batch,
-  including the one-microstep `batch_bridge_mb12` execution profile,
-  `batch_1m_mb16` (1,048,576) and `balanced` (2,097,152) at matched tokens
-  **and** allocated GPU-hours on the same model, data prefix and frozen
-  held-outs. Test 3,145,728 or 4,194,304 only if speed evidence merits a
-  quality bridge. Fixed learning rates do not preserve the number of Muon,
-  momentum and weight-decay updates per token.
+- [ ] **Global batch and learning:** Start with the HPO 393,216-token batch,
+  including the one-microstep `batch_bridge_mb12` execution profile, versus
+  `balanced` (2,097,152) at matched tokens **and** allocated GPU-hours on the
+  same model, data prefix and frozen held-outs. Add `batch_1m_mb16`
+  (1,048,576) if reserve permits or the 2M quality result is poor. Test
+  3,145,728 or 4,194,304 only if speed evidence merits a quality bridge.
+  Fixed learning rates do not preserve the number of Muon, momentum and
+  weight-decay updates per token.
 - [ ] **Dense-to-QAT transfer:** Qualify native MI325X ternary kernels and
   full-model conversion before relying on a QAT phase. Use the supplied QAT
   peak-rate candidate (Muon 0.0085; embedding AdamW 0.003; norms 0.00015;

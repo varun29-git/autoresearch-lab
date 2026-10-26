@@ -84,6 +84,9 @@ global batch.
 | [MiniCPM](https://arxiv.org/html/2404.06395v2), §3.2, Table 2 | Fixed-GPU experiments emphasize loss per tokens; its 1.2B run grows batch from 2M to 4M | Different model, optimizer and empirically chosen schedule; no Muon rule transfers |
 | [Muon scaling study](https://arxiv.org/html/2502.16982v1), Table 2 | A 1.5B study lists 256 examples at 8192 context, about 2.1M tokens/update | Different Muon implementation, LR tuning and compute/data regime |
 | [Gradient noise scale](https://arxiv.org/html/1812.06162v1), §§2–3 | The useful batch can change during training and is related to a speed/data-efficiency tradeoff | Approximate predictor, not a measured CI-1 gradient-noise scale or a proof for nonlinear Muon |
+| [Direct Muon batch-transfer sweep](SOURCES.md) [S30], §§3.2 and E.3 | In its language-model sweep, fixed learning rates and Muon momentum with matrix decay scaled by batch gave the best common rule among 216 candidates; the best rule changed with target batch and task | 12-layer, width-768, BF16, 1024-context, 1.7B-token experiment with different AdamW groups, NS iterations and schedule; it cannot select CI-1's rates or erase its sample-efficiency gap |
+| [Non-Euclidean noise scale](SOURCES.md) [S31] and [Muon critical-batch analysis](SOURCES.md) [S33] | Muon-specific batch diagnostics are possible; useful batch depends on measured noise and effective rank | The published adaptive method has not solved stateful Muon momentum plus mixed AdamW; neither source gives CI-1 an absolute useful-batch threshold |
+| [Adam/RMSprop batch SDE](SOURCES.md) [S32], §5 | Derives a coordinated square-root LR and moment rule under its assumptions | Not a batch-invariance result for spectral Muon and CI-1's mixed optimizer |
 | [ParetoQ](https://arxiv.org/html/2502.02631v1), §2.1; [Continual QAT](https://arxiv.org/html/2502.11895v1), §§4–5; [MiniCPM4/BitCPM4](https://arxiv.org/html/2506.07900v2), §3.3 | Successful ternary transfers use enough QAT updates and may benefit from carried optimizer state and phase-specific LR schedules | Their tested best dense/QAT splits disagree; none validates CI-1's 60/40 split or QAT rates |
 | [Local Lean 150M review](../../experiments/terminus_lean_150m_qat_2b/analysis/COMBINED_DENSE_QAT_SCALING_REVIEW.md) | Conversion caused a large initial loss spike; 2B QAT recovered much of it but remained worse than the dense parent on every tracked source | One smaller model with different optimizer/data; no matched dense continuation |
 
@@ -93,6 +96,52 @@ These are **screening numbers**, not MI325X predictions. The selected model,
 attention window, FP8 backend and allocator differ. A microbatch 24 or 32
 must earn at least 15% free *usable* HBM through a warm optimizer update,
 validation and checkpoint; filling nominal 256 GB is not the goal.
+
+## Can the HPO rates reach the intended 2M batch without full retuning?
+
+**Yes, as a testable transfer, not as an exact trajectory match.** Use the
+width-transferred rates in `recipe.py` unchanged for the first 2M candidate.
+This preserves the HPO result as the optimization anchor and keeps the
+selected optimizer semantics. The new MuonW–AdamW batch study [S30] makes
+this more plausible than a blind linear or square-root LR increase: in its
+language-model sweep, the best common rule kept both learning rates and Muon
+momentum fixed. Its result does **not** establish that our 2M candidate meets
+our quality guardrail; its best large-batch loss still rose relative to its
+small-batch reference at the same 1.7B-token budget.
+
+The smallest defensible qualification is a **batch comparison**, not another
+full hyperparameter search. Use the same full-size initialization, ordered
+data stream, 1,006,632,960-token warmup, long-horizon WSD schedule and held-out
+sets for `batch_bridge_mb12` (393,216) and `balanced` (2,097,152). If the
+393k one-microstep profile does not fit, use `batch_bridge` at the same global
+batch. Screen at 4,026,531,840 tokens, then extend a credible pair to
+8,053,063,680 tokens. The pre-decay bridge detects early learning and
+stability differences; it does not prove equal final quality over hundreds
+of billions of tokens. Compare matched tokens **and** matched allocated
+GPU-hours, and enforce the per-scope guardrail in `CONFIG_SELECTION.md`.
+
+If unchanged 2M fails that comparison, test **one focused correction** before
+abandoning the batch: a *separate, explicitly reviewed* 2M matrix-decay
+candidate `0.02 × (2,097,152 / 393,216) = 0.1066667`, with the same peak
+learning rates, momentum, Adam betas, embedding decay and schedule. This
+counteracts the nominal loss of decay updates per token and is motivated by
+the language-model result in [S30], but its 1.7B-token setting and 80% LR
+cooldown differ from our long WSD plateau. It is **not** the selected recipe,
+an automatic config rewrite or a guaranteed improvement. It changes an
+optimizer value, so compare it against the selected 0.02 baseline before
+promotion. If it does not close the loss gap, compare `batch_1m_mb16` at the
+unchanged rates; retain the 393k batch if that yields the best accepted
+learning/throughput tradeoff. A later small LR multiplier trial is justified
+only by measured failure, with separate Muon and AdamW diagnostics.
+
+Do not use `5⅓ ×` Muon LR, `sqrt(5⅓) ×` every LR, or token-memory transport
+of Muon momentum/Adam betas as an automatic fix. The Adam square-root rule
+[S32] does not cover Muon. In [S30], transporting Muon momentum or Adam's
+first moment hurt its language-model transfer, while its small benefit from
+transporting the second moment is not enough to justify changing CI-1's
+already-short `β₂=0.95` memory without a controlled trial. A Muon-aware
+noise-scale measurement [S31] could help diagnose a bad batch, but it does
+not replace the full-model comparison for this stateful mixed optimizer.
 
 ## Interpret the supplied QAT candidate before scaling it
 
@@ -152,7 +201,8 @@ eight-rank branch and exact resume before relying on this CPU-tested path.
    credible complete-update throughput gain, no repeated p95 regression and
    the same numerical/quality gates. Full-size headroom remains at least 15%.
 3. **Global-batch learning.** First compare the two 393k execution profiles,
-   then compare 393k, 1M and 2M at matched tokens under
+   then compare 393k and 2M at matched tokens; add 1M as an intermediate
+   candidate if the reserve permits or the 2M quality result is poor. Use
    the same seed, data prefix, model, fixed dense peak rates, token-based WSD
    milestones and 1,024 held-out sequences per scope key. Screen at the
    existing 4,026,531,840-token plateau bridge; extend credible finalists to
