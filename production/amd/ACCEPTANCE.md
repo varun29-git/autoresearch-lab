@@ -85,6 +85,16 @@ small updates can be wrong while whole-weight relative error looks small.
 The researched choices in [CONFIG_SELECTION.md](CONFIG_SELECTION.md) and
 `profiles.py` are selected for testing, not native certification. Local checks:
 
+- 2026-10-26 batch/transition follow-up: **80 CPU tests passed, with 7
+  subtests**, across AMD profiles and phase planning, dense-to-QAT transition,
+  trainer and production-config regressions. The new 1M-token profile preserves
+  global update accounting. Changing microbatch at the phase switch now
+  rebases the next microstep while preserving the token stream, update count
+  and optimizer state; the CPU test exercises conversion and exact resume.
+  The 35 transition/profile tests passed again after adding the parent
+  complete-update boundary guard.
+  Native eight-rank QAT implementation, fit and learning comparisons remain
+  unrun. See [BATCH_STABILITY.md](BATCH_STABILITY.md).
 - Microbatch-24 follow-up: **23 profile tests and the two-process resume
   regression passed** together (24 tests, 113 seconds). They cover the
   3.146M-token fixed-global-batch pair, equal held-out examples with a partial

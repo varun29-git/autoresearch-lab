@@ -9,6 +9,8 @@ The human launches and stops all paid hardware and commands below.
 
 Read [RESEARCH.md](RESEARCH.md) for the code/hardware analysis,
 [OPTIMIZATION.md](OPTIMIZATION.md) for the ordered tuning plan,
+[BATCH_STABILITY.md](BATCH_STABILITY.md) for the fixed-LR batch and QAT
+stability decision sequence,
 [ACCEPTANCE.md](ACCEPTANCE.md) for the release gates, and
 [SOURCES.md](SOURCES.md) for the checked upstream revisions and evidence limits.
 The original H100 recipe in `production/recipe.py` remains unchanged.

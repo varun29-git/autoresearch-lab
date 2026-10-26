@@ -6,6 +6,8 @@ tokens**, assuming the final ternary model is the primary deliverable. Keep
 a later switch. A 90/10 split is a conditional late-switch experiment, not
 the default. This is an engineering starting policy, not an established
 optimum or a passed dense-to-ternary transfer.
+The 2026-10-26 [batch/stability review](BATCH_STABILITY.md) evaluates the
+user-supplied QAT rate candidate and its HPO-scale schedule separately.
 
 The new [phase_plan.py](phase_plan.py) computes both phases inside one budget.
 It produces an arithmetic plan, **not a runnable QAT configuration**. Existing
@@ -138,18 +140,25 @@ Suggested QAT starting candidate for the later native configuration builder:
 - Keep global batch 2,097,152, world size 8 and initially microbatch 16 /
   accumulation 4, provided the QAT memory test passes. Preserve initialization
   lineage, optimizer moments, RNG and the exact next-token cursor.
-  If the dense 3,145,728-token batch is promoted, review the QAT batch and
-  schedule separately; dense speed alone does not qualify its QAT transfer.
+  If the dense 1,048,576- or 3,145,728-token batch is promoted, keep that
+  global batch through the QAT switch initially and review its QAT quality
+  and schedule separately. A change of microbatch at fixed global batch is
+  supported by the CPU-tested transition cursor rebase; native eight-rank
+  validation remains required.
 - Switch effective projection weights to full ternary immediately. Use LR
   re-warmup, not an unvalidated gradual weight/activation interpolation.
 - Re-warm over `min(1,006,632,960 tokens, 5% of Tq)`, rounded to full updates;
   plateau, then cosine decay over the final **20% of the QAT phase** to 0.1×
   its peak. The extra decay share is a QAT candidate informed by the local
   recovery curves, not a change to the selected dense schedule.
-- Start the QAT peak-rate comparison at **0.5× dense peak base rates**:
-  Muon 0.0085, embedding AdamW 0.0015, norms 0.00015 and Q/K norms 0.00005.
-  Retain the algorithm, momentum/betas, weight decay and clipping. These are
-  candidate rates for testing; the dense HPO does not certify them for QAT.
+- Start with the user-supplied QAT peak-rate candidate: Muon **0.0085**,
+  tied embedding AdamW **0.003**, ordinary norms **0.00015**, and Q/K norms
+  **0.00005**. Retain spectral Muon, momentum 0.95, Adam betas (0.9, 0.95),
+  matrix decay 0.02, embedding decay zero and clipping 1.0. This halves the
+  dense Muon/norm rates while keeping the embedding rate. It is a candidate
+  to test, not a native AMD-qualified QAT HPO winner. Its supplied 50M-token
+  warmup and 100M-token decay are research-scale lengths; use the phase-length
+  rule above for a multi-hundred-billion-token QAT run.
 
 Use the dense **peak base** rates as the reference, not its final decayed LR.
 A half-peak QAT rate is five times the dense terminal rate when dense ends at

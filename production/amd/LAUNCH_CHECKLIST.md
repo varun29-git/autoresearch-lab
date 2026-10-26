@@ -106,6 +106,7 @@ the full production corpus and held-outs must be ready before the long run.
    - [ ] Use `production.amd.prepare` with the real manifest and fresh external
      outputs. `balanced` selects microbatch 16, accumulation 4 and global batch
      2,097,152; `mb4`/`mb8` preserve that global batch at smaller microbatches.
+     `batch_1m_mb16` is the intermediate global-batch quality candidate.
      `batch_3m_mb16` and `batch_3m_mb24` compare microbatches 16/24 at the
      same 3,145,728-token global batch (accumulation 6/4).
    - [ ] For small-data bring-up use `--purpose smoke`; for matched-token
@@ -153,7 +154,8 @@ receipt alone does not clear the long production run.
 11. **Measure and select execution settings.**
     - [ ] Compare the most promising valid FP8 implementation(s), with the BF16
       candidate as a numerical/performance control where useful.
-    - [ ] Measure microbatch 8 and 16 at the 2M batch. With measured HBM
+    - [ ] Measure microbatch 8 and 16 at the 2M batch. Check the 1M batch
+      against 393k and 2M at matched tokens and allocated GPU-hours. With measured HBM
       headroom, compare `batch_3m_mb16` and `batch_3m_mb24` at a fixed 3.146M
       batch; test microbatch 32 at 2M only if it fits the same headroom rule.
       Bridge any change in global batch against the 2M quality baseline.

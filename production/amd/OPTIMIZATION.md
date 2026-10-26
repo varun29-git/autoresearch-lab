@@ -125,7 +125,10 @@ At 8 ranks and the selected global batch 2,097,152, these are comparable full up
 | 16 | 4 | 262,144 |
 | 32 | 2 | 262,144 |
 
-This is a selected starting batch, not a measured winner. At the separate
+This is a selected starting batch, not a measured winner. The
+`batch_1m_mb16` profile preserves microbatch 16 but halves accumulation,
+providing an intermediate learning-efficiency comparison between the HPO
+393k batch and the 2M baseline. At the separate
 3,145,728-token global batch, `batch_3m_mb16` uses six microsteps and
 `batch_3m_mb24` uses four. That pair tests whether the larger microbatch
 improves complete-update speed while keeping the update and token stream
