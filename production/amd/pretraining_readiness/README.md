@@ -9,6 +9,7 @@ GPU work.
 Read this page before generating the final run configuration or starting a
 training campaign. The detailed evidence and test order are in
 [BATCH_STABILITY.md](../BATCH_STABILITY.md),
+[SPEEDUP_TRIAGE.md](SPEEDUP_TRIAGE.md),
 [LAUNCH_CHECKLIST.md](../LAUNCH_CHECKLIST.md), and
 [ACCEPTANCE.md](../ACCEPTANCE.md).
 
