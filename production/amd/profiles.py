@@ -57,6 +57,8 @@ PROFILES = {
     "bf16": Profile("Quality control with projection quantization removed.", candidate="bf16"),
     "batch_bridge": Profile("Historical global batch on the selected full model; quality control.",
                             microbatch=4, global_batch_tokens=393_216),
+    "batch_bridge_mb12": Profile("Historical HPO global batch in one larger eight-GPU microstep; fit unmeasured.",
+                                 microbatch=12, global_batch_tokens=393_216),
     "large_batch": Profile("Quality-affecting 4M batch trial; preserve all optimizer rates.",
                            global_batch_tokens=4_194_304),
     "ddp64": Profile("Conditional communication-overlap trial.", ddp_bucket_cap_mb=64),

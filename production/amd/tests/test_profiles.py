@@ -100,6 +100,16 @@ def test_smoke_is_explicit_and_does_not_claim_a_quality_bridge():
     assert report["purpose"] == "smoke"
 
 
+def test_hpo_batch_can_use_one_eight_gpu_microstep_without_changing_the_optimizer():
+    original = manifest()
+    _, conservative, _ = select(original, profile="batch_bridge")
+    _, larger_microbatch, _ = select(original, profile="batch_bridge_mb12")
+    assert conservative["training"]["gradient_accumulation_steps"] == 3
+    assert larger_microbatch["training"]["gradient_accumulation_steps"] == 1
+    assert conservative["optimizer"] == larger_microbatch["optimizer"]
+    assert conservative["training"]["warmup_tokens"] == larger_microbatch["training"]["warmup_tokens"]
+
+
 def test_explicit_backend_fallback_keeps_selected_batch_and_data_phases():
     original = manifest(tokens=10_000_000_000)
     original = replace(original, config=replace(original.config, source_mix={}, phase_source_mixes=[
@@ -144,7 +154,7 @@ def test_real_loader_preserves_global_update_under_microbatch_and_rank_changes(t
              TokenShardSpec("val.bin", "en", "val", 4097, language="en")]
     reference_x = torch.from_numpy(tokens[:-1].astype(np.int64)).reshape(-1, 4096)
     reference_y = torch.from_numpy(tokens[1:].astype(np.int64)).reshape(-1, 4096)
-    for name in ("balanced", "mb4", "mb8", "mb32", "batch_1m_mb16",
+    for name in ("balanced", "mb4", "mb8", "mb32", "batch_bridge", "batch_bridge_mb12", "batch_1m_mb16",
                  "batch_3m_mb16", "batch_3m_mb24", "single_gpu"):
         chosen = PROFILES[name]
         data = TokenManifest(TokenDataConfig(batch_size=chosen.microbatch, seq_len=4096,
