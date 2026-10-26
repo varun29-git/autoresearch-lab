@@ -45,11 +45,11 @@ added long reduction is not a substitute for full-width updates.
 
 | Risk | Consequence | Required control |
 | --- | --- | --- |
-| AMD ternary execution is unavailable in the reviewed launcher | The planned dense-to-QAT campaign cannot complete through the current AMD path | Implement and qualify AMD ternary forward/backward, conversion, carried optimizer state, quality and recovery **before** committing to a mixed campaign |
-| FP8/attention/Muon have no native MI325X acceptance receipts | Wrong transposes, FNUZ interpretation, attention boundaries or reductions could damage learning despite finite loss | Run the strengthened kernel gate, full-size updates and an independent BF16 trajectory comparison on the frozen image |
+| AMD ternary QAT is rejected by the current software path | The planned dense-to-QAT campaign cannot complete through this launcher yet; MI325X needs no ternary cores | Generate FP8 FNUZ codes `-1/0/+1` and block scales from FP32 latent weights, then qualify forward/backward, conversion, optimizer-state carry, quality and recovery **before** a mixed campaign |
+| FP8/attention/Muon have no native MI325X acceptance receipts | Wrong transposes, FNUZ interpretation, attention boundaries or reductions could damage learning despite finite loss | Run the strengthened kernel preflight, full-size updates and an independent BF16 trajectory comparison on the frozen image |
 | Eight-rank numerical equivalence is unmeasured | Missing or differently scaled gradients can look like a speed improvement | Compare the same global examples/update on one and eight ranks: losses, pre-clip gradients, optimizer moments and parameter deltas; allow declared reduction-order differences |
-| Microbatch 16 has no full-update HBM measurement | Optimizer, attention or validation workspaces can OOM after forward succeeds | Measure allocated and reserved peaks through backward, optimizer, checkpoint and validation; retain at least 15% usable HBM headroom |
-| Two-million-token batch and 480-update warmup are unqualified | Fewer updates per token change optimizer history and regularization; a stable loss does not establish good learning | Keep transferred peak rates first, monitor the warmup-to-plateau boundary and the 4.0265B-token milestone; add the 1M control only if evidence warrants it |
+| Microbatch 16 has no full-update HBM measurement | Optimizer, attention or validation workspaces can OOM after forward succeeds | Keep microbatch adjustable at fixed 2M global tokens: compare 8×accumulation 8, 16×4 and conditionally 32×2; measure peaks through backward, optimizer, checkpoint and validation, retaining at least 15% usable HBM headroom |
+| Two-million-token batch and 480-update warmup are provisional | Fewer updates per token change optimizer history and regularization; a stable loss does not establish good learning | Keep transferred peak rates first, monitor the warmup-to-plateau boundary and the 4.0265B-token milestone; add the 1M control only if evidence warrants it |
 | Final corpus and held-out quality are unverified | Repetition, poor domain balance or contamination can consume the entire budget without useful learning | Verify actual document deduplication, sequence construction, mixture exposure and frozen held-outs; checksum/provenance fields alone cannot prove these properties |
 | Durable backup, retention and restore are unfinished | Disk exhaustion stops checkpointing; node loss can erase the only usable state | Establish bounded local retention, verified durable copies and a successful restore drill; see storage requirements below |
 | Token horizon is selected before measuring both phase rates | The allocation can end before WSD decay or before adequate QAT recovery | Freeze a funded horizon using complete-update rates plus measured operational costs within the combined 5,760 GPU-hours |
@@ -61,24 +61,34 @@ added long reduction is not a substitute for full-width updates.
   automatically multiply rates or weight decay by the batch ratio. SmolLM3
   supports the plausibility of a similar batch scale; its AdamW recipe does
   not validate this Muon schedule. A mandatory 393k comparison is not added.
-- **A 10B qualification manifest is a separate run.** Its schedule and data
-  identity are bound into the checkpoint. Increasing its horizon to the final
-  corpus is not an exact resume. To make an early pilot a resumable production
-  prefix, freeze the final manifest and schedule before it starts and stop
-  using `--stop-after-updates`. Otherwise budget the pilot as qualification.
+- **Freeze the funded schedule before a run intended for continuation.**
+  For example, a 10B-token pilot manifest schedules decay near its 10B end.
+  A final 1T-token manifest schedules decay near 1T. Replacing the pilot
+  manifest/config at 10B changes data and LR history, and exact resume rejects
+  the changed contract. If the first 10B tokens should be a production prefix,
+  stage and validate the final corpus, start with its 1T manifest/schedule,
+  and stop at a chosen update. Otherwise budget a separate qualification run.
+  The same rule applies to dense and QAT phases.
 - **Bound smoke runs explicitly.** `--purpose smoke` changes warmup and logging;
   it does not impose a trainer update limit. Use a separate small manifest and
   a benchmark/update bound. Never launch the ordinary unbounded command with
   a smoke bundle or treat its checkpoint as the selected long-run schedule.
-- **Use the actual complete-update switch point.** The supplied HPO endpoint
-  `500170752` is not aligned to a 2,097,152-token update. Its 50M warmup and
+- **Fit every schedule to its phase and batch.** Use the actual complete-update
+  switch point. The supplied HPO endpoint `500170752` is not aligned to a
+  2,097,152-token update. Its 50M warmup and
   100M decay are approximately 24 and 48 updates at that batch. Preserve the
   candidate QAT peak rates, then derive phase lengths from the funded QAT
   horizon; keep global tokens/update fixed initially across conversion.
+
 - **Freeze the source and runtime.** These fixes change source identities.
   Regenerate staging, preflight and runtime receipts for the new revision.
   Existing exact-resume contracts must continue using their recorded source;
   changing a checkout during a paid run is not an approved state migration.
+
+The native preflight checks kernels and reduced-model arithmetic before a
+paid training trial. Full-size HBM fit, eight-rank reduction equivalence,
+learning through warmup/plateau, and checkpoint recovery require bounded
+real-data updates on the intended node before the month-long run.
 
 ## Storage and recovery capacity
 
@@ -99,7 +109,11 @@ and cleanup process or plan explicit stopped maintenance windows.
 AWS S3 can hold durable copies, but the current S3 ingestion helper does not
 upload checkpoints. Back up only committed payload/receipt pairs, verify the
 upload, preserve the source/image/config needed to restore, and download and
-resume a real test copy before launch. Measure backup lag and free space.
+resume a real test copy before launch. Test the actual provider-to-AWS network
+path from the GPU host: route/firewall and credentials, sustained upload and
+download throughput for a full checkpoint, retry behavior, backup lag, restore
+time and transfer charges. Size upload workers/retention from those measurements
+so backups finish before the local queue fills. Monitor free space throughout.
 The trainer's five-minute collective timeout must also accommodate measured
 checkpoint/validation stalls; a slow remote volume can abort otherwise healthy
 ranks. Prefer a verified local working volume and durable asynchronous copies.

@@ -6,6 +6,14 @@ plan. Eight-MI325X throughput, memory fit, learning transfer and native AMD
 ternary execution have not been verified. The human launches and stops paid
 GPU work.
 
+Ternary QAT does not require ternary arithmetic units. The existing H100
+training path represents effective projection weights as FP8 codes `-1`, `0`
+or `+1` with block scales while keeping FP32 latent weights and optimizer
+state. MI325X FP8 arithmetic can in principle use the same approach with its
+E4M3 FNUZ format. The current AMD model/backend and launcher explicitly
+reject ternary mode; this is a software implementation and native
+qualification gap.
+
 The dense rates intentionally transfer from smaller-model HPO through the
 selected spectral Muon width rule and the embedding-rate bridge. A full-scale
 HPO rerun is not planned. The open batch decision is separate from that width
@@ -29,14 +37,19 @@ blockers in [TRAINING_RISKS.md](TRAINING_RISKS.md). The detailed evidence and te
 
 - [ ] **Microbatch and HBM:** Benchmark complete, warm updates at a fixed
   global batch. Start with the 2,097,152-token `balanced` profile
-  (microbatch 16, accumulation 4); compare `mb8` and conditionally `mb32`.
+  (microbatch 16, accumulation 4); compare `mb8` (accumulation 8) and
+  conditionally `mb32` (accumulation 2). Microbatch remains a measured
+  variable until eight-GPU full-update fit and speed checks finish; all three
+  profiles retain the same global tokens per update.
   At 3,145,728 tokens/update, compare `batch_3m_mb16` against
   `batch_3m_mb24`. Require at least 15% of usable HBM free through optimizer,
   validation and checkpoint peaks. Microbatch 16 is a starting point, not a
   measured optimum.
 - [ ] **Global batch and learning:** Run `balanced` (2,097,152) with the
-  selected rates first. Check native stability, complete-update speed, warmup
-  and held-out learning through the 4,026,531,840-token plateau milestone.
+  selected rates first. Both this batch and the 480-update warmup are
+  provisional training-readiness choices. Check native stability,
+  complete-update speed, warmup and held-out learning through the
+  4,026,531,840-token plateau milestone.
   The selected 480-update warmup is shorter in updates than the archived HPO
   warmup (~636) and SmolLM3's 2,000-step warmup; inspect the first plateau
   updates before accepting that schedule.
@@ -47,16 +60,18 @@ blockers in [TRAINING_RISKS.md](TRAINING_RISKS.md). The detailed evidence and te
   3,145,728 or 4,194,304 only if speed evidence merits a quality bridge.
   Fixed learning rates do not preserve the number of Muon, momentum and
   weight-decay updates per token.
-- [ ] **Dense-to-QAT transfer:** Qualify native MI325X ternary kernels and
-  full-model conversion before relying on a QAT phase. Use the supplied QAT
+- [ ] **Dense-to-QAT transfer:** Qualify FP8 ternary-weight quantization and
+  matrix operations on MI325X, plus full-model conversion, before relying on
+  a QAT phase. Use the supplied QAT
   peak-rate candidate (Muon 0.0085; embedding AdamW 0.003; norms 0.00015;
   Q/K norms 0.00005) as a candidate, not an established AMD winner. Keep an
   intact dense checkpoint and compare QAT with a same-data dense continuation.
 - [ ] **Switch and schedules:** Set `phase_start_tokens` to the actual
   complete-update dense checkpoint. The supplied 500,170,752-token HPO
   endpoint is half an update at the 2M batch. Its 50M warmup and 100M decay
-  span only about 24 and 48 updates at that batch; derive the long-run QAT
-  schedule from the measured QAT horizon. Keep global tokens/update fixed
+  span only about 24 and 48 updates at that batch. Derive **every** production
+  phase's warmup and decay from its funded token horizon and selected batch;
+  the QAT HPO schedule is one example. Keep global tokens/update fixed
   across the switch initially. A CPU-tested transition can rebase the
   microstep cursor if QAT needs another microbatch; native eight-rank
   conversion and exact resume still need verification.

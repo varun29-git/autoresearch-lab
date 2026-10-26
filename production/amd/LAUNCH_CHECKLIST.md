@@ -193,6 +193,11 @@ receipt alone does not clear the long production run.
     - [ ] Implement or configure verified S3 upload and restore. Existing
       `production.checkpoints` accepts filesystem archives; `terminus.s3io`
       handles read-only ingestion, not checkpoint uploads.
+    - [ ] From the actual GPU provider, transfer a full checkpoint to and
+      from the chosen AWS bucket. Record route/firewall, credentials,
+      sustained throughput, retries, backup lag, restore time and transfer
+      charges. Confirm the provider network can drain checkpoints before
+      the local retention queue fills.
     - [ ] Upload committed payloads and receipts, make recovery pointers refer
       only to complete verified backups, and verify restored SHA256 hashes.
       Multipart ETags are not interchangeable with those hashes.
