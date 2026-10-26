@@ -110,6 +110,9 @@ the full production corpus and held-outs must be ready before the long run.
    - [ ] Use `production.amd.prepare` with the real manifest and fresh external
      outputs. `balanced` selects microbatch 16, accumulation 4 and global batch
      2,097,152; `mb4`/`mb8` preserve that global batch at smaller microbatches.
+     `batch_bridge_mb12` keeps the 393,216-token HPO global batch with one
+     microstep (8 GPUs × 12 sequences × 4096 tokens); compare its execution
+     with `batch_bridge` before concluding that the HPO batch is too slow.
      `batch_1m_mb16` is the intermediate global-batch quality candidate.
      `batch_3m_mb16` and `batch_3m_mb24` compare microbatches 16/24 at the
      same 3,145,728-token global batch (accumulation 6/4).

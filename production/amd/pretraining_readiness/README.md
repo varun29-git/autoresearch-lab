@@ -23,6 +23,7 @@ training campaign. The detailed evidence and test order are in
   validation and checkpoint peaks. Microbatch 16 is a starting point, not a
   measured optimum.
 - [ ] **Global batch and learning:** Compare the HPO 393,216-token batch,
+  including the one-microstep `batch_bridge_mb12` execution profile,
   `batch_1m_mb16` (1,048,576) and `balanced` (2,097,152) at matched tokens
   **and** allocated GPU-hours on the same model, data prefix and frozen
   held-outs. Test 3,145,728 or 4,194,304 only if speed evidence merits a

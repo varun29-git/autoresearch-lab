@@ -19,6 +19,7 @@ The memory-optimal, speed-optimal and learning-optimal choices can differ.
 | Dense profile | Sequences/GPU/microstep | Microsteps/update | Global tokens/update | Updates per 1B tokens | Purpose |
 | --- | ---: | ---: | ---: | ---: | --- |
 | `batch_bridge` | 4 | 3 | 393,216 | 2,543 | HPO batch transfer control; slow execution possible |
+| `batch_bridge_mb12` | 12 | 1 | 393,216 | 2,543 | Same HPO global batch in one larger eight-GPU microstep; fit/speed unmeasured |
 | `batch_1m_mb16` | 16 | 2 | 1,048,576 | 954 | Intermediate learning/speed candidate |
 | `balanced` | 16 | 4 | 2,097,152 | 477 | Initial eight-GPU baseline |
 | `batch_3m_mb16` | 16 | 6 | 3,145,728 | 318 | Fixed-global-batch control for microbatch 24 |
@@ -27,8 +28,14 @@ The memory-optimal, speed-optimal and learning-optimal choices can differ.
 
 At 2,097,152 tokens/update, `mb8`, `balanced` and `mb32` are another
 fixed-global-batch execution comparison with accumulation 8, 4 and 2. A
-microbatch-24 trial cannot use that batch with constant-size microsteps.
-The 3,145,728-token pair tests it without changing the global batch *within
+microbatch-24 trial cannot use that 2M batch with constant-size microsteps.
+`batch_bridge`/`batch_bridge_mb12` pair keeps the HPO global batch and
+optimizer-update frequency unchanged while using three or one microstep.
+The latter is a concrete way to exploit more HBM **without** discarding the
+HPO batch choice. It still needs MI325X fit/speed and full-width quality
+checks; the HPO itself used a smaller model, an English-first data scope and
+a shorter warmup. The
+3,145,728-token pair tests microbatch 24 without changing the global batch *within
 the pair*. Moving from 2M to 3.146M still needs a learning comparison.
 
 The HPO rates were chosen on a **393,216-token** update. The dense production
@@ -125,7 +132,8 @@ eight-rank branch and exact resume before relying on this CPU-tested path.
    checkpoint and validation peaks. A larger microbatch needs at least 3%
    credible complete-update throughput gain, no repeated p95 regression and
    the same numerical/quality gates. Full-size headroom remains at least 15%.
-3. **Global-batch learning.** Compare 393k, 1M and 2M at matched tokens under
+3. **Global-batch learning.** First compare the two 393k execution profiles,
+   then compare 393k, 1M and 2M at matched tokens under
    the same seed, data prefix, model, fixed dense peak rates, token-based WSD
    milestones and 1,024 held-out sequences per scope key. Screen at the
    existing 4,026,531,840-token plateau bridge; extend credible finalists to

@@ -29,6 +29,9 @@ final 10% WSD decay. These choices await native fit, speed and quality evidence.
 Microbatch 16 is not a measured optimum; the paired 3,145,728-token
 `batch_3m_mb16`/`batch_3m_mb24` profiles test whether more HBM use reduces
 complete-update time without conflating microbatch and global-batch effects.
+At the HPO's 393,216-token global batch, `batch_bridge_mb12` uses one
+12-sequence microstep per rank and can be compared with `batch_bridge`'s
+three smaller microsteps without changing optimizer-update frequency.
 For a final ternary model, [QAT_ALLOCATION.md](QAT_ALLOCATION.md) recommends
 60% dense / 40% QAT by tokens and prices both stages together. Native AMD
 ternary execution still needs implementation and qualification.

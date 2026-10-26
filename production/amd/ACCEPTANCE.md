@@ -85,6 +85,11 @@ small updates can be wrong while whole-weight relative error looks small.
 The researched choices in [CONFIG_SELECTION.md](CONFIG_SELECTION.md) and
 `profiles.py` are selected for testing, not native certification. Local checks:
 
+- 2026-10-26 fixed-HPO-batch follow-up: **26 AMD profile CPU tests passed**
+  after adding `batch_bridge_mb12` (8 GPUs × 12 sequences × 4096 tokens ×
+  1 microstep). The comparison preserves the 393,216-token global update,
+  selected optimizer settings, held-out coverage and ordered token stream.
+  Full-width learning and native MI325X fit/speed remain unmeasured.
 - 2026-10-26 batch/transition follow-up: **80 CPU tests passed, with 7
   subtests**, across AMD profiles and phase planning, dense-to-QAT transition,
   trainer and production-config regressions. The new 1M-token profile preserves

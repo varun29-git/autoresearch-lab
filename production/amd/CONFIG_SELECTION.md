@@ -122,6 +122,7 @@ at **4,026,531,840 tokens**, after warmup and before decay:
 | Profile | Microbatch | Global tokens/update | Accumulation | Bridge stop update |
 | --- | ---: | ---: | ---: | ---: |
 | `batch_bridge` | 4 | 393,216 | 3 | 10,240 |
+| `batch_bridge_mb12` | 12 | 393,216 | 1 | 10,240 |
 | `batch_1m_mb16` | 16 | 1,048,576 | 2 | 3,840 |
 | `balanced` | 16 | 2,097,152 | 4 | 1,920 |
 | `large_batch` | 16 | 4,194,304 | 8 | 960 |
@@ -210,6 +211,8 @@ stated field(s) relative to `balanced` and derive accumulation/cadence.
 | `mb4` | microbatch 4, accumulation 16 | First conservative full-size memory/update check |
 | `mb8` | microbatch 8, accumulation 8 | Memory fallback and fixed-global-batch speed control |
 | `mb32` | microbatch 32, accumulation 2 | Only after measured full-update HBM headroom |
+| `batch_bridge` | HPO global batch 393,216, microbatch 4, accumulation 3 | Conservative execution and quality control |
+| `batch_bridge_mb12` | HPO global batch 393,216, microbatch 12, accumulation 1 | Fixed-global-batch execution comparison against `batch_bridge` (microbatch 4, accumulation 3) |
 | `batch_1m_mb16` | global batch 1,048,576, accumulation 2 | Intermediate quality candidate to bridge HPO 393k and selected 2M |
 | `batch_3m_mb16` | global batch 3,145,728, accumulation 6 | Quality and execution control for the 3.146M batch |
 | `batch_3m_mb24` | global batch 3,145,728, microbatch 24, accumulation 4 | Conditional larger-microbatch candidate at the matched 3.146M batch |

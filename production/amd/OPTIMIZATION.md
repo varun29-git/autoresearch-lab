@@ -126,6 +126,10 @@ At 8 ranks and the selected global batch 2,097,152, these are comparable full up
 | 32 | 2 | 262,144 |
 
 This is a selected starting batch, not a measured winner. The
+393,216-token HPO batch also has a larger-microbatch execution candidate:
+`batch_bridge_mb12` uses 12 sequences per GPU and one microstep instead of
+`batch_bridge`'s 4 sequences and three microsteps. This keeps optimizer
+updates per token fixed while testing more of the MI325X's HBM. The
 `batch_1m_mb16` profile preserves microbatch 16 but halves accumulation,
 providing an intermediate learning-efficiency comparison between the HPO
 393k batch and the 2M baseline. At the separate
