@@ -1,5 +1,10 @@
 # CI-1 production handoff
 
+**Before an eight-MI325X training campaign:** read the
+[`amd/pretraining_readiness/` entry point](amd/pretraining_readiness/README.md).
+It records the unresolved batch, QAT and native-hardware gates for the
+5,760 GPU-hour allocation.
+
 This folder is the entry point for the selected Terminus Stack 4 implementation. The standalone `CI-1` checkout contains the full model, optimizer, FP8 kernels, streaming data loader, DDP trainer, checkpointing, tests, scripts, completed research history, and `manuscript/terminus_draft.md`. It was created from `paper/technical-draft-v1` at `fa84773`, which includes the final 200M HPO winner at `36d3de9`, the spectral-Muon change, and the E3/E4/E9 speed stack. Historical research files remain available, but the 30-layer/96K configs and pre-spectral 25-layer configs in `configs/` are not the selected production recipe.
 
 The selected settings now live in [`recipe.py`](recipe.py); config generation

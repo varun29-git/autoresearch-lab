@@ -1,5 +1,9 @@
 # Eight-MI325X production launch checklist
 
+**Read [pretraining readiness](pretraining_readiness/README.md) before
+generating final run configs or starting a training campaign.** The selected
+batch and dense-to-QAT schedule still require native and quality evidence.
+
 Reviewed 2026-10-25; updated with [selected configurations](CONFIG_SELECTION.md).
 The code is ready to begin native bring-up once an accessible host and test
 data are available. The month-long production run is not yet cleared.

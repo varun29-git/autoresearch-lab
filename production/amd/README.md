@@ -1,5 +1,10 @@
 # CI-1 on MI325X: native test handoff
 
+**Start here before training:**
+[pretraining_readiness/README.md](pretraining_readiness/README.md) tracks the
+batch, dense-to-QAT and hardware decisions that must be settled before the
+month-long run.
+
 Prepared 2026-10-24 for **8 GPUs and 5,760 total GPU-hours (30 days)**.
 This directory contains runnable migration candidates, native numerical gates,
 real-data update measurement, staging/runtime receipts, and a scaling runbook.
