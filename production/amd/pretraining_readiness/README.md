@@ -36,6 +36,9 @@ training campaign. The detailed evidence and test order are in
 - [ ] **Global batch and learning:** Run `balanced` (2,097,152) with the
   selected rates first. Check native stability, complete-update speed, warmup
   and held-out learning through the 4,026,531,840-token plateau milestone.
+  The selected 480-update warmup is shorter in updates than the archived HPO
+  warmup (~636) and SmolLM3's 2,000-step warmup; inspect the first plateau
+  updates before accepting that schedule.
   If evidence warrants a smaller-batch comparison, test `batch_1m_mb16`
   (1,048,576) at matched tokens **and** allocated GPU-hours on the same model,
   data prefix and frozen held-outs. Use the 393,216-token HPO-batch profile

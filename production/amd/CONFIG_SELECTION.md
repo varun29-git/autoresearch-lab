@@ -64,6 +64,15 @@ tokens/update** [S20]. That is unusually relevant evidence for a 1.446B dense
 model. Its optimizer, tokenizer, context and architecture differ, so this is
 a scale reference rather than proof of optimality for CI-1.
 
+**SmolLM3-3B is a closer context-length precedent** [S34]: its three main
+pretraining configs use DP 192 × microbatch 3 × 4096 × accumulation 1 =
+**2,359,296 tokens/update**, only 12.5% above our selected batch. Its
+production run demonstrates that a multi-million-token global batch can work
+at 4K context on a larger dense model. It uses BF16, AdamW, TP 2 and 384
+H100s, so it does not determine CI-1's Muon rates, MI325X throughput or
+batch optimum. It supports testing the 2M profile first; it does not require
+a full-model 393k control.
+
 The repository's earlier optimizer HPO/700M bridge used **393,216
 tokens/update** [S23]. The selected batch is 5⅓ times larger. This is a real
 transfer: momentum averages and decoupled weight decay act per update, and
@@ -101,12 +110,19 @@ manifest's usable tokens, ending at **0.1 × each starting rate**. The decay
 length rounds up to a 4096-token boundary. The original data horizon and
 mixture phases are never rewritten by the generator.
 
-The roughly 1B warmup is an engineering choice: hundreds of updates at the
-selected batch and more tokens than the archived ~250M warmup. It is not a
-published CI-1 optimum. SmolLM2 used 2,000 warmup updates and a final 10%
-decay [S20]; we borrow the latter duration as a starting point while retaining
-CI-1's selected cosine shape and 0.1 floor. We do not copy SmolLM2's AdamW
-rates, linear-to-zero decay or 2,000-step warmup.
+The roughly 1B warmup is an engineering choice: **480 updates** at the
+selected batch. The archived ~250M-token HPO warmup was about **636 updates**
+at its smaller batch, so our warmup is longer in tokens but shorter in
+optimizer updates. It is not a published CI-1 optimum. SmolLM2 used 2,000
+warmup updates [S20]; SmolLM3
+also used 2,000, equal to about 4.72B tokens at its batch [S34]. Both used
+AdamW, so their longer warmups are a stability reference, not a validated
+Muon schedule. Watch CI-1's first 1B-token warmup and early plateau closely;
+if the transition is unstable or the loss curve deteriorates, compare a
+longer warmup as a focused schedule trial. We borrow the final 10% decay
+duration as a starting point while retaining CI-1's cosine shape and 0.1
+floor. We do not copy their AdamW rates, linear-to-zero decay or 2,000-step
+warmup automatically.
 
 The accounting quantum is 6,291,456 tokens. The configured warmup, bridge
 boundary and operational cadences are even multiples of that quantum and

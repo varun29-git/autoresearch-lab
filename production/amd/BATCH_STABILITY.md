@@ -81,6 +81,7 @@ global batch.
 | --- | --- | --- |
 | [Archived HPO program](../../hpo/program.md) | 393,216 tokens/update at the 200M screen and width bridges | Different width, English-first data and much shorter horizon |
 | [SmolLM2 1.7B config](SOURCES.md) [S20] | 2,097,152 tokens/update | AdamW, 2048 context, different architecture and data |
+| [SmolLM3 3B configs](SOURCES.md) [S34] | 2,359,296 tokens/update at 4096 context across three pretraining stages; 2,000-step warmup | Stronger precedent for the chosen batch scale, but BF16/AdamW, 384 H100s and a roughly 4.72B-token warmup do not validate CI-1's Muon rates or shorter warmup |
 | [MiniCPM](https://arxiv.org/html/2404.06395v2), §3.2, Table 2 | Fixed-GPU experiments emphasize loss per tokens; its 1.2B run grows batch from 2M to 4M | Different model, optimizer and empirically chosen schedule; no Muon rule transfers |
 | [Muon scaling study](https://arxiv.org/html/2502.16982v1), Table 2 | A 1.5B study lists 256 examples at 8192 context, about 2.1M tokens/update | Different Muon implementation, LR tuning and compute/data regime |
 | [Gradient noise scale](https://arxiv.org/html/1812.06162v1), §§2–3 | The useful batch can change during training and is related to a speed/data-efficiency tradeoff | Approximate predictor, not a measured CI-1 gradient-noise scale or a proof for nonlinear Muon |
