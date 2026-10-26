@@ -12,6 +12,7 @@ from pathlib import Path
 
 import torch
 
+from terminus.data import TokenBatcher, TokenManifest
 from terminus.optim import OptimizerConfig
 from terminus.train import TrainConfig, run_training
 from terminus.transition import convert_checkpoint
@@ -104,6 +105,42 @@ class TransitionTests(unittest.TestCase):
             expected, actual = checkpoint_payload(self.root / "qat_a"), checkpoint_payload(self.root / "qat_b")
             for name, tensor in expected["model"].items():
                 torch.testing.assert_close(actual["model"][name], tensor, rtol=0, atol=0)
+
+    def test_transition_rebases_microbatch_at_the_same_global_batch(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.train_dense(updates=1)  # 32 tokens: batch 2 x 2 microsteps
+            child_manifest = json.loads(self.manifest.read_text())
+            child_manifest["config"]["batch_size"] = 4
+            child_manifest_path = self.root / "qat_batch4_manifest.json"
+            child_manifest_path.write_text(json.dumps(child_manifest))
+            child_config = json.loads((self.root / "qat.json").read_text())
+            child_config["training"]["gradient_accumulation_steps"] = 1
+            child_config_path = self.root / "qat_batch4.json"
+            child_config_path.write_text(json.dumps(child_config))
+            receipt = convert_checkpoint(self.root / "dense_run", child_config_path,
+                                         child_manifest_path, self.data_root, self.root / "qat_batch4")
+            self.assertEqual(receipt["cursor_rebase"], {
+                "parent_next_micro_step": 2, "child_next_micro_step": 1, "tokens_seen": 32})
+            self.assertEqual(receipt["child"]["state"]["updates"], 1)
+            self.assertEqual(receipt["intentional_resets"], [])
+            parent_payload = checkpoint_payload(self.root / "dense_run")
+            child_payload = checkpoint_payload(self.root / "qat_batch4")
+            for key, old_state in parent_payload["optimizer"]["state"].items():
+                for name, old_value in old_state.items():
+                    new_value = child_payload["optimizer"]["state"][key][name]
+                    if isinstance(old_value, torch.Tensor):
+                        torch.testing.assert_close(new_value, old_value, rtol=0, atol=0)
+                    else:
+                        self.assertEqual(new_value, old_value)
+            old_batcher = TokenBatcher(TokenManifest.load(self.manifest), root=self.data_root)
+            new_batcher = TokenBatcher(TokenManifest.load(child_manifest_path), root=self.data_root)
+            old_next = torch.cat([old_batcher.train_batch(step)[0] for step in (2, 3)])
+            new_next = new_batcher.train_batch(1)[0]
+            torch.testing.assert_close(old_next, new_next, rtol=0, atol=0)
+            final = run_training(self.root / "qat_batch4/qat_config.json", child_manifest_path,
+                                 self.data_root, self.root / "qat_batch4",
+                                 resume=self.root / "qat_batch4/checkpoints")
+            self.assertEqual(final, {"next_micro_step": 3, "tokens_seen": 72, "updates": 3})
 
     def test_dense_history_changes_final_weights(self):
         with contextlib.redirect_stdout(io.StringIO()):

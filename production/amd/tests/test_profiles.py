@@ -144,7 +144,8 @@ def test_real_loader_preserves_global_update_under_microbatch_and_rank_changes(t
              TokenShardSpec("val.bin", "en", "val", 4097, language="en")]
     reference_x = torch.from_numpy(tokens[:-1].astype(np.int64)).reshape(-1, 4096)
     reference_y = torch.from_numpy(tokens[1:].astype(np.int64)).reshape(-1, 4096)
-    for name in ("balanced", "mb4", "mb8", "mb32", "batch_3m_mb16", "batch_3m_mb24", "single_gpu"):
+    for name in ("balanced", "mb4", "mb8", "mb32", "batch_1m_mb16",
+                 "batch_3m_mb16", "batch_3m_mb24", "single_gpu"):
         chosen = PROFILES[name]
         data = TokenManifest(TokenDataConfig(batch_size=chosen.microbatch, seq_len=4096,
                              total_train_tokens=chosen.global_batch_tokens, validation_tokens=4096), specs)

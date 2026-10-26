@@ -11,6 +11,8 @@ initial checkpoint of a QAT run, with an explicit receipt. It:
   contract binds runtime and native-source identity;
 - carries model weights, compatible optimizer state, per-rank RNG, and the
   data cursor (unless a reset is explicitly requested and recorded);
+- can change microbatch while preserving global tokens per update, rebasing
+  the microstep cursor without changing token exposure or update count;
 - supports checkpoint branches: any parent checkpoint of the dense run may be
   converted, and the receipt records which one; different pre-switch histories
   are never presented as shared.
@@ -162,14 +164,19 @@ def convert_checkpoint(parent_run_dir, qat_config_path, qat_manifest_path, qat_d
         resets_done.extend(("data_cursor", "update_counter"))
     else:
         state = dict(parent_state)
+        parent_accumulation = parent_contract["training"]["gradient_accumulation_steps"]
+        if state["next_micro_step"] != state["updates"] * parent_accumulation:
+            raise ValueError("parent checkpoint is not at a complete global update boundary")
         if state["tokens_seen"] % micro_tokens:
             raise ValueError("carried token cursor is not divisible by the child microbatch tokens; "
-                             "keep the batch decomposition or request data_policy='restart'")
-        if state["next_micro_step"] != state["tokens_seen"] // micro_tokens:
-            raise ValueError("carried data cursor does not align with the child batch decomposition")
-        if state["next_micro_step"] != min(state["updates"] * training.gradient_accumulation_steps,
-                                           total_micro_steps):
-            raise ValueError("carried update counter does not align with child accumulation")
+                             "choose an aligned child microbatch or request data_policy='restart'")
+        child_step = state["tokens_seen"] // micro_tokens
+        if child_step != state["updates"] * training.gradient_accumulation_steps:
+            raise ValueError("carried updates do not align with the child global batch; "
+                             "keep tokens per update fixed or request data_policy='restart'")
+        # Re-express the same global token cursor in the child's microbatch
+        # units. This preserves update count, optimizer moments and data order.
+        state["next_micro_step"] = child_step
         if state["tokens_seen"] >= total_tokens:
             raise ValueError("child budget must extend beyond the parent's consumed tokens")
         if data_policy == "phase_mix":
@@ -224,6 +231,10 @@ def convert_checkpoint(parent_run_dir, qat_config_path, qat_manifest_path, qat_d
                          "manifest_sha256": manifest_report["manifest_sha256"],
                          "initial_checkpoint": path.name, "state": state},
                "data_policy": data_policy, "intentional_resets": sorted(resets_done),
+               "cursor_rebase": None if "data_cursor" in resets else {
+                   "parent_next_micro_step": parent_state["next_micro_step"],
+                   "child_next_micro_step": state["next_micro_step"],
+                   "tokens_seen": state["tokens_seen"]},
                "changed_fields": changed,
                "tokenizer_sha256": child_tokenizer.get("sha256"),
                "source": source_hashes()}

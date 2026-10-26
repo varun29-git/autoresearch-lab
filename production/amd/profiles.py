@@ -15,8 +15,8 @@ from .recipe import CANDIDATES, validate_production
 
 
 GLOBAL_BATCH_TOKENS = 2_097_152
-# Cadence multipliers below are even, so milestones align across 393k, 2M,
-# 3.146M and 4M-token batches. This quantum itself is not their LCM.
+# Cadence multipliers below are even, so milestones align across 393k, 1M,
+# 2M, 3.146M and 4M-token batches. This quantum itself is not their LCM.
 COMPARISON_QUANTUM = 6_291_456
 WARMUP_TOKENS = 160 * COMPARISON_QUANTUM
 BRIDGE_END_TOKENS = 640 * COMPARISON_QUANTUM
@@ -46,6 +46,8 @@ PROFILES = {
     "mb4": Profile("First memory-conservative full update; same global batch.", microbatch=4),
     "mb8": Profile("Memory fallback / execution comparison; same global batch.", microbatch=8),
     "mb32": Profile("Use only after measured HBM headroom; same global batch.", microbatch=32),
+    "batch_1m_mb16": Profile("Intermediate global-batch quality candidate; same microbatch as balanced.",
+                            global_batch_tokens=1_048_576),
     "batch_3m_mb16": Profile("3.146M-token quality control with the same microbatch as balanced.",
                             global_batch_tokens=3_145_728),
     "batch_3m_mb24": Profile("Larger microbatch at the matched 3.146M global batch; HBM fit unmeasured.",
