@@ -13,6 +13,14 @@ GPU tests are skipped rather than represented as passing CPU checks.
 
 The completed checks were:
 
+- 2026-10-26 training-risk review: full suite **426 passed, 27 skipped,
+  183 subtests passed** in 214 seconds, using
+  `PYTHONPATH=/tmp/ci1-amd-testdeps python3 -m pytest -q tests production/amd/tests`.
+  This includes new stream-continuity rejection/loader comparisons, tiny-FP8-
+  gradient guard tests, and the existing CPU distributed/resume regressions.
+  The strengthened MI325X tiny-gradient and long-reduction gates remain unrun.
+  See [TRAINING_RISKS.md](pretraining_readiness/TRAINING_RISKS.md) for the
+  corrected failures, compatibility implications and remaining launch controls.
 - Full suite: **360 passed, 27 skipped, 183 subtests passed** in 232 seconds,
   using `python3 -m pytest tests production/amd/tests -q`.
 - After the last constructor/runtime refinements: **48 passed, 3 skipped,
@@ -59,7 +67,8 @@ native numerical agreement, actual memory fit or training speed.
 The preflight's engineering tolerances are explicit in `preflight.py`:
 attention and reduced-model checks are approximately 3% relative with an
 absolute near-zero guard; projection FP8 versus independently quantized
-FNUZ reference is 2.5%; quantizer dequantized error is 0.4%; optimized
+FNUZ reference is 2.5%; quantizer dequantized error is 0.4% (both FP8 gates
+have no absolute near-zero exemption); optimized
 pointwise/learned-QK/CE comparison is 1.2%. These are finite-precision bug
 detection thresholds, **not** release-quality criteria. Preserve and inspect
 the per-case errors; do not widen a failed tolerance simply to pass a port.
@@ -138,8 +147,9 @@ fixed-token budget calculator; it preserves the requested token ratio,
 rounds to complete updates, and accounts for both phase rates and overhead.
 External JSON CLI output, local documentation links and `git diff --check`
 also passed. An extreme-input overflow found during testing was corrected.
-These checks do not enable native AMD ternary execution or resolve the data
-prefix-equivalence audit described in [QAT_ALLOCATION.md](QAT_ALLOCATION.md).
+These allocation checks do not enable native AMD ternary execution. The later
+stream-continuity checks and remaining native obligations are described in
+[TRAINING_RISKS.md](pretraining_readiness/TRAINING_RISKS.md).
 
 ## Checkpoint and recovery drill
 

@@ -18,7 +18,8 @@ published Muon results support this as a starting protocol but do not certify
 the 2M batch for CI-1.
 
 Read this page before generating the final run configuration or starting a
-training campaign. The detailed evidence and test order are in
+training campaign. Review the corrected silent failures and remaining launch
+blockers in [TRAINING_RISKS.md](TRAINING_RISKS.md). The detailed evidence and test order are in
 [BATCH_STABILITY.md](../BATCH_STABILITY.md),
 [SPEEDUP_TRIAGE.md](SPEEDUP_TRIAGE.md),
 [LAUNCH_CHECKLIST.md](../LAUNCH_CHECKLIST.md), and

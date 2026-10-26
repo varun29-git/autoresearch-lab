@@ -168,10 +168,13 @@ the child phase would create a different schedule.
 
 The child `phase_start_tokens` must equal the parent's consumed tokens for a
 continuing stream, and its total manifest horizon must cover `Td + Tq`.
-Protect exact-resume identity within each phase. Check that “continue” really
-preserves the same source sequence, mixture and offsets; a matching tokenizer
-and numeric cursor alone do not prove prefix identity. That audit is needed
-before native promotion. A changed QAT data mixture should be tested separately
+Protect exact-resume identity within each phase. The converter now verifies
+ordered shard and routing metadata across the common planned stream for
+`continue`, and the consumed prefix for `phase_mix`; a tokenizer and numeric
+cursor alone are insufficient. Legacy contracts without that metadata fail
+closed. Native conversion remains unqualified; see the
+[failure controls](pretraining_readiness/TRAINING_RISKS.md).
+A changed QAT data mixture should be tested separately
 after the initial same-mixture comparison, rather than confounding conversion.
 
 ## Decide early enough to preserve the ternary budget
