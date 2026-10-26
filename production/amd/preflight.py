@@ -40,14 +40,18 @@ def validate_report(path, config, device):
     return report
 
 
-def _errors(actual, expected, *, limit=.03):
+def _errors(actual, expected, *, limit=.03, atol=2e-5):
+    if len(actual) != len(expected) or not actual:
+        raise AssertionError("numerical gate needs matching nonempty result lists")
     errors = []
     for a, b in zip(actual, expected):
+        if a.shape != b.shape:
+            raise AssertionError("numerical gate result shapes differ")
         if not torch.isfinite(a).all() or not torch.isfinite(b).all():
             raise AssertionError("nonfinite result in numerical gate")
         absolute = float((a.float() - b.float()).abs().max())
         relative = relative_error(a, b)
-        if absolute >= 2e-5 and relative >= limit:
+        if absolute > atol and relative >= limit:
             raise AssertionError(f"native numerical mismatch: relative={relative}, max_absolute={absolute}")
         errors.append({"relative": relative, "max_absolute": absolute})
     return errors
@@ -89,7 +93,7 @@ def fp8_gate(config, device):
             native = quantize_directions(x, transposed=True)
             expected = reference.directional(x, transposed=True)
             errors = _errors([reference.dequantize(n) for n in native],
-                             [reference.dequantize(e) for e in expected], limit=.004)
+                             [reference.dequantize(e) for e in expected], limit=.004, atol=0.)
             # Padding is a memory-safety contract, not merely a numerical tolerance.
             if torch.count_nonzero(native[1][0].float()[:, rows:]):
                 raise AssertionError("nonzero padded columnwise FP8 lanes")
@@ -99,11 +103,16 @@ def fp8_gate(config, device):
         x[0, 0] = special
         if not torch.isnan(quantize(x, group_rows=128)[0].float()[0, 0]):
             raise AssertionError("nonfinite master weight was hidden by quantization")
-    for outputs, width in sorted(set(projection_shapes(config).values())):
-        for rows in (17, 256):
+    shapes = [(rows, outputs, width) for outputs, width in sorted(set(projection_shapes(config).values()))
+              for rows in (17, 256)]
+    # Exercise wgrad's long reduction axis without allocating a full model.
+    # The selected microbatch has 16 * 4096 token rows per GPU.
+    shapes.append((16 * config.max_seq_len, 256, 256))
+    for rows, outputs, width in shapes:
+        for gradient_scale in (1., 2. ** -24):
             x = torch.randn(rows, width, dtype=torch.bfloat16, device=device, requires_grad=True)
             w = (torch.randn(outputs, width, device=device) * .02).requires_grad_()
-            g = torch.randn(rows, outputs, dtype=torch.bfloat16, device=device)
+            g = torch.randn(rows, outputs, dtype=torch.bfloat16, device=device) * gradient_scale
             actual = backend.linear(x, w, backend=config.linear_backend, splits=config.fp8_wgrad_splits or 1)
             dx, dw = torch.autograd.grad(actual, (x, w), g)
             xr, xt = reference.directional(x.detach(), transposed=True)
@@ -115,7 +124,8 @@ def fp8_gate(config, device):
             if dw.dtype != torch.float32:
                 raise AssertionError("wgrad must retain FP32 output")
             cases.append({"rows": rows, "outputs": outputs, "width": width,
-                          "errors": _errors([actual, dx, dw], expected, limit=.025)})
+                          "gradient_scale": gradient_scale,
+                          "errors": _errors([actual, dx, dw], expected, limit=.025, atol=0.)})
     # Weight version/cache refresh across an actual in-place master update.
     layer = BitLinear(256, 256, weight_mode="dense", linear_backend=config.linear_backend,
                       weight_scale_layout="blockwise", quantize_activations=True,

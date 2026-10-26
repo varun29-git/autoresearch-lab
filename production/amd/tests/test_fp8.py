@@ -32,11 +32,12 @@ def test_fnuz_scale_format_zero_blocks_and_nonfinite():
 
 
 @pytest.mark.parametrize("rows", [1, 17, 129])
-def test_full_backward_uses_independently_quantized_transposes(emulated, rows):
+@pytest.mark.parametrize("gradient_scale", [1., 2. ** -24])
+def test_full_backward_uses_independently_quantized_transposes(emulated, rows, gradient_scale):
     torch.manual_seed(123)
     x = torch.randn(rows, 256, dtype=torch.bfloat16, requires_grad=True)
     w = (torch.randn(384, 256) * .03).requires_grad_()
-    g = torch.randn(rows, 384, dtype=torch.bfloat16)
+    g = torch.randn(rows, 384, dtype=torch.bfloat16) * gradient_scale
     y = backend.linear(x, w)
     dx, dw = torch.autograd.grad(y, (x, w), g)
     xr, xt = reference.directional(x, transposed=True)
@@ -49,6 +50,17 @@ def test_full_backward_uses_independently_quantized_transposes(emulated, rows):
     assert not xt[0].float()[:, rows:].count_nonzero()
     # dW uses a quantization of X.T, not X's already-rounded row codes.
     assert reference.dequantize(xt).shape == (256, ((rows + 127) // 128) * 128)
+
+
+def test_numerical_gate_rejects_zeroed_small_gradients():
+    from production.amd.preflight import _errors
+
+    expected = torch.full((16, 128), 1e-8)
+    with pytest.raises(AssertionError, match="numerical mismatch"):
+        _errors([torch.zeros_like(expected)], [expected], atol=0.)
+    assert _errors([expected.clone()], [expected], atol=0.)[0]["relative"] == 0
+    with pytest.raises(AssertionError, match="shapes"):
+        _errors([expected[:1]], [expected], atol=0.)
 
 
 def test_accumulation_and_cache_refresh(emulated):
