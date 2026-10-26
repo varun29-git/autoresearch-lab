@@ -201,4 +201,7 @@ def validate_manifest(manifest: TokenManifest, root, model_config, *, developmen
         by_key[spec.split][key] += spec.num_tokens
     report["tokens_by_key"] = by_key
     report["scope"] = scope["name"]
+    from .stream_contract import capture_training_stream
+
+    report["training_stream"] = capture_training_stream(router)
     return report

@@ -19,11 +19,11 @@ initial checkpoint of a QAT run, with an explicit receipt. It:
 
 Data policies:
 - "continue": the child manifest covers the same stream with a larger budget
-  (parent tokens_seen + QAT budget); the carried cursor guarantees no data
-  repeats or disappears across the switch.
+  (parent tokens_seen + QAT budget); verified routing and shard prefixes plus
+  the carried cursor prevent data repeats or gaps across the switch.
 - "phase_mix": the child manifest uses phase_source_mixes whose phase boundary
-  must equal the parent's tokens_seen, so the router switches mixture exactly
-  at the transition.
+  must equal the parent's tokens_seen; its consumed prefix must match the
+  parent's stream before the router switches mixture at the transition.
 - "restart": the data and update counters (and optionally RNG) are reset;
   the receipt records this as an intentional reset. A manifest may start each
   source at the exact unused example offset, so this can avoid repetition.
@@ -126,6 +126,13 @@ def convert_checkpoint(parent_run_dir, qat_config_path, qat_manifest_path, qat_d
     if parent_tokenizer and child_tokenizer and \
             parent_tokenizer.get("sha256") != child_tokenizer.get("sha256"):
         raise ValueError("parent and child manifests use different tokenizers")
+    stream_proof = None
+    if data_policy != "restart":
+        from .stream_contract import verify_training_continuation
+
+        stream_proof = verify_training_continuation(
+            parent_contract["data"].get("training_stream"), manifest_report.get("training_stream"),
+            parent_seen, policy=data_policy)
     device = torch.device(device_name)
     contract = make_resume_contract(model_config, training, optimizer_config, manifest_report,
                                     world_size, device)
@@ -231,6 +238,7 @@ def convert_checkpoint(parent_run_dir, qat_config_path, qat_manifest_path, qat_d
                          "manifest_sha256": manifest_report["manifest_sha256"],
                          "initial_checkpoint": path.name, "state": state},
                "data_policy": data_policy, "intentional_resets": sorted(resets_done),
+               "stream_continuity": stream_proof,
                "cursor_rebase": None if "data_cursor" in resets else {
                    "parent_next_micro_step": parent_state["next_micro_step"],
                    "child_next_micro_step": state["next_micro_step"],

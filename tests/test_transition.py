@@ -106,6 +106,24 @@ class TransitionTests(unittest.TestCase):
             for name, tensor in expected["model"].items():
                 torch.testing.assert_close(actual["model"][name], tensor, rtol=0, atol=0)
 
+    def test_continue_rejects_replaced_corpus_with_valid_child_checksums(self):
+        from terminus.integrity import file_sha256
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.train_dense(updates=1)
+        payload = json.loads(self.manifest.read_text())
+        replacement = self.data_root / "different_train.bin"
+        original = (self.data_root / "train.bin").read_bytes()
+        # Still valid uint16 token IDs and budget; only the token order changes.
+        replacement.write_bytes(original[2:] + original[:2])
+        payload["shards"][0].update(path=replacement.name, sha256=file_sha256(replacement))
+        changed = self.root / "different_manifest.json"
+        changed.write_text(json.dumps(payload))
+        with self.assertRaisesRegex(ValueError, "changed or reordered.*shard"):
+            convert_checkpoint(self.root / "dense_run", self.root / "qat.json", changed,
+                               self.data_root, self.root / "bad_continue")
+        self.assertFalse((self.root / "bad_continue/checkpoints").exists())
+
     def test_transition_rebases_microbatch_at_the_same_global_batch(self):
         with contextlib.redirect_stdout(io.StringIO()):
             self.train_dense(updates=1)  # 32 tokens: batch 2 x 2 microsteps
