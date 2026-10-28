@@ -101,6 +101,9 @@ LOG_INTERVAL = 1                    # every complete update
 CHECKPOINT_INTERVAL = 100           # plus explicit boundary checkpoints
 VALIDATION_INTERVAL = 48            # quick fixed held-out slice (~100.66M tokens)
 VALIDATION_BATCHES_PER_LANGUAGE = 8
+# One frozen evaluation size for quick checks and boundaries alike, so every
+# arm sees identical evaluator/examples at every cadence point.
+VALIDATION_SEQUENCES_PER_LANGUAGE = 64
 ROLE_DIAGNOSTIC_INTERVAL = 20       # logical-role deltas; also at boundaries
 STABILITY_LOG_INTERVAL = 20         # legacy sampled probes remain a component
 EMERGENCY_RESERVE_HOURS = 0.5       # checkpoint/stop time kept in the ledger

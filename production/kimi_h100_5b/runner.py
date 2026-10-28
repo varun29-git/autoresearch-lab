@@ -216,7 +216,8 @@ def drive(workload, *, boundaries: tuple, ledger_path, final_update: int,
                 results = evaluate(workload.model, workload.manifest, workload.data_root,
                                    workload.device, workload.amp_dtype,
                                    workload.training.validation_batches_per_language,
-                                   workload.rank, workload.world_size)
+                                   workload.rank, workload.world_size,
+                                   sequences_per_language=workload.training.validation_sequences_per_language)
                 if workload.rank == 0:
                     append_event(Path(output_dir) / "events.jsonl",
                                  {"event": "validation", **workload.state, "languages": results})
@@ -316,6 +317,8 @@ def run(args) -> int:
                          "min_free_bytes": args.min_free_bytes}
 
     ledger = budget.Ledger(external_path(args.ledger))
+    if not ledger.allocation_open:
+        raise ValueError("allocation ledger is not open; the human opens it at VM allocation")
     ledger.log_activity("run_start", {"trial": trial_id, "confirmation": confirmation,
                                       "probe": args.probe or None})
     output_dir.mkdir(parents=True, exist_ok=True)

@@ -44,6 +44,7 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(config["training"]["warmup_tokens"], 499_122_176)
         self.assertEqual(config["training"]["decay_tokens"], 1_000_341_504)
         self.assertEqual(config["training"]["log_interval"], 1)
+        self.assertEqual(config["training"]["validation_sequences_per_language"], 64)
         self.assertEqual(config["training"]["schedule"], "wsd")
         for key in ("dim", "ffn_dim", "n_heads", "n_kv_heads"):
             self.assertEqual(config["model"][key], campaign.PROXY_MODEL_CHANGES[key])
