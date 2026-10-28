@@ -87,6 +87,16 @@ their implications are in [LR_REFERENCES.md](pretraining_readiness/LR_REFERENCES
 | S40 | [MiniCPM5-1B configuration](https://huggingface.co/openbmb/MiniCPM5-1B/blob/87179e5c1f455ef22e6223592d2d61351b525bfc/config.json), [MiniCPM5-2B configuration](https://huggingface.co/openbmb/MiniCPM5-2B/blob/f97400052a43d642bbc6e9975e2397e3ae6a6b52/config.json), [official model card](https://huggingface.co/openbmb/MiniCPM5-2B), [GitHub recipe diagrams](https://github.com/OpenBMB/MiniCPM#-minicpm5-2b) | Standard Llama releases, untied 130,560-vocabulary embedding/readout and different geometry; final pretraining optimizer/group LRs are not disclosed by the inspected cards/configs. Older MiniCPM parameterization settings cannot be assumed for MiniCPM5. |
 | S41 | [UltraData §3.1](https://arxiv.org/html/2602.09003v1), linked by MiniCPM5 cards | Numeric LRs and batches describe data-verification experiments using a different 52-layer MiniCPM-1.2B. They do not establish MiniCPM5's final production recipe. |
 
+## Full qualification follow-up, 2026-10-28
+
+| ID | Primary source | What was checked / implication |
+| --- | --- | --- |
+| S42 | [OLMo 2 §3.1, §3.4, §3.5 and §6.3](https://arxiv.org/html/2501.00656v1) | Repetition, embedding decay and Adam epsilon affect stability. Its LR study reports a crossover beyond 200B tokens and largely equalized results after annealing, including longer comparisons. Supports data/role diagnostics, longer finalists, decay probes and hardware burn-in; does not transfer its AdamW LR values or guarantees to CI-1. |
+
+See [FULL_QUALIFICATION_PLAN.md](pretraining_readiness/FULL_QUALIFICATION_PLAN.md)
+for how the existing primary-source audits and this follow-up inform the new
+user-requested full-model tuning campaign.
+
 ## Claims from the pasted dossier that were not promoted to facts
 
 - Its 43,873.9 tok/s H100 receipt, power/clock curves and per-phase timings
