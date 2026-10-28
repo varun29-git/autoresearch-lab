@@ -1,7 +1,7 @@
 # Learning-rate references for the selected production recipe
 
 **Current policy:** reuse the completed HPO as evidence and run the
-[focused batch-transfer comparison](AZURE_H100_BRACKETS.md) on the available
+[focused lower-LR and batch comparison](LR_BATCH_MONITORING.md) on the available
 H100. This replaces repeating the broad LR search as the immediate task.
 The rate comparisons below motivate candidates; they do not clear the long run.
 

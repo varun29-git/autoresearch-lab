@@ -7,8 +7,9 @@ It records the unresolved batch, QAT and native-hardware gates for the
 
 **2026-10-28 qualification policy:** the latest direction reuses completed HPO
 and spends up to 50 hours on one Azure H100 on a
-[focused full-model batch-transfer check](amd/pretraining_readiness/AZURE_H100_BRACKETS.md),
-using the existing rates and a conditional matrix-decay comparison.
+[focused full-model LR/batch check](amd/pretraining_readiness/LR_BATCH_MONITORING.md),
+comparing the existing rates with lower published-rate controls at the same
+global batch and defining the required monitoring before native execution.
 The [broader eight-MI325X plan](amd/pretraining_readiness/FULL_QUALIFICATION_PLAN.md)
 retains the longer learning, QAT and recovery gates and an optional larger
 qualification envelope. The recipe below is the code's reviewed

@@ -1,5 +1,13 @@
 # Focused batch transfer on one Azure H100
 
+**Latest refinement:** the user requests lower published-rate controls as
+well as batch transfer. Follow [LR_BATCH_MONITORING.md](LR_BATCH_MONITORING.md)
+for the current four-way LR comparison at fixed 2M global batch, monitoring
+contract and subsequent 1M check. It uses approximately 1B per initial trial
+to stay inside the same 50-hour ceiling. The two approximately 2B trials and
+conditional decay-only ordering below are superseded as immediate work;
+their source review and batch arithmetic remain relevant.
+
 ## Current decision: reuse completed HPO, test the batch change
 
 Revision, 2026-10-28. The user asks to use the completed tuning and published

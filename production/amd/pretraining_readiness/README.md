@@ -2,8 +2,10 @@
 
 **Status on 2026-10-28: the month-long dense-to-ternary run is not cleared.**
 **Current first step:** reuse the completed HPO and use the available single
-Azure H100, capped at 50 hours, for a [focused 1M/2M batch comparison and
-conditional decay correction](AZURE_H100_BRACKETS.md). The 12 completed 200M
+Azure H100, capped at 50 hours, for [lower-LR controls at fixed 2M batch,
+followed by a 1M comparison, with explicit monitoring](LR_BATCH_MONITORING.md).
+The four LR controls separate Muon, embedding and joint effects; they are
+approximately 1B tokens each. The 12 completed 200M
 and six 700M trials were verified against their external event-file hashes.
 The broader proxy LR search is deferred. One GPU can test the intended 2M
 global batch through accumulation; eight GPUs do not multiply that batch again.
@@ -69,9 +71,10 @@ blockers in [TRAINING_RISKS.md](TRAINING_RISKS.md). The detailed evidence and te
   `batch_3m_mb24`. Require at least 15% of usable HBM free through optimizer,
   validation and checkpoint peaks. Microbatch 16 is a starting point, not a
   measured optimum.
-- [ ] **Global batch and learning:** Begin with the focused Azure full-model
-  1M/2M comparison using the existing production starting rates. Each trial
-  has a complete approximately 2B-token WSD with 10% warmup and 20% cooldown;
+- [ ] **Global batch and learning:** Begin with the four full-model LR controls
+  in `LR_BATCH_MONITORING.md`, then test the leading complete recipe at 1M
+  if the measured budget permits. Each initial trial
+  has a complete approximately 1B-token WSD with 10% warmup and 20% cooldown;
   this does not select the eventual production schedule. Compare quality at
   matched tokens and matched GPU-hours. Use measured results to price further
   full-size batch, seed and longer-horizon tests from the broad plan; they are
