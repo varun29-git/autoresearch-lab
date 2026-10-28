@@ -6,6 +6,9 @@ batch, plus a detailed monitoring contract. This refines the
 [focused Azure plan](AZURE_H100_BRACKETS.md). It replaces that plan's immediate
 two approximately 2B-token trials with the bounded matrix below. The available
 allocation remains **up to 50 hours on one H100**; no new paid run has started.
+The user now sets **5B tokens per proxy trial**. The five LR/anchor controls
+take priority; the separate proxy batch comparison is deferred by default to
+preserve time for the transferred winner within that same allocation.
 
 **Corrected allocation:** the LR search uses the **194,329,390-parameter
 width-768 proxy**, not the full model. Build it from the production recipe,
@@ -127,17 +130,28 @@ Embedding decay is zero, so that particular coupling is absent in R1.
 
 ## 3. Schedule and follow-ups within the cap
 
-Each initial trial uses **1,006,632,960 tokens**, a complete short WSD:
-100,663,296 warmup, 704,643,072 stable, 201,326,592 cosine decay to 10% of peak.
-At 2M this is 480 updates: **48 warmup, 336 stable, 96 decay**. Every candidate
-gets the same full schedule; stop early for a hard failure, not to declare a
+Each proxy trial targets **5,000,000,000 tokens**. Round down to the nearest
+complete 2M update: **4,999,610,368 tokens**, 2384 updates (less than 0.01%
+below 5B). Use the same complete WSD proportions, with boundaries rounded to
+updates:
+
+| Segment | Tokens | Updates at 2,097,152 tokens/update |
+| --- | ---: | ---: |
+| Warmup, approximately 10% | 499,122,176 | 238 |
+| Stable peak, approximately 70% | 3,500,146,688 | 1669 |
+| Cosine decay to 10% of peak, approximately 20% | 1,000,341,504 | 477 |
+
+Every candidate gets the same full schedule; stop early for a hard failure,
+not to declare a
 healthy candidate worse before its cooldown. Capture pre-decay and final
 validation separately. Short-annealed performance is a proxy criterion, not
 proof of long-plateau ranking or a production continuation checkpoint.
 
-**Sixth proxy trial, if it fits after R0-R3 and H:** run the leading credible complete recipe at
+**Sixth proxy trial, deferred by default:** if measured spare capacity fits
+without consuming the production confirmation, run the leading credible complete recipe at
 **1,048,576 global tokens/update**, preserving LRs, data and token schedule.
-It has 960 updates (96/672/192). Compare against the existing 2M result.
+It also gets approximately **5B tokens**, with exactly the same token
+boundaries: 4768 updates (476/3338/954). Compare against the existing 2M result.
 This tests proxy sample efficiency at these rates; it does not establish the
 full model's critical batch or independently tuned optimal rates for both
 batches. The production confirmation uses the proposed deployment batch.
@@ -177,38 +191,46 @@ candidate. Only a concrete failure or unresolved transfer question justifies
 another production-size candidate. A cooled-down proxy checkpoint is not a
 production initialization or a continuation of the full model.
 
-Reserve **eight H100 hours** for setup/checks/contingency and initially **14
-hours for the production-size confirmation**, leaving up to **28 hours for
-proxy trials**. Price the confirmation from measured full-size throughput
-before adding optional proxy diagnostics. Ordinary rates include routine
-evaluation, logging and checkpoint overhead; separate probes consume the
-setup/check reserve. Unused time is not an instruction to run extra candidates.
+**User-reported proxy rate: 200,000 tokens/s.** The revised cost is:
 
-| Work | Tokens | Rate scenario | Ordinary trial time |
+| Work | Aggregate tokens | Rate used | Ordinary trial time |
 | --- | ---: | ---: | ---: |
-| Five proxy controls, R0-R3 and H | 5.0332B | 100k / 150k / 200k tokens/s | 13.98 / 9.32 / 6.99 h |
-| Plus one proxy batch comparison | 6.0398B | 100k / 150k / 200k tokens/s | 16.78 / 11.18 / 8.39 h |
+| One proxy | 4.9996B | 200k tokens/s | 6.94 h |
+| Four LR controls, R0-R3 | 19.9984B | 200k tokens/s | 27.78 h |
+| All five controls, including H | 24.9981B | 200k tokens/s | 34.72 h |
+| All five plus the separate batch trial | 29.9977B | 200k tokens/s | 41.66 h |
 | One full-size winner, short confirmation | 1.0066B | 30k / 40k / 50k tokens/s | 9.32 / 6.99 / 5.59 h |
 | One full-size winner, longer confirmation | 2.0133B | 30k / 40k / 50k tokens/s | 18.64 / 13.98 / 11.18 h |
 
-These are scenarios, not new Azure measurements. Do not use the 1.446B rate
-for proxy costing or infer proxy speed by dividing parameter counts. The
-old 200M receipts contain historical rates, but the current geometry and
-batch still need a short measurement. Reallocate unused proxy hours toward
-confirmation if needed, or choose the shorter confirmation before it starts;
-never spend the full 50-hour cap searching and leave no transfer check.
-The human controls paid campaigns. Native failures can leave required work
-incomplete; report that rather than silently exceeding the cap.
+**Default inside 50 hours:** five 5B proxy controls, one approximately **1B
+full-size confirmation**, and an **eight-hour setup/check/contingency reserve**.
+At 200k for the proxy and 40k for the full model this totals **49.71 hours**.
+The 1B full-size horizon is intentionally distinct from the user's 5B proxy
+horizon. That confirmation can use the previously specified complete 10/70/20
+WSD at its own horizon; it does not inherit the proxy's absolute token counts.
 
-**User-reported proxy rate: 200,000 tokens/s.** At that rate, one
-1,006,632,960-token trial takes 1.40 hours; R0-R3 plus H take **6.99 hours**,
-and adding the proxy batch comparison brings the total to **8.39 hours**.
-With the existing 14-hour confirmation allowance and eight-hour check/reserve
-allowance, the forecast is **30.39 H100 hours**, not an instruction to spend
-50. The rate was supplied by the user, not newly measured by this agent.
-Apply it to the proxy only and confirm its scope matches the intended batch,
-geometry and runtime. If it excludes evaluation/checkpoint time, charge those
-costs separately; the full-size model retains its own measured rate/budget.
+This is a tight conditional fit, not a guaranteed runtime. With the eight-hour
+reserve, the full-size rate must be about **38.4k tokens/s** or better for all
+five proxy trials and the 1.0066B confirmation at the reported proxy rate.
+Measure both rates and charge actual cadence overhead before committing the
+whole campaign. If the budget does not fit, leave a comparison explicitly
+pending rather than silently shorten the 5B proxy horizon or exceed 50 hours.
+Never consume the confirmation reserve on an optional proxy diagnostic.
+
+The optional 1M proxy comparison costs another **6.94 hours**, so it is deferred
+by default; full-size/AMD batch qualification remains outstanding. Keeping
+all six proxy runs plus a 2.0133B full-size confirmation and eight hours of
+checks would instead require approximately **63.64 hours** at these rates.
+Even five proxy runs plus that longer confirmation and checks take **56.70
+hours**. Those are alternative budget estimates, not authorized campaigns.
+
+The 200k rate was supplied by the user, not newly measured by this agent;
+apply it only to the proxy at the intended batch, geometry and runtime.
+Ordinary rates should include routine evaluation/logging/checkpoint overhead.
+If the reported rate excludes that work, charge it inside the cap without
+double-counting it in both the rate and reserve. The full model keeps its own
+measured rate. The human controls paid launches. Native failures may leave
+required work incomplete; report that rather than claiming a passed gate.
 
 ## 4. What to record and why
 
@@ -310,7 +332,7 @@ The four matrix points are controls, not a bracket that proves an interior
 optimum. If the lowest tested rate wins, an additional lower value (for
 example proxy embedding LR 0.0015, mapping to production 0.0005) remains a
 possible later experiment; it is not silently added to the budget. Likewise
-a failure after the 48-update
+a failure after the 238-update
 warmup establishes a problem with that **LR/warmup combination**. It does not
 prove the peak LR would fail under the longer intended production ramp.
 A longer-warmup control must be explicitly priced and compared before making
@@ -319,7 +341,7 @@ that stronger attribution.
 A promising result needs improving held-outs, useful post-warmup learning,
 healthy role-level behavior and passed numerics/recovery checks. A good final
 cooldown loss with deteriorating pre-decay behavior is a reason to investigate
-long-plateau suitability. No 1B experiment proves stability over the funded
+long-plateau suitability. No 5B proxy experiment proves stability over the funded
 dense/QAT horizon. Longer monitoring and late-QAT qualification remain required.
 
 ## 6. Current implementation versus required additions

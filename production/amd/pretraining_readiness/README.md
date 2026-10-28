@@ -3,10 +3,13 @@
 **Status on 2026-10-28: the month-long dense-to-ternary run is not cleared.**
 **Current first step:** reuse the completed HPO and use the available single
 Azure H100, capped at 50 hours, for [lower-LR controls at fixed 2M batch,
-followed by a 1M comparison, with explicit monitoring](LR_BATCH_MONITORING.md).
+with explicit monitoring and a transferred-winner check](LR_BATCH_MONITORING.md).
 Run the LR controls and historical anchor on the **194M width-scaled proxy**,
 then transfer the winner and perform a short full-size confirmation. Do not
-run every LR candidate at 1.446B. Proxy trials are approximately 1B tokens each.
+run every LR candidate at 1.446B. The user sets **5B tokens per proxy**.
+Five proxy controls plus a short full-size confirmation fit near 50 hours
+only at the forecast rates; the additional proxy batch comparison is deferred
+by default. Preserve the 50-hour cap and charge all overhead.
 The 12 completed 200M
 and six 700M trials were verified against their external event-file hashes.
 The broad fresh HPO search remains deferred. One GPU can test the intended 2M
@@ -77,7 +80,7 @@ blockers in [TRAINING_RISKS.md](TRAINING_RISKS.md). The detailed evidence and te
   historical anchor in `LR_BATCH_MONITORING.md`, then compare proxy batches
   if the measured budget permits. Reserve a full-size check of the transferred
   winner at the intended global batch. Each initial trial
-  has a complete approximately 1B-token WSD with 10% warmup and 20% cooldown;
+  has a complete approximately 5B-token WSD with 10% warmup and 20% cooldown;
   this does not select the eventual production schedule. Compare quality at
   matched tokens and matched GPU-hours. Use measured results to price further
   full-size batch, seed and longer-horizon tests from the broad plan; they are
