@@ -390,8 +390,8 @@ def main() -> int:
     parser.add_argument("--resume")
     parser.add_argument("--stop-after-updates", type=int)
     args = parser.parse_args()
-    if args.probe and (args.trial is None):
-        parser.error("--probe still needs --trial to identify the config contract")
+    if args.probe and not (args.trial or args.confirmation_from):
+        parser.error("--probe still needs --trial or --confirmation-from to identify the contract")
     return run(args)
 
 

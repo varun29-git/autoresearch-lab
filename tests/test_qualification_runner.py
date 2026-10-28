@@ -209,6 +209,9 @@ class RunnerGuardTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "requires --stop-after-updates"):
                 runner_run(self.args(root, output_dir=str(root / "probe_fit"),
                                      probe="fit"))
+            with self.assertRaisesRegex(ValueError, "requires --stop-after-updates"):
+                runner_run(self.args(root, output_dir=str(root / "probe_full"),
+                                     probe="fit", trial=None, confirmation_from="R0"))
             with self.assertRaisesRegex(ValueError, "candidate output"):
                 runner_run(self.args(root, output_dir=str(root / "R0"),
                                      probe="fit", stop_after_updates=2))
