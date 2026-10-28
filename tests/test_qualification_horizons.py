@@ -106,7 +106,8 @@ class HorizonViewTests(unittest.TestCase):
                 reserve_val_holdout(source, data_root=root, output_dir=root / "x", fraction=1.0)
             tiny = TokenManifest(config, [
                 TokenShardSpec("en.bin", "en", "train", 6_000_000_000, language="en"),
-                TokenShardSpec("val.bin", "en", "val", 3 * 4096, language="en")])
+                TokenShardSpec("tinyval.bin", "en", "val", 3 * 4096, language="en")])
+            np.zeros(3 * 4096, dtype=np.uint16).tofile(root / "tinyval.bin")
             with self.assertRaisesRegex(ValueError, "no full sequence"):
                 reserve_val_holdout(tiny, data_root=root, output_dir=root / "y", fraction=0.75)
 
