@@ -10,6 +10,9 @@ run every LR candidate at 1.446B. The user sets **5B tokens per proxy**.
 Five proxy controls plus a short full-size confirmation fit near 50 hours
 only at the forecast rates; the additional proxy batch comparison is deferred
 by default. Preserve the 50-hour cap and charge all overhead.
+For execution preparation, use the
+[Kimi handoff folder](../../kimi_h100_5b/README.md), including its paste-ready
+prompt, frozen campaign contract, implementation backlog and CPU forecast tool.
 The 12 completed 200M
 and six 700M trials were verified against their external event-file hashes.
 The broad fresh HPO search remains deferred. One GPU can test the intended 2M

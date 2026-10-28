@@ -12,6 +12,10 @@ comparing existing and lower published-rate hypotheses at the same global
 batch for **5B tokens per proxy trial**. Only the transferred winner receives
 a short full-size confirmation. The current plan keeps the 50-hour cap and
 defers the optional extra proxy batch comparison unless measured time permits.
+The [Kimi execution handoff](kimi_h100_5b/README.md) packages the current
+five-billion-token proxy matrix, exact schedules, implementation tasks,
+monitoring, evidence requirements and CPU budget checker. Start Kimi with
+[`KIMI_START.md`](kimi_h100_5b/KIMI_START.md).
 The [broader eight-MI325X plan](amd/pretraining_readiness/FULL_QUALIFICATION_PLAN.md)
 retains the longer learning, QAT and recovery gates and an optional larger
 qualification envelope. The recipe below is the code's reviewed
