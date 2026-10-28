@@ -150,6 +150,8 @@ def build_horizon_view(source, *, total_train_tokens: int, microbatch: int,
         raise ValueError("training shards do not cover the requested horizon")
 
     updates = {"total_train_tokens": total_train_tokens, "batch_size": microbatch}
+    if val_shards is not None:
+        updates["validation_tokens"] = sum(spec.num_tokens for spec in val_shards)
     if config.phase_source_mixes:
         updates["phase_source_mixes"] = _truncate_phases(
             [dict(phase) for phase in config.phase_source_mixes], total_train_tokens)

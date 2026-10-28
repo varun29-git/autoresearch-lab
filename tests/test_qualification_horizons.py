@@ -124,6 +124,7 @@ class HorizonViewTests(unittest.TestCase):
         self.assertEqual(record["val_reservation"], [{"parent": "val.bin"}])
         train_specs = [spec for spec in view.shards if spec.split == "train"]
         self.assertEqual(len(train_specs), 2)
+        self.assertEqual(view.config.validation_tokens, 45_000_000)
 
     def test_token_accounting_audit_proves_complete_updates(self):
         view = build_horizon_view(source_manifest(), total_train_tokens=4_999_610_368, microbatch=4)
