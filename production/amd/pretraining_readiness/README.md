@@ -2,6 +2,9 @@
 
 **Status on 2026-10-28: the month-long dense-to-ternary run is not cleared.**
 Start with the [complete qualification and tuning plan](FULL_QUALIFICATION_PLAN.md).
+For the requested shorter first step, see the [five-hour pilot](FIVE_HOUR_PILOT.md):
+40 GPU-hours maximum, with explicit prerequisites and remaining qualification
+gaps. It is a first decision stage within the larger envelope.
 The user now requests qualification as if no prior HP tuning existed. All
 production rates, global batch, warmup and phase allocation are candidates to
 measure on the actual 1.446B model; earlier HPO confers no automatic promotion.

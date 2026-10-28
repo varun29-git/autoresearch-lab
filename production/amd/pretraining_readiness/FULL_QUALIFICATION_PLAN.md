@@ -1,5 +1,10 @@
 # Full qualification and tuning plan: 1.446B on eight MI325X GPUs
 
+**Short initial cap:** the subsequent [five-hour pilot proposal](FIVE_HOUR_PILOT.md)
+limits the first paid decision to 40 GPU-hours when the required software/data
+preparation is complete. It does not complete all gates below. The 960-hour
+envelope is a ceiling for the broad program, not a mandatory upfront spend.
+
 Engineering plan, 2026-10-28. This is the governing qualification proposal for
 the user's request to treat the model as having **no prior hyperparameter
 qualification**. It is a plan and implementation backlog, not a record of
