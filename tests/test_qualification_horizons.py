@@ -71,6 +71,33 @@ class HorizonViewTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "do not cover"):
             _truncate_phases(phases, 7_000_000_000)
 
+    def test_val_prefix_fraction_reserves_unread_suffix(self):
+        source = source_manifest()
+        view = build_horizon_view(source, total_train_tokens=4_999_610_368, microbatch=4,
+                                  val_prefix_fraction=0.75)
+        record = view.provenance["horizon_view"]
+        self.assertFalse(record["shards_unchanged"])
+        self.assertEqual(record["val_prefix_fraction"], 0.75)
+        val_specs = [spec for spec in view.shards if spec.split == "val"]
+        self.assertEqual(len(val_specs), 1)
+        original = 60_000_000
+        expected = int(original * 0.75) // 4096 * 4096
+        self.assertEqual(val_specs[0].num_tokens, expected)
+        self.assertEqual(val_specs[0].path, "val.bin")
+        reservation = record["val_reservation"][0]
+        self.assertEqual(reservation["original_tokens"], original)
+        self.assertEqual(reservation["reserved_suffix_tokens"], original - expected)
+        train_specs = [spec for spec in view.shards if spec.split == "train"]
+        self.assertEqual([spec.num_tokens for spec in train_specs], [4_000_000_000] * 2)
+        with self.assertRaisesRegex(ValueError, "between 0 and 1"):
+            build_horizon_view(source, total_train_tokens=4_999_610_368, microbatch=4,
+                               val_prefix_fraction=1.0)
+        tiny_val = source_manifest()
+        tiny_val.shards[-1] = TokenShardSpec("val.bin", "en", "val", 5000, language="en")
+        with self.assertRaisesRegex(ValueError, "full sequence"):
+            build_horizon_view(tiny_val, total_train_tokens=4_999_610_368, microbatch=4,
+                               val_prefix_fraction=0.01)
+
     def test_token_accounting_audit_proves_complete_updates(self):
         view = build_horizon_view(source_manifest(), total_train_tokens=4_999_610_368, microbatch=4)
         receipt = audit_token_accounting(view)

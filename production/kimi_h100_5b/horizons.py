@@ -46,12 +46,17 @@ def _truncate_phases(phases: list, total_tokens: int) -> list:
     return kept
 
 
-def build_horizon_view(source, *, total_train_tokens: int, microbatch: int):
+def build_horizon_view(source, *, total_train_tokens: int, microbatch: int,
+                       val_prefix_fraction: float | None = None):
     """Return a new TokenManifest with an exact usable horizon, no shard rewrites.
 
     total_train_tokens must be sequence-aligned and no larger than the source
     horizon; microbatch becomes the view's per-rank batch size and must divide
-    the global batch evenly at world size 1.
+    the global batch evenly at world size 1. With val_prefix_fraction, each
+    validation shard spec is truncated to a sequence-aligned prefix of the same
+    file (identical path and content hash): the suffix is never read by any
+    campaign evaluation and forms the reserved final holdout, measured once at
+    the declared selection step through a full-span view.
     """
     from terminus.data import TokenManifest
 
@@ -78,6 +83,28 @@ def build_horizon_view(source, *, total_train_tokens: int, microbatch: int):
         raise ValueError("prefix curriculum consumes the entire requested horizon")
     view_config = replace(config, **updates)  # dataclass validation re-runs here
 
+    shards = list(source.shards)
+    val_reservation = None
+    if val_prefix_fraction is not None:
+        if (isinstance(val_prefix_fraction, bool)
+                or not 0 < val_prefix_fraction < 1):
+            raise ValueError("val_prefix_fraction must be strictly between 0 and 1")
+        val_reservation = []
+        truncated = []
+        for spec in shards:
+            if spec.split != config.val_split:
+                truncated.append(spec)
+                continue
+            kept = int(spec.num_tokens * val_prefix_fraction)
+            kept -= kept % config.seq_len
+            if kept <= config.seq_len:
+                raise ValueError(f"val prefix too small for a full sequence: {spec.path}")
+            truncated.append(replace(spec, num_tokens=kept))
+            val_reservation.append({"path": str(spec.path), "source": spec.source,
+                                    "original_tokens": spec.num_tokens, "kept_tokens": kept,
+                                    "reserved_suffix_tokens": spec.num_tokens - kept})
+        shards = truncated
+
     from terminus.integrity import fingerprint
 
     provenance = dict(source.provenance)
@@ -87,9 +114,12 @@ def build_horizon_view(source, *, total_train_tokens: int, microbatch: int):
         "microbatch_sequences_per_rank": microbatch,
         "accumulation_steps_at_world_size_1": steps,
         "created_by": "production.kimi_h100_5b.horizons",
-        "shards_unchanged": True,
+        "shards_unchanged": val_reservation is None,
     }
-    return TokenManifest(config=view_config, shards=list(source.shards),
+    if val_reservation is not None:
+        provenance["horizon_view"]["val_prefix_fraction"] = val_prefix_fraction
+        provenance["horizon_view"]["val_reservation"] = val_reservation
+    return TokenManifest(config=view_config, shards=shards,
                          tokenizer=dict(source.tokenizer), provenance=provenance)
 
 
@@ -138,6 +168,9 @@ def main() -> int:
     view.add_argument("--source-manifest", required=True)
     view.add_argument("--total-tokens", type=int, required=True)
     view.add_argument("--microbatch", type=int, required=True)
+    view.add_argument("--val-prefix-fraction", type=float,
+                      help="Truncate val shard specs to this prefix fraction; the "
+                           "suffix stays reserved for the one-time final holdout")
     view.add_argument("--output", required=True)
     audit = sub.add_parser("audit", help="Run the token-accounting launch gate")
     audit.add_argument("--manifest", required=True)
@@ -146,7 +179,8 @@ def main() -> int:
     if args.command == "view":
         source = TokenManifest.load(external_path(args.source_manifest))
         manifest = build_horizon_view(source, total_train_tokens=args.total_tokens,
-                                      microbatch=args.microbatch)
+                                      microbatch=args.microbatch,
+                                      val_prefix_fraction=args.val_prefix_fraction)
         output = external_path(args.output, fresh=True)
         write_json_atomic(output, asdict(manifest))
         receipt = audit_token_accounting(TokenManifest.load(output))
