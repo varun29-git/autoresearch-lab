@@ -1,20 +1,28 @@
 # MI325X pretraining readiness
 
 **Status on 2026-10-28: the month-long dense-to-ternary run is not cleared.**
-Start with the [complete qualification and tuning plan](FULL_QUALIFICATION_PLAN.md).
-For the requested shorter first step, see the [five-hour pilot](FIVE_HOUR_PILOT.md):
+**Current first step:** use the available single Azure H100, capped at 50 hours,
+for the [bracketed proxy search and production-width checks](AZURE_H100_BRACKETS.md).
+Historical HPO informs search brackets but confers no automatic promotion.
+Smaller-model and single-GPU selection are allowed; the earlier requirement
+to run every HP candidate on eight full-size replicas is superseded.
+The [complete qualification plan](FULL_QUALIFICATION_PLAN.md) retains the
+broader controls and optional deeper search.
+For a subsequent bounded AMD stage, see the [five-hour pilot](FIVE_HOUR_PILOT.md):
 40 GPU-hours maximum, with explicit prerequisites and remaining qualification
 gaps. Its recommended assurance-first option combines direct correctness tests,
 one longer dense trajectory and a real recovery drill. It does not complete
 the fresh HP search. It is a first decision stage within the larger envelope.
-The user now requests qualification as if no prior HP tuning existed. All
-production rates, global batch, warmup and phase allocation are candidates to
-measure on the actual 1.446B model; earlier HPO confers no automatic promotion.
+The user requests qualification as if no prior HP tuning existed. Production
+rates, global batch, warmup and phase allocation remain candidates. Initial
+screening can use proxies; final transfer and execution checks use the actual
+1.446B model. Earlier HPO confers no automatic promotion.
 The human launches and stops paid GPU work.
 
-The new plan recommends **eight ranks for every selection-bearing HP trial**,
-individual GPUs for arithmetic/fit/debugging, and a **960 GPU-hour total
-qualification envelope inside the 5,760-hour allocation**. It includes a
+The earlier broad plan budgeted a **960 GPU-hour total qualification envelope
+inside the 5,760-hour allocation**. The Azure-first proposal narrows the search
+before AMD rental; it does not require spending that entire envelope. The
+broader plan includes a
 joint Muon/AdamW screen, norm/decay tests, mandatory 1M-versus-2M batch/recipe
 comparisons, longer finalists, seed confirmation, cooldown probes, QAT/control
 trials, fault recovery and a measured final token budget. It supersedes the
@@ -61,14 +69,14 @@ blockers in [TRAINING_RISKS.md](TRAINING_RISKS.md). The detailed evidence and te
   `batch_3m_mb24`. Require at least 15% of usable HBM free through optimizer,
   validation and checkpoint peaks. Microbatch 16 is a starting point, not a
   measured optimum.
-- [ ] **Global batch and learning:** Follow the full plan's joint LR grid,
-  auxiliary tests and mandatory two-recipe comparison at both 1,048,576 and
-  2,097,152 tokens/update. Continue complete finalists to 12.0796B tokens,
-  confirm a second seed and investigate cooldown behavior within the measured
-  budget. The initial 480-update warmup at 2M is provisional; test a longer
-  ramp if indicated. The 393k batch is an optional diagnostic; 3M/4M require
-  a measured reason to add their learning comparisons. Compare quality at
-  matched tokens and at matched allocated GPU-hours.
+- [ ] **Global batch and learning:** Begin with the Azure plan's bracketed
+  proxy screen, optional 1M/2M comparison and production-width transfer checks.
+  Its complete approximately 1B-token WSD uses 48 warmup updates at 2M;
+  this does not select the eventual production schedule. Compare quality at
+  matched tokens and matched GPU-hours. Use measured results to price further
+  full-size batch, seed and longer-horizon tests from the broad plan; they are
+  not all mandatory upfront experiments. A proxy winner alone does not clear
+  the production batch, long horizon or phase allocation.
 - [ ] **Dense-to-QAT transfer:** Qualify FP8 ternary-weight quantization and
   matrix operations on MI325X, plus full-model conversion, before relying on
   a QAT phase. Treat the supplied historical QAT peak rates as background.

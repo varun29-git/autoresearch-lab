@@ -1,5 +1,12 @@
 # Full qualification and tuning plan: 1.446B on eight MI325X GPUs
 
+**Subsequent Azure-first proposal:** the user now has up to 50 hours on one
+H100. Begin with the [bracketed proxy search](AZURE_H100_BRACKETS.md), then
+production-width checks. This supersedes the all-full-model/eight-rank rule
+for initial HP selection below. AMD numerical/distributed and long-run gates
+remain outstanding; the larger search is an expansion option, not compulsory
+upfront work.
+
 **Short initial cap:** the subsequent [five-hour pilot proposal](FIVE_HOUR_PILOT.md)
 limits the first paid decision to 40 GPU-hours when the required software/data
 preparation is complete. It does not complete all gates below. The 960-hour
