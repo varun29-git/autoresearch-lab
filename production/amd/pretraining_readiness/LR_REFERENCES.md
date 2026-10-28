@@ -83,6 +83,62 @@ transfer method but does not disclose a numeric final 8B pretraining peak LR
 that can be used as a direct CI-1 comparator. Its fastText classifier LR and
 post-training/QAT references must not be substituted for that missing value.
 
+## MiniCPM5 is a reference, not an identical training parameterization
+
+Follow-up inspected 2026-10-28: the official MiniCPM5-1B and MiniCPM5-2B
+model cards, released configurations, GitHub recipe diagrams and their
+linked UltraData report. These are distinct releases from the original
+MiniCPM and MiniCPM4. Do not assign the earlier `scale_emb=12`, base-width
+256 or base LR 0.01 to MiniCPM5 without its actual training specification.
+
+The released configurations are
+[MiniCPM5-1B](https://huggingface.co/openbmb/MiniCPM5-1B/blob/87179e5c1f455ef22e6223592d2d61351b525bfc/config.json)
+and
+[MiniCPM5-2B](https://huggingface.co/openbmb/MiniCPM5-2B/blob/f97400052a43d642bbc6e9975e2397e3ae6a6b52/config.json).
+The official [2B model card](https://huggingface.co/openbmb/MiniCPM5-2B)
+explicitly describes standard `LlamaForCausalLM` without a custom model-code
+fork. Shared decoder/GQA/SwiGLU/RoPE concepts do not make the learning-rate
+transfer parameterizations identical.
+
+| Property | Selected CI-1 | MiniCPM5-1B release | MiniCPM5-2B release |
+| --- | --- | --- | --- |
+| Layers / hidden width / FFN width | 24 / 2304 / 5760 | 24 / 1536 / 4608 | 42 / 2048 / 6144 |
+| Query / KV heads | 18 / 6 | 16 / 2 | 16 / 2 |
+| Vocabulary | 65,536 | 130,560 | 130,560 |
+| Embedding/readout weights | Tied | Untied | Untied |
+| Norm/branch scheme | Peri-LN; learned Q/K RMS gains; learned value residual | Standard Llama release | Standard Llama release |
+| Attention use | Five local 512-token-window layers per global layer | Standard Llama release | Standard Llama release |
+| Context | 4096-token selected training sequences | 131,072 exported maximum | 131,072 exported maximum |
+| Training optimizer and transfer rule | Spectral Muon plus role-specific AdamW; explicit local rules above | Not disclosed by inspected model card/config | Not disclosed by inspected model card/config |
+
+Exported context limits are not proof of the initial training sequence length.
+Likewise, released inference configurations alone do not prove the training
+initialization, LR multipliers or whether training-time scales were folded
+into exported weights. In particular, the absence of optimizer information
+does not establish that MiniCPM5 used AdamW rather than Muon.
+
+The model cards and
+[official training diagrams](https://github.com/OpenBMB/MiniCPM#-minicpm5-2b)
+describe stable/decay pretraining, target-capability mid-training, SFT and
+RL/OPD. MiniCPM5-2B includes 600B tokens of 32K mid-training, 400B of 128K
+mid-training and 400B of deep-thinking SFT. These stages are substantial
+training programs; their final instruction-model scores are not a forecast
+for CI-1's pretraining and ternary-QAT allocation.
+
+The linked [UltraData report, §3.1](https://arxiv.org/html/2602.09003v1),
+discloses LRs for **data-verification experiments** on a different
+MiniCPM-1.2B architecture (width 1536, 52 layers, 73,448 vocabulary). Its
+from-scratch verification experiment uses muP, a reported peak LR of 0.01,
+1000 warmup steps and an 8,388,608-token batch. Those values are not a
+disclosure of MiniCPM5-1B/2B's final production optimizer-group LRs or batch.
+
+Reuse the tiered-data evaluation and staged-quality strategy as engineering
+guidance. Copying a numeric LR would first require the actual MiniCPM5
+training optimizer, parameterization, group multipliers, batch and horizon.
+Adopting its complete architecture/optimizer recipe would be a new baseline
+review, not an application of CI-1's existing HPO transfer formula. This
+review changes no selected model, optimizer rate, QAT split or run schedule.
+
 ## Muon references with disclosed coefficients
 
 [Moonlight, §2.2 and §3.2 Table 2](https://arxiv.org/html/2502.16982v1) uses
