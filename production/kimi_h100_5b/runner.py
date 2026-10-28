@@ -241,6 +241,7 @@ def drive(workload, *, boundaries: tuple, ledger_path, final_update: int,
             workload.should_stop[0] = True  # stop at a valid checkpointed boundary for review
         done = workload.cadence()
         if backup is not None:
+            (Path(output_dir) / "checkpoints").mkdir(exist_ok=True)
             for name in _checkpoints_pending_upload(Path(output_dir) / "checkpoints"):
                 backup.enqueue(name)
             health_report = backup_health(Path(output_dir) / "checkpoints", backup.dest,

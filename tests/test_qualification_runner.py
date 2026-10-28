@@ -146,6 +146,24 @@ class DriveLoopTests(unittest.TestCase):
             self.assertIn(3, validations)  # forced boundary validation
             self.assertEqual(summary["alarms"], [])
 
+    def test_drive_with_backup_before_first_checkpoint(self):
+        from production.kimi_h100_5b.recovery import BackupQueue, LocalDestination
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = BackupQueue(root / "run/checkpoints", LocalDestination(root / "remote"))
+            try:
+                with self.prepare(root) as workload:
+                    summary = drive(workload, boundaries=(2, 3, 4), ledger_path=None,
+                                    final_update=2, output_dir=root / "run", backup=queue,
+                                    backup_bounds={"max_pending_bytes": 10**9,
+                                                   "max_pending_seconds": 10**6,
+                                                   "min_free_bytes": 0})
+                self.assertEqual(summary["updates_completed"], 2)
+            finally:
+                queue.close()
+            self.assertTrue((root / "remote/step_00000002.pt").is_file())
+
     def test_drive_fails_closed_on_count_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
