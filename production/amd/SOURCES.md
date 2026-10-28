@@ -72,6 +72,19 @@ Follow-up sources inspected **2026-10-26**:
 See [the bounded transfer decision](BATCH_STABILITY.md) for how these sources
 affect the selected 393k, 1M and 2M comparisons.
 
+## Learning-rate comparison follow-up
+
+Primary sources inspected **2026-10-28**. The coefficient conversions and
+their implications are in [LR_REFERENCES.md](pretraining_readiness/LR_REFERENCES.md).
+
+| ID | Primary source | What was checked / implication |
+| --- | --- | --- |
+| S35 | [MiniCPM §3.3, §6.2 and Appendix A.1/Table 7](https://arxiv.org/html/2404.06395v2), [released configuration](https://huggingface.co/openbmb/MiniCPM-2B-sft-bf16/blob/main/config.json) | Base LR 0.01 transfers through approximately 2.1B; each 2D tensor's LR scales by base/model width. Base 256 and width 2304 imply 0.00111111, with additional embedding/logit/init scaling. A raw 0.01 comparison would be misleading. |
+| S36 | [MiniCPM4 §2.3.1](https://arxiv.org/html/2506.07900v2) | Small-model muP search and downstream-correlated ScalingBench support the transfer method; the inspected paper does not disclose a numeric final 8B pretraining peak LR. |
+| S37 | [Moonlight §2.2 and §3.2/Table 2](https://arxiv.org/html/2502.16982v1) | Muon uses 0.2×sqrt(max matrix dimension) scaling and shares base rates with auxiliary AdamW. 1.1B/width2304 uses 0.0008561; 1.5B/width2560 uses 0.0008305. Spectral Muon requires a coefficient conversion before comparison. |
+| S38 | [Gemma 1](https://arxiv.org/html/2403.08295v4), [2](https://arxiv.org/html/2408.00118v3), [3](https://arxiv.org/html/2503.19786v1), [4](https://arxiv.org/html/2607.02770v1), [Gemma 4 official model card](https://ai.google.dev/gemma/docs/core/model_card_4) | Inspected reports/card do not provide usable numeric pretraining peak or embedding-group LRs. Architecture, distillation and QAT descriptions cannot be used to invent those rates. |
+| S39 | [Kimi K2 §2.1 and §2.5](https://arxiv.org/html/2507.20534v1) | RMS-matched MuonClip with 0.0002 peak, 500-step warmup and 67M-token batch. Large MoE/MLA/QK-Clip recipe is not a numeric target for CI-1's spectral Muon. |
+
 ## Claims from the pasted dossier that were not promoted to facts
 
 - Its 43,873.9 tok/s H100 receipt, power/clock curves and per-phase timings

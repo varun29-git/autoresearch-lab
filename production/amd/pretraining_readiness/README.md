@@ -25,6 +25,13 @@ comparison only if evidence warrants it;
 published Muon results support this as a starting protocol but do not certify
 the 2M batch for CI-1.
 
+For the learning-rate assessment, read [LR_REFERENCES.md](LR_REFERENCES.md).
+It compares MiniCPM's width-scaled LR and Moonlight's RMS-matched Muon rates
+with the selected recipe, and records that the inspected Gemma reports do
+not disclose a usable pretraining peak LR. Embedding/head LR 0.003 remains
+an aggressive transfer candidate supported by the archived width bridge;
+published recipe coefficients alone do not establish whether it is too high.
+
 Read this page before generating the final run configuration or starting a
 training campaign. Review the corrected silent failures and remaining launch
 blockers in [TRAINING_RISKS.md](TRAINING_RISKS.md). The detailed evidence and test order are in
