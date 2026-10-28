@@ -1,4 +1,131 @@
-# Bracketed dense experiments on one Azure H100
+# Focused batch transfer on one Azure H100
+
+## Current decision: reuse completed HPO, test the batch change
+
+Revision, 2026-10-28. The user asks to use the completed tuning and published
+Muon runs rather than repeat the bracket search. The external 200M ledger has
+12 completed trials and the 700M ledger has six; all 18 copied event files
+match their ledger hashes. They already include Muon, embedding and decay
+comparisons and width-transfer controls. This supersedes the broad proxy
+search below as the immediate use of the available **50 H100 hours**.
+The actual ledgers, evaluations and reports remain outside Git under
+`/Users/varundaiya/terminus-optimizer-evidence/hpo-results/`.
+
+The evidence supports reusing the selected optimizer family and rates as the
+first candidate. It does not establish a new 24-layer production optimum:
+the old geometry, 393,216-token batch, English scope and approximately 500M
+observed tokens differ. The purpose of the next experiment is to challenge
+the changed batch on the actual model, not rediscover the original LR bracket.
+
+### Eight GPUs do not require a larger global batch than the H100 test
+
+The proposed **2,097,152 tokens/update is the total over all eight GPUs**.
+It is 5.333 times the old HPO global batch, not eight times a 2M per-GPU batch.
+
+| Job | Per-rank microbatch | Context | Accumulation | Global tokens/update |
+| --- | ---: | ---: | ---: | ---: |
+| One H100, conservative fit candidate | 4 | 4096 | 128 | 2,097,152 |
+| Eight MI325X, fit candidate | 16 | 4096 | 4 | 2,097,152 |
+| Eight MI325X, smaller microbatch | 8 | 4096 | 8 | 2,097,152 |
+
+Microbatch fit is unmeasured on the actual nodes. Correct accumulation and
+normalization let the H100 test the intended global batch; they do not test
+AMD arithmetic, communication or reduction ordering. At H100 microbatch 4,
+accumulation 64 gives the 1,048,576-token control. No GPU-count LR factor is
+applied when moving to eight ranks at the same global batch.
+
+### Published Muon evidence used for the decision
+
+- [Moonlight, Table 2](https://arxiv.org/html/2502.16982v1): its 1.1B and 1.5B
+  non-embedding scaling models use 192 and 256 examples at 8192 context,
+  respectively: 1,572,864 and 2,097,152 tokens/update, over 28.54B and 38.91B
+  training tokens. This is direct precedent for the batch scale, not proof
+  of CI-1's LR, data efficiency or final quality. Its RMS-matched Muon and
+  auxiliary AdamW coefficients cannot be copied into spectral Muon.
+- [Kimi K2, section 2.5](https://arxiv.org/html/2507.20534v1): MuonClip trains
+  with a 67M-token global batch and 15.5T-token main horizon. This establishes
+  large-batch Muon-family feasibility, but the much larger MoE, MLA and QK-Clip
+  make its batch and LR unsuitable numerical targets for our dense model.
+- [Dang, Wen and Malladi, v2, sections 3.2/E.3](https://arxiv.org/pdf/2610.08975v2):
+  216 MuonW/AdamW transfer rules were tested from 131,072 reference tokens to
+  targets through 2,097,152. The best common language-model rule kept both
+  LRs, Muon momentum and Adam beta1 fixed, scaled matrix decay linearly with
+  batch, and transported Adam beta2. Keeping beta2 fixed was also competitive.
+  Square-root LR scaling won at some smaller targets; there is no universal
+  rule. The reference loss was 3.26547 and the best tested 2M transfer-rule
+  loss was 3.37977 at the same approximately 1.7B-token budget, so the selected
+  rule did not preserve small-batch sample efficiency. These are published
+  experimental results, not CI-1 measurements. Its BF16, 12-layer/width-768,
+  1024-context, NS12 model and 80% cooldown differ substantially from ours.
+
+All three primary sources were rechecked for this revision. The Muon batch
+paper's downloaded PDF/text stays under `/tmp/ci1-batch-review/`, outside Git.
+An earlier cached HTML request for that paper was only a no-HTML notice;
+the evidence above was checked in the actual v2 PDF.
+
+### Two core comparisons; one conditional correction
+
+Use the **actual 1,446,478,126-parameter production geometry** for the first
+pair, if native H100 full-update fit passes. This focuses the available compute
+on the remaining production-width/batch question. The smaller proxy remains
+an optional diagnostic if a specific failure needs cheaper investigation.
+
+| Trial | Global batch | Matrix decay | Purpose |
+| --- | ---: | ---: | --- |
+| A | 2,097,152 | 0.02 | Test the intended batch with the existing production starting recipe |
+| B | 1,048,576 | 0.02 | Test whether twice as many updates per token materially improves learning |
+| C, conditional | 2,097,152 | 0.1066667 | If A loses to B, test the batch-scaled decay hypothesis before changing LRs |
+
+Keep Muon 0.017, tied embedding/head AdamW 0.003, norm/value 0.0003, Q/K
+0.0001, momentum 0.95, Adam betas (0.9, 0.95), epsilon 1e-8, embedding decay
+zero and clipping 1.0 fixed in the pair. This preserves the code's reviewed
+starting rates; it does not claim that AdamW 0.003 is the strict width-law
+prediction. The 0.002 alternative remains a focused follow-up if embedding
+diagnostics or width behavior justify it, not another mandatory grid.
+
+C's proposed decay is `0.02 * 2,097,152 / 393,216`. It approximately preserves
+the nominal decay action per token at fixed LR relative to the HPO batch.
+It is an independently reviewed experimental override, **not an automatic
+production change or a guarantee**. Adam beta2 transport and new momentum
+rules are not bundled into C; the paper's long beta2 memory differs from ours.
+
+Each core trial runs 2,013,265,920 tokens from the same initialization seed
+and ordered representative data. Use a complete token-scaled WSD with 10%
+warmup, 70% stable and 20% cosine decay to 10% of peak. A has 960 updates
+(96/672/192 across the segments); B has 1920 (192/1344/384). Record held-outs
+before decay and at the endpoint. These are short-horizon comparisons, not
+production-prefix schedules. An ended cooldown cannot be resumed as though
+it were the long production plateau.
+
+Freeze held-outs and a decision margin before launch, compare paired losses
+with document-level uncertainty, and inspect per-domain loss, clipping,
+logical update statistics and FP8 incidents. A falling training loss alone
+does not establish good transfer. Compare at matched tokens and measured
+allocated GPU-hours. Prefer 2M if its learning is acceptable within the
+predeclared margin and it offers a useful execution advantage; otherwise
+retain 1M or investigate C. H100 timing cannot decide the final AMD timing
+tradeoff. Native failures take precedence over an endpoint ranking.
+
+At a measured effective full-model rate of 40k tokens/s, A+B take **27.96
+H100 hours**, and A+B+C take **41.94 hours**, leaving approximately eight
+hours in the 50-hour cap for setup, checks and overhead outside that rate.
+At 30k, A+B take 37.28 hours and all three take 55.92 hours, so C does not
+fit before overhead. At 50k the corresponding times are 22.37 and 33.55
+hours. Measure rates separately for the two batches and sum their costs;
+these common-rate figures are scenarios, not new Azure benchmarks. C and
+other follow-ups run only if their measured cost fits the remaining cap.
+
+The human controls paid launches. The bounded qualification runner and native
+preflight remain prerequisites. AMD kernel/FP8, eight-rank correctness, full
+memory cadence, recovery, longer learning and QAT gates are not cleared by
+this H100 comparison. The narrower plan reduces repeated HP work; it does
+not claim that the 1T run is already qualified.
+
+## Earlier proxy-search option — superseded as the immediate next step
+
+The following earlier proposal is retained for reference if new evidence
+justifies reopening a broad search. Its six proxy trials and budget split
+are not added to the focused 50-hour plan above.
 
 Engineering proposal, 2026-10-28. The user has up to **50 H100 hours** available.
 Use that capacity to narrow the AMD recipe before renting the eight-MI325X

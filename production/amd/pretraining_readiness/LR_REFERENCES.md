@@ -1,9 +1,9 @@
 # Learning-rate references for the selected production recipe
 
-**Current policy:** the user-requested [full qualification plan](FULL_QUALIFICATION_PLAN.md)
-treats prior HP tuning as unvalidated for campaign selection. The rate
-comparisons and transfer discussion below are historical evidence, not an
-instruction to preserve the old numerical rates through the new search.
+**Current policy:** reuse the completed HPO as evidence and run the
+[focused batch-transfer comparison](AZURE_H100_BRACKETS.md) on the available
+H100. This replaces repeating the broad LR search as the immediate task.
+The rate comparisons below motivate candidates; they do not clear the long run.
 
 Primary sources inspected 2026-10-28. This is an engineering comparison of
 published recipes, not a measured CI-1 stability result or a new LR selection.

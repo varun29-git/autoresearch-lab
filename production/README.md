@@ -5,9 +5,10 @@
 It records the unresolved batch, QAT and native-hardware gates for the
 5,760 GPU-hour allocation.
 
-**2026-10-28 qualification policy:** the user requests fresh full-model HP
-qualification. The latest first step uses up to 50 hours on one Azure H100 for
-[bracketed proxy tuning and production-width checks](amd/pretraining_readiness/AZURE_H100_BRACKETS.md).
+**2026-10-28 qualification policy:** the latest direction reuses completed HPO
+and spends up to 50 hours on one Azure H100 on a
+[focused full-model batch-transfer check](amd/pretraining_readiness/AZURE_H100_BRACKETS.md),
+using the existing rates and a conditional matrix-decay comparison.
 The [broader eight-MI325X plan](amd/pretraining_readiness/FULL_QUALIFICATION_PLAN.md)
 retains the longer learning, QAT and recovery gates and an optional larger
 qualification envelope. The recipe below is the code's reviewed

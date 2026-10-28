@@ -1,10 +1,11 @@
 # Batch and phase stability plan for eight MI325X GPUs
 
-**Superseded experiment policy, 2026-10-28:** the user now requests fresh
-full-model tuning. Follow [FULL_QUALIFICATION_PLAN.md](pretraining_readiness/FULL_QUALIFICATION_PLAN.md)
-for the mandatory joint LR/batch comparisons, longer checks and budget. The
-unchanged-rate-first/no-full-model-HPO policy below is historical; its batch
-arithmetic, source audits and implementation caveats remain useful references.
+**Latest experiment policy, 2026-10-28:** reuse the verified completed HPO and
+follow the [focused Azure H100 batch comparison](pretraining_readiness/AZURE_H100_BRACKETS.md).
+It replaces both the broad fresh search and the exact trial order below as
+the immediate work. This page's batch arithmetic and Muon transfer evidence
+support that decision; its longer historical milestones are not all required
+upfront. AMD numerical/distributed and longer-learning checks remain open.
 
 Reviewed 2026-10-26. This is a test plan for the selected 24-layer, width-2304
 model and spectral Muon. No MI325X full update or QAT run has been measured.

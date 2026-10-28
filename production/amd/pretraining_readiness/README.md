@@ -1,32 +1,32 @@
 # MI325X pretraining readiness
 
 **Status on 2026-10-28: the month-long dense-to-ternary run is not cleared.**
-**Current first step:** use the available single Azure H100, capped at 50 hours,
-for the [bracketed proxy search and production-width checks](AZURE_H100_BRACKETS.md).
-Historical HPO informs search brackets but confers no automatic promotion.
-Smaller-model and single-GPU selection are allowed; the earlier requirement
-to run every HP candidate on eight full-size replicas is superseded.
+**Current first step:** reuse the completed HPO and use the available single
+Azure H100, capped at 50 hours, for a [focused 1M/2M batch comparison and
+conditional decay correction](AZURE_H100_BRACKETS.md). The 12 completed 200M
+and six 700M trials were verified against their external event-file hashes.
+The broader proxy LR search is deferred. One GPU can test the intended 2M
+global batch through accumulation; eight GPUs do not multiply that batch again.
 The [complete qualification plan](FULL_QUALIFICATION_PLAN.md) retains the
 broader controls and optional deeper search.
 For a subsequent bounded AMD stage, see the [five-hour pilot](FIVE_HOUR_PILOT.md):
 40 GPU-hours maximum, with explicit prerequisites and remaining qualification
 gaps. Its recommended assurance-first option combines direct correctness tests,
 one longer dense trajectory and a real recovery drill. It does not complete
-the fresh HP search. It is a first decision stage within the larger envelope.
-The user requests qualification as if no prior HP tuning existed. Production
-rates, global batch, warmup and phase allocation remain candidates. Initial
-screening can use proxies; final transfer and execution checks use the actual
-1.446B model. Earlier HPO confers no automatic promotion.
+all remaining production gates. It is a bounded decision stage.
+The user's latest direction is to use the existing tuning and Muon literature
+to narrow the missing transfer checks. Production rates, global batch, warmup
+and phase allocation still need the corresponding evidence; completed HPO is
+useful evidence, not automatic clearance of the month-long run.
 The human launches and stops paid GPU work.
 
 The earlier broad plan budgeted a **960 GPU-hour total qualification envelope
 inside the 5,760-hour allocation**. The Azure-first proposal narrows the search
 before AMD rental; it does not require spending that entire envelope. The
-broader plan includes a
-joint Muon/AdamW screen, norm/decay tests, mandatory 1M-versus-2M batch/recipe
+broader plan describes a joint Muon/AdamW screen, norm/decay tests, batch/recipe
 comparisons, longer finalists, seed confirmation, cooldown probes, QAT/control
-trials, fault recovery and a measured final token budget. It supersedes the
-older unchanged-rate-first and 320/480-hour qualification policies.
+trials, fault recovery and token-budget accounting. The current focused plan
+determines which experiments come first; the larger search is optional.
 
 This is a plan, not newly implemented training machinery. The current AMD
 validator locks the old optimizer values; explicit bounded qualification and
@@ -44,7 +44,7 @@ qualification gap.
 
 For historical LR evidence, read [LR_REFERENCES.md](LR_REFERENCES.md). It records
 the original width rules, the 0.003-versus-0.002 AdamW distinction, external
-recipes and the short HPO horizon. These are background for the new search.
+recipes and the short HPO horizon. These support the focused transfer checks.
 The [older batch plan](../BATCH_STABILITY.md) remains useful for exact batch
 arithmetic and source evidence; its prior experiment order is superseded.
 
@@ -69,9 +69,9 @@ blockers in [TRAINING_RISKS.md](TRAINING_RISKS.md). The detailed evidence and te
   `batch_3m_mb24`. Require at least 15% of usable HBM free through optimizer,
   validation and checkpoint peaks. Microbatch 16 is a starting point, not a
   measured optimum.
-- [ ] **Global batch and learning:** Begin with the Azure plan's bracketed
-  proxy screen, optional 1M/2M comparison and production-width transfer checks.
-  Its complete approximately 1B-token WSD uses 48 warmup updates at 2M;
+- [ ] **Global batch and learning:** Begin with the focused Azure full-model
+  1M/2M comparison using the existing production starting rates. Each trial
+  has a complete approximately 2B-token WSD with 10% warmup and 20% cooldown;
   this does not select the eventual production schedule. Compare quality at
   matched tokens and matched GPU-hours. Use measured results to price further
   full-size batch, seed and longer-horizon tests from the broad plan; they are
