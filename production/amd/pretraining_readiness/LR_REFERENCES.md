@@ -11,6 +11,47 @@ AdamW 0.003. Optimizer groups and implementation are defined by
 [recipe.py](../../recipe.py), [optim.py](../../../terminus/optim.py), and the
 [spectral update equation](../../../docs/MUON_SPECTRAL_IMPLEMENTATION.md).
 
+## Apply CI-1's own transfer rules before interpreting other recipes
+
+The external coefficient comparisons below do not replace the selected
+small-model transfer mechanism. The two optimizer families have different
+rules, and the production builder does not apply another width factor to the
+rates already selected in `recipe.py`.
+
+**Hidden Muon matrices:** keep the tuned base `eta=0.017` and multiply the
+raw NS5 direction by `sqrt(d_out/d_in)`. The logical Q/O, K/V, gate/up and
+down aspect ratios are unchanged from widths 768 to 1536 to 2304. Their
+coefficients therefore remain unchanged without multiplying eta by a width
+ratio. The comparison with Moonlight converts this actual production update
+convention; it is not a recommendation to add Moonlight's multiplier. A
+fixed coefficient does not imply identical individual coordinates or
+learning trajectories at every width.
+
+**Tied embedding/head AdamW:** the archived
+[transfer generator](../../../hpo/transfer.py) defines
+`eta(d) = eta(768) * (768/d)^alpha`, with `alpha` in `{0, 0.5, 1}`. It adjusts
+embedding decay inversely to preserve per-update `eta * weight_decay` and
+leaves Muon and small-group rates unchanged. The
+[archived 200M candidate](../../../hpo/candidate.json) has AdamW LR 0.006.
+At width 1536 those exponent candidates are 0.006, approximately 0.00424,
+and 0.003. The handoff records that 0.003 won this 700M bridge.
+
+Continuing the inverse-width (`alpha=1`) formula to width 2304 would give
+`0.006 * 768/2304 = 0.002`. The reviewed production recipe instead retains
+**0.003**, which is 1.5 times that extrapolation. As
+[the production handoff](../../README.md) states, this is an empirical
+starting choice supported by the bridge, not a proven width law or full
+muP guarantee. The reference comparison must not describe 0.003 as the
+result of applying that inverse-width formula at production width. No rate
+is changed here; selecting the strict extrapolation would be a separate
+optimizer review against the production baseline.
+
+Width transfer is also separate from global-batch transfer. Moving from
+393,216 to 2,097,152 tokens/update changes update frequency, momentum memory
+in tokens and integrated decay. It does not trigger another width multiplier
+or justify an automatic batch-ratio LR increase. See
+[the batch decision](../BATCH_STABILITY.md).
+
 ## What MiniCPM actually reports
 
 [MiniCPM, §3.3 and §6.2](https://arxiv.org/html/2404.06395v2) reports an
