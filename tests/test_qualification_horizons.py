@@ -71,32 +71,58 @@ class HorizonViewTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "do not cover"):
             _truncate_phases(phases, 7_000_000_000)
 
-    def test_val_prefix_fraction_reserves_unread_suffix(self):
+    def test_reserve_val_holdout_splits_physical_files(self):
+        import numpy as np
+
+        from production.kimi_h100_5b.horizons import reserve_val_holdout
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tokens = np.arange(16 * 4096, dtype=np.uint16)
+            tokens.tofile(root / "val.bin")
+            config = TokenDataConfig(seq_len=4096, batch_size=4,
+                                     total_train_tokens=4_999_610_368,
+                                     source_mix={"en": 1.0})
+            from terminus.integrity import file_sha256
+
+            source = TokenManifest(config, [
+                TokenShardSpec("en.bin", "en", "train", 6_000_000_000, language="en"),
+                TokenShardSpec("val.bin", "en", "val", 16 * 4096, language="en",
+                               sha256=file_sha256(root / "val.bin"))])
+            result = reserve_val_holdout(source, data_root=root,
+                                         output_dir=root / "reserved", fraction=0.75)
+            prefix, holdout = result["prefix"][0], result["holdout"][0]
+            self.assertEqual(prefix.num_tokens, 12 * 4096)
+            self.assertEqual(holdout.num_tokens, 4 * 4096)
+            loaded_prefix = np.memmap(root / "reserved" / Path(prefix.path).name,
+                                      dtype=np.uint16, mode="r")
+            loaded_holdout = np.memmap(root / "reserved" / Path(holdout.path).name,
+                                       dtype=np.uint16, mode="r")
+            self.assertTrue(np.array_equal(loaded_prefix, tokens[:12 * 4096]))
+            self.assertTrue(np.array_equal(loaded_holdout, tokens[12 * 4096:]))
+            reservation = result["reservation"][0]
+            self.assertEqual(reservation["parent_sha256"], file_sha256(root / "val.bin"))
+            with self.assertRaisesRegex(ValueError, "between 0 and 1"):
+                reserve_val_holdout(source, data_root=root, output_dir=root / "x", fraction=1.0)
+            tiny = TokenManifest(config, [
+                TokenShardSpec("en.bin", "en", "train", 6_000_000_000, language="en"),
+                TokenShardSpec("val.bin", "en", "val", 3 * 4096, language="en")])
+            with self.assertRaisesRegex(ValueError, "no full sequence"):
+                reserve_val_holdout(tiny, data_root=root, output_dir=root / "y", fraction=0.75)
+
+    def test_view_with_reserved_prefix_specs(self):
         source = source_manifest()
+        prefix_spec = TokenShardSpec("reserved/val.prefix.bin", "en", "val", 45_000_000,
+                                     language="en", sha256="ef" * 32)
         view = build_horizon_view(source, total_train_tokens=4_999_610_368, microbatch=4,
-                                  val_prefix_fraction=0.75)
+                                  val_shards=[prefix_spec], val_reservation=[{"parent": "val.bin"}])
+        val_specs = [spec for spec in view.shards if spec.split == "val"]
+        self.assertEqual(val_specs, [prefix_spec])
         record = view.provenance["horizon_view"]
         self.assertFalse(record["shards_unchanged"])
-        self.assertEqual(record["val_prefix_fraction"], 0.75)
-        val_specs = [spec for spec in view.shards if spec.split == "val"]
-        self.assertEqual(len(val_specs), 1)
-        original = 60_000_000
-        expected = int(original * 0.75) // 4096 * 4096
-        self.assertEqual(val_specs[0].num_tokens, expected)
-        self.assertEqual(val_specs[0].path, "val.bin")
-        reservation = record["val_reservation"][0]
-        self.assertEqual(reservation["original_tokens"], original)
-        self.assertEqual(reservation["reserved_suffix_tokens"], original - expected)
+        self.assertEqual(record["val_reservation"], [{"parent": "val.bin"}])
         train_specs = [spec for spec in view.shards if spec.split == "train"]
-        self.assertEqual([spec.num_tokens for spec in train_specs], [4_000_000_000] * 2)
-        with self.assertRaisesRegex(ValueError, "between 0 and 1"):
-            build_horizon_view(source, total_train_tokens=4_999_610_368, microbatch=4,
-                               val_prefix_fraction=1.0)
-        tiny_val = source_manifest()
-        tiny_val.shards[-1] = TokenShardSpec("val.bin", "en", "val", 5000, language="en")
-        with self.assertRaisesRegex(ValueError, "full sequence"):
-            build_horizon_view(tiny_val, total_train_tokens=4_999_610_368, microbatch=4,
-                               val_prefix_fraction=0.01)
+        self.assertEqual(len(train_specs), 2)
 
     def test_token_accounting_audit_proves_complete_updates(self):
         view = build_horizon_view(source_manifest(), total_train_tokens=4_999_610_368, microbatch=4)

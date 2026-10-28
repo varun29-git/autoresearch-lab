@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, replace
 import json
+from pathlib import Path
 
 from production.artifacts import external_path
 
@@ -46,17 +47,90 @@ def _truncate_phases(phases: list, total_tokens: int) -> list:
     return kept
 
 
+def reserve_val_holdout(source, *, data_root, output_dir, fraction: float = 0.75) -> dict:
+    """Split each validation shard into physical prefix and reserved-suffix files.
+
+    The originals are never modified. The prefix shards enter trial manifests
+    (quick/boundary evaluations read only these); the suffix shards form the
+    reserved final holdout, consulted once at the declared selection step.
+    Both are ordinary shard files with their own hashes so the loader's
+    file-size integrity check holds. The reservation links every derived file
+    to its parent file and parent hash.
+    """
+    import hashlib
+    import os
+    import uuid
+
+    import numpy as np
+
+    from terminus.data import DTYPE_BY_NAME, TokenShardSpec
+    from terminus.integrity import file_sha256
+
+    if isinstance(fraction, bool) or not 0 < fraction < 1:
+        raise ValueError("fraction must be strictly between 0 and 1")
+    data_root = Path(data_root)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    config = source.config
+    dtype = np.dtype(DTYPE_BY_NAME[config.token_dtype])
+    prefix_specs, holdout_specs, reservation = [], [], []
+    for spec in source.shards:
+        if spec.split != config.val_split:
+            continue
+        original = data_root / str(spec.path)
+        tokens = np.memmap(original, dtype=dtype, mode="r")
+        if len(tokens) != spec.num_tokens:
+            raise ValueError(f"validation shard size differs from its manifest: {spec.path}")
+        boundary = int(spec.num_tokens * fraction) // config.seq_len * config.seq_len
+        if boundary <= config.seq_len or spec.num_tokens - boundary <= config.seq_len:
+            raise ValueError(f"reservation split leaves no full sequence: {spec.path}")
+        parent_sha = spec.sha256 or file_sha256(original)
+        parts = {}
+        for label, view in (("prefix", tokens[:boundary]), ("holdout", tokens[boundary:])):
+            name = f"{Path(spec.path).stem}.{label}_{int(fraction * 100):02d}{uuid.uuid4().hex[:8]}.bin"
+            target = output_dir / name
+            if target.exists():
+                raise FileExistsError(target)
+            digest = hashlib.sha256()
+            with target.open("xb") as handle:
+                for offset in range(0, len(view), 1 << 22):
+                    chunk = np.asarray(view[offset:offset + (1 << 22)]).tobytes()
+                    digest.update(chunk)
+                    handle.write(chunk)
+                handle.flush()
+                os.fsync(handle.fileno())
+            parts[label] = TokenShardSpec(
+                path=str(target.relative_to(data_root)) if data_root in target.resolve().parents
+                else str(target),
+                source=spec.source, split=config.val_split, num_tokens=len(view),
+                dtype=spec.dtype, sha256=digest.hexdigest(), language=spec.language,
+                dataset_name=spec.dataset_name, dataset_config=spec.dataset_config,
+                source_split=spec.source_split)
+        prefix_specs.append(parts["prefix"])
+        holdout_specs.append(parts["holdout"])
+        reservation.append({"parent_path": str(spec.path), "parent_sha256": parent_sha,
+                            "parent_tokens": spec.num_tokens,
+                            "prefix": {"path": parts["prefix"].path,
+                                       "tokens": parts["prefix"].num_tokens,
+                                       "sha256": parts["prefix"].sha256},
+                            "holdout": {"path": parts["holdout"].path,
+                                        "tokens": parts["holdout"].num_tokens,
+                                        "sha256": parts["holdout"].sha256},
+                            "fraction": fraction})
+    if not reservation:
+        raise ValueError("source manifest has no validation shards to split")
+    return {"prefix": prefix_specs, "holdout": holdout_specs, "reservation": reservation}
+
+
 def build_horizon_view(source, *, total_train_tokens: int, microbatch: int,
-                       val_prefix_fraction: float | None = None):
+                       val_shards=None, val_reservation=None):
     """Return a new TokenManifest with an exact usable horizon, no shard rewrites.
 
     total_train_tokens must be sequence-aligned and no larger than the source
     horizon; microbatch becomes the view's per-rank batch size and must divide
-    the global batch evenly at world size 1. With val_prefix_fraction, each
-    validation shard spec is truncated to a sequence-aligned prefix of the same
-    file (identical path and content hash): the suffix is never read by any
-    campaign evaluation and forms the reserved final holdout, measured once at
-    the declared selection step through a full-span view.
+    the global batch evenly at world size 1. With val_shards (from
+    reserve_val_holdout), the source's validation specs are replaced by the
+    prefix specs and the reservation is recorded in provenance.
     """
     from terminus.data import TokenManifest
 
@@ -83,27 +157,11 @@ def build_horizon_view(source, *, total_train_tokens: int, microbatch: int,
         raise ValueError("prefix curriculum consumes the entire requested horizon")
     view_config = replace(config, **updates)  # dataclass validation re-runs here
 
-    shards = list(source.shards)
-    val_reservation = None
-    if val_prefix_fraction is not None:
-        if (isinstance(val_prefix_fraction, bool)
-                or not 0 < val_prefix_fraction < 1):
-            raise ValueError("val_prefix_fraction must be strictly between 0 and 1")
-        val_reservation = []
-        truncated = []
-        for spec in shards:
-            if spec.split != config.val_split:
-                truncated.append(spec)
-                continue
-            kept = int(spec.num_tokens * val_prefix_fraction)
-            kept -= kept % config.seq_len
-            if kept <= config.seq_len:
-                raise ValueError(f"val prefix too small for a full sequence: {spec.path}")
-            truncated.append(replace(spec, num_tokens=kept))
-            val_reservation.append({"path": str(spec.path), "source": spec.source,
-                                    "original_tokens": spec.num_tokens, "kept_tokens": kept,
-                                    "reserved_suffix_tokens": spec.num_tokens - kept})
-        shards = truncated
+    if val_shards is None:
+        shards = list(source.shards)
+    else:
+        shards = [spec for spec in source.shards if spec.split != config.val_split]
+        shards.extend(val_shards)
 
     from terminus.integrity import fingerprint
 
@@ -114,10 +172,9 @@ def build_horizon_view(source, *, total_train_tokens: int, microbatch: int,
         "microbatch_sequences_per_rank": microbatch,
         "accumulation_steps_at_world_size_1": steps,
         "created_by": "production.kimi_h100_5b.horizons",
-        "shards_unchanged": val_reservation is None,
+        "shards_unchanged": val_shards is None,
     }
     if val_reservation is not None:
-        provenance["horizon_view"]["val_prefix_fraction"] = val_prefix_fraction
         provenance["horizon_view"]["val_reservation"] = val_reservation
     return TokenManifest(config=view_config, shards=shards,
                          tokenizer=dict(source.tokenizer), provenance=provenance)
@@ -164,23 +221,51 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    reserve = sub.add_parser("reserve", help="Split val shards into prefix and reserved holdout")
+    reserve.add_argument("--source-manifest", required=True)
+    reserve.add_argument("--data-root", required=True)
+    reserve.add_argument("--output-dir", required=True)
+    reserve.add_argument("--fraction", type=float, default=0.75)
+    reserve.add_argument("--receipt", required=True)
     view = sub.add_parser("view", help="Write an exact-horizon manifest view")
     view.add_argument("--source-manifest", required=True)
     view.add_argument("--total-tokens", type=int, required=True)
     view.add_argument("--microbatch", type=int, required=True)
-    view.add_argument("--val-prefix-fraction", type=float,
-                      help="Truncate val shard specs to this prefix fraction; the "
-                           "suffix stays reserved for the one-time final holdout")
+    view.add_argument("--val-receipt", help="Reservation receipt from 'reserve'")
+    view.add_argument("--val-set", choices=("prefix", "holdout"), default="prefix")
     view.add_argument("--output", required=True)
     audit = sub.add_parser("audit", help="Run the token-accounting launch gate")
     audit.add_argument("--manifest", required=True)
     args = parser.parse_args()
 
+    if args.command == "reserve":
+        from dataclasses import asdict as _asdict
+
+        source = TokenManifest.load(external_path(args.source_manifest))
+        result = reserve_val_holdout(source, data_root=external_path(args.data_root),
+                                     output_dir=external_path(args.output_dir),
+                                     fraction=args.fraction)
+        receipt = {"schema": 1,
+                   "prefix": [_asdict(spec) for spec in result["prefix"]],
+                   "holdout": [_asdict(spec) for spec in result["holdout"]],
+                   "reservation": result["reservation"]}
+        write_json_atomic(external_path(args.receipt, fresh=True), receipt)
+        print(json.dumps({"status": "reserved", "shards": len(result["reservation"]),
+                          "receipt": args.receipt}, sort_keys=True))
+        return 0
+
     if args.command == "view":
         source = TokenManifest.load(external_path(args.source_manifest))
+        val_shards, val_reservation = None, None
+        if args.val_receipt:
+            from terminus.data import TokenShardSpec
+
+            receipt = json.loads(Path(external_path(args.val_receipt)).read_text())
+            val_shards = [TokenShardSpec(**spec) for spec in receipt[args.val_set]]
+            val_reservation = receipt["reservation"]
         manifest = build_horizon_view(source, total_train_tokens=args.total_tokens,
-                                      microbatch=args.microbatch,
-                                      val_prefix_fraction=args.val_prefix_fraction)
+                                      microbatch=args.microbatch, val_shards=val_shards,
+                                      val_reservation=val_reservation)
         output = external_path(args.output, fresh=True)
         write_json_atomic(output, asdict(manifest))
         receipt = audit_token_accounting(TokenManifest.load(output))
