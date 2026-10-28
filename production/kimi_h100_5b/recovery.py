@@ -155,12 +155,19 @@ def upload_checkpoint(checkpoint_dir, step_name: str, dest, *, now=None) -> dict
 
 
 def verify_remote(dest, step_name: str, *, expected_sha256: str) -> dict:
-    """Re-read the remote payload and marker; a mismatch means not durable."""
-    if isinstance(dest, S3Destination):
-        raise NotImplementedError("remote re-read runs in the native recovery drill")
+    """Re-check the remote payload and marker; a mismatch means not durable."""
     marker_name = Path(step_name).stem + MARKER_SUFFIX
     if not dest.exists(marker_name) or not dest.exists(step_name):
         return {"checkpoint": step_name, "durable": False}
+    if isinstance(dest, S3Destination):
+        import base64
+
+        head = dest.client.head_object(Bucket=dest.bucket, Key=dest._key(step_name),
+                                       ChecksumMode="ENABLED")
+        remote = head.get("ChecksumSHA256")
+        expected = base64.b64encode(bytes.fromhex(expected_sha256)).decode()
+        return {"checkpoint": step_name, "durable": remote == expected,
+                "remote_checksum_sha256_b64": remote, "expected_sha256": expected_sha256}
     actual = dest.read_sha256(step_name)
     return {"checkpoint": step_name, "durable": actual == expected_sha256,
             "remote_sha256": actual, "expected_sha256": expected_sha256}

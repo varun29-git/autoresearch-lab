@@ -104,6 +104,46 @@ class UploadRestoreTests(unittest.TestCase):
             self.assertEqual(health["alarms"], ["low_disk_space"])
 
 
+class S3VerifyRemoteTests(unittest.TestCase):
+    class FakeClient:
+        def __init__(self, checksum):
+            self.checksum = checksum
+
+        class exceptions:
+            class ClientError(Exception):
+                pass
+
+        def head_object(self, Bucket, Key, ChecksumMode=None):
+            if self.checksum is None:
+                raise self.exceptions.ClientError("missing")
+            return {"ChecksumSHA256": self.checksum, "ContentLength": 10}
+
+    def make_dest(self, checksum):
+        import base64
+
+        from production.kimi_h100_5b.recovery import S3Destination
+
+        dest = object.__new__(S3Destination)  # bypass boto3 client construction
+        dest.bucket, dest.prefix = "bucket", "prefix/"
+        dest.client = self.FakeClient(checksum)
+        return dest, base64
+
+    def test_s3_verify_remote_checksum_paths(self):
+        import base64
+
+        sha = "ab" * 32
+        b64 = base64.b64encode(bytes.fromhex(sha)).decode()
+        dest, _ = self.make_dest(b64)
+        result = verify_remote(dest, "step_00000100.pt", expected_sha256=sha)
+        self.assertTrue(result["durable"])
+        dest, _ = self.make_dest(base64.b64encode(b"\xcd" * 32).decode())
+        result = verify_remote(dest, "step_00000100.pt", expected_sha256=sha)
+        self.assertFalse(result["durable"])
+        dest, _ = self.make_dest(None)
+        result = verify_remote(dest, "step_00000100.pt", expected_sha256=sha)
+        self.assertFalse(result["durable"])
+
+
 class BackupQueueTests(unittest.TestCase):
     def test_async_upload_drains_and_reports(self):
         with tempfile.TemporaryDirectory() as directory:
