@@ -1,5 +1,10 @@
 # Acceptance record and hardware gates
 
+**2026-10-28 plan update:** [FULL_QUALIFICATION_PLAN.md](pretraining_readiness/FULL_QUALIFICATION_PLAN.md)
+adds fresh full-model HPO, longer/decay comparisons, operating limits and an
+engineering backlog. This adds no native passed evidence; historical CPU
+results below are not new checks of an implemented qualification runner.
+
 Prepared 2026-10-24. This handoff is ready for **native testing**, not certified
 for a month-long production campaign. All paid commands remain human-run.
 Keep test reports, profiles, configs, evaluation records and checkpoints

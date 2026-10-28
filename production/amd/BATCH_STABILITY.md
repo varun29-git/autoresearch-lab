@@ -1,5 +1,11 @@
 # Batch and phase stability plan for eight MI325X GPUs
 
+**Superseded experiment policy, 2026-10-28:** the user now requests fresh
+full-model tuning. Follow [FULL_QUALIFICATION_PLAN.md](pretraining_readiness/FULL_QUALIFICATION_PLAN.md)
+for the mandatory joint LR/batch comparisons, longer checks and budget. The
+unchanged-rate-first/no-full-model-HPO policy below is historical; its batch
+arithmetic, source audits and implementation caveats remain useful references.
+
 Reviewed 2026-10-26. This is a test plan for the selected 24-layer, width-2304
 model and spectral Muon. No MI325X full update or QAT run has been measured.
 The human controls paid GPU launches. The executable dense candidates are in

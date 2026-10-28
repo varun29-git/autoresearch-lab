@@ -2,8 +2,10 @@
 
 Engineering review: 2026-10-26. Read before generating the final run bundle.
 This page describes code behavior and launch requirements; native measurements
-and campaign receipts belong outside Git. The dense HPO peak rates and
-spectral width-transfer rule remain unchanged.
+and campaign receipts belong outside Git. The [2026-10-28 full qualification
+plan](FULL_QUALIFICATION_PLAN.md) supersedes the earlier preserve-HPO-rates
+experiment policy below. Source defaults remain unchanged pending a newly
+qualified recipe; the new plan explicitly tests rates/batches at full width.
 
 ## Corrected failures
 

@@ -1,5 +1,10 @@
 # Eight-MI325X production launch checklist
 
+**2026-10-28:** the [complete qualification plan](pretraining_readiness/FULL_QUALIFICATION_PLAN.md)
+governs the new full-model HP campaign, required engineering and 960-hour
+budget. Older checked selections below describe existing code defaults,
+not acceptance of the new campaign's rates, batch, schedule or QAT split.
+
 **Read [pretraining readiness](pretraining_readiness/README.md) before
 generating final run configs or starting a training campaign.** The selected
 batch and dense-to-QAT schedule still require native and quality evidence.

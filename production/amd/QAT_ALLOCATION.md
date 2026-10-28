@@ -1,5 +1,10 @@
 # Dense and ternary allocation for the MI325X month
 
+**2026-10-28:** use [FULL_QUALIFICATION_PLAN.md](pretraining_readiness/FULL_QUALIFICATION_PLAN.md)
+for the fresh dense/QAT rate experiments, late-parent checks and 960-hour
+qualification envelope. The 60/40 split below is a candidate. Pass the new
+reserve explicitly to the phase calculator; its source default remains 480.
+
 Recommendation, 2026-10-25: plan **60% dense / 40% ternary QAT by training
 tokens**, assuming the final ternary model is the primary deliverable. Keep
 **80/20** as the main challenger if native recovery/quality evidence supports

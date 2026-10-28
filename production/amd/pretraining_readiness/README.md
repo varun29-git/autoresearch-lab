@@ -1,10 +1,25 @@
 # MI325X pretraining readiness
 
-**Status on 2026-10-26: the month-long dense-to-ternary run is not cleared.**
-The repository has CPU-tested configuration candidates and a batch stability
-plan. Eight-MI325X throughput, memory fit, learning transfer and native AMD
-ternary execution have not been verified. The human launches and stops paid
-GPU work.
+**Status on 2026-10-28: the month-long dense-to-ternary run is not cleared.**
+Start with the [complete qualification and tuning plan](FULL_QUALIFICATION_PLAN.md).
+The user now requests qualification as if no prior HP tuning existed. All
+production rates, global batch, warmup and phase allocation are candidates to
+measure on the actual 1.446B model; earlier HPO confers no automatic promotion.
+The human launches and stops paid GPU work.
+
+The new plan recommends **eight ranks for every selection-bearing HP trial**,
+individual GPUs for arithmetic/fit/debugging, and a **960 GPU-hour total
+qualification envelope inside the 5,760-hour allocation**. It includes a
+joint Muon/AdamW screen, norm/decay tests, mandatory 1M-versus-2M batch/recipe
+comparisons, longer finalists, seed confirmation, cooldown probes, QAT/control
+trials, fault recovery and a measured final token budget. It supersedes the
+older unchanged-rate-first and 320/480-hour qualification policies.
+
+This is a plan, not newly implemented training machinery. The current AMD
+validator locks the old optimizer values; explicit bounded qualification and
+dense-fork tooling, native QAT, live durable backup, generated task evaluation
+and all-rank safety/acceptance work remain in the plan's engineering backlog.
+Native throughput, memory fit, learning and recovery remain unverified.
 
 Ternary QAT does not require ternary arithmetic units. The existing H100
 training path represents effective projection weights as FP8 codes `-1`, `0`
@@ -14,35 +29,17 @@ E4M3 FNUZ format. The current AMD model/backend and launcher explicitly
 reject ternary mode; this is a software implementation and native
 qualification gap.
 
-The dense rates intentionally transfer from smaller-model HPO through the
-selected spectral Muon width rule and the embedding-rate bridge. A full-scale
-HPO rerun is not planned. The open batch decision is separate from that width
-transfer: `batch_bridge_mb12` preserves the HPO global batch on eight GPUs
-as an optional diagnostic, not a required qualification run.
-The [batch-transfer decision](../BATCH_STABILITY.md#can-the-hpo-rates-reach-the-intended-2m-batch-without-full-retuning)
-tests the 2M profile with unchanged rates first, then adds a smaller-batch
-comparison only if evidence warrants it;
-published Muon results support this as a starting protocol but do not certify
-the 2M batch for CI-1.
-
-For the learning-rate assessment, read [LR_REFERENCES.md](LR_REFERENCES.md).
-It compares MiniCPM's width-scaled LR and Moonlight's RMS-matched Muon rates
-with the selected recipe, identifies MiniCPM5's architectural and disclosure
-differences, and records that the inspected Gemma reports do
-not disclose a usable pretraining peak LR. Embedding/head LR 0.003 remains
-an aggressive transfer candidate supported by the archived width bridge;
-published recipe coefficients alone do not establish whether it is too high.
-
-The same note records a separate **horizon-transfer gap**: the archived HPO
-ranked at roughly 500M tokens after roughly 250M warmup, before any LR decay.
-Width transfer and an early production bridge do not qualify trillion-token
-learning or the final dense/QAT schedule. Keep HPO as the search center and
-bound any longer LR comparison by measured cost and the qualification reserve.
+For historical LR evidence, read [LR_REFERENCES.md](LR_REFERENCES.md). It records
+the original width rules, the 0.003-versus-0.002 AdamW distinction, external
+recipes and the short HPO horizon. These are background for the new search.
+The [older batch plan](../BATCH_STABILITY.md) remains useful for exact batch
+arithmetic and source evidence; its prior experiment order is superseded.
 
 Read this page before generating the final run configuration or starting a
 training campaign. Review the corrected silent failures and remaining launch
 blockers in [TRAINING_RISKS.md](TRAINING_RISKS.md). The detailed evidence and test order are in
-[BATCH_STABILITY.md](../BATCH_STABILITY.md),
+[the full plan](FULL_QUALIFICATION_PLAN.md), supported by the historical
+[batch evidence](../BATCH_STABILITY.md),
 [SPEEDUP_TRIAGE.md](SPEEDUP_TRIAGE.md),
 [LAUNCH_CHECKLIST.md](../LAUNCH_CHECKLIST.md), and
 [ACCEPTANCE.md](../ACCEPTANCE.md).
@@ -59,27 +56,20 @@ blockers in [TRAINING_RISKS.md](TRAINING_RISKS.md). The detailed evidence and te
   `batch_3m_mb24`. Require at least 15% of usable HBM free through optimizer,
   validation and checkpoint peaks. Microbatch 16 is a starting point, not a
   measured optimum.
-- [ ] **Global batch and learning:** Run `balanced` (2,097,152) with the
-  selected rates first. Both this batch and the 480-update warmup are
-  provisional training-readiness choices. Check native stability,
-  complete-update speed, warmup and held-out learning through the
-  4,026,531,840-token plateau milestone.
-  The selected 480-update warmup is shorter in updates than the archived HPO
-  warmup (~636) and SmolLM3's 2,000-step warmup; inspect the first plateau
-  updates before accepting that schedule.
-  If evidence warrants a smaller-batch comparison, test `batch_1m_mb16`
-  (1,048,576) at matched tokens **and** allocated GPU-hours on the same model,
-  data prefix and frozen held-outs. Use the 393,216-token HPO-batch profile
-  only to resolve a remaining question worth its GPU-hour cost. Test
-  3,145,728 or 4,194,304 only if speed evidence merits a quality bridge.
-  Fixed learning rates do not preserve the number of Muon, momentum and
-  weight-decay updates per token.
+- [ ] **Global batch and learning:** Follow the full plan's joint LR grid,
+  auxiliary tests and mandatory two-recipe comparison at both 1,048,576 and
+  2,097,152 tokens/update. Continue complete finalists to 12.0796B tokens,
+  confirm a second seed and investigate cooldown behavior within the measured
+  budget. The initial 480-update warmup at 2M is provisional; test a longer
+  ramp if indicated. The 393k batch is an optional diagnostic; 3M/4M require
+  a measured reason to add their learning comparisons. Compare quality at
+  matched tokens and at matched allocated GPU-hours.
 - [ ] **Dense-to-QAT transfer:** Qualify FP8 ternary-weight quantization and
   matrix operations on MI325X, plus full-model conversion, before relying on
-  a QAT phase. Use the supplied QAT
-  peak-rate candidate (Muon 0.0085; embedding AdamW 0.003; norms 0.00015;
-  Q/K norms 0.00005) as a candidate, not an established AMD winner. Keep an
-  intact dense checkpoint and compare QAT with a same-data dense continuation.
+  a QAT phase. Treat the supplied historical QAT peak rates as background.
+  Follow the full plan's QAT rate
+  multipliers relative to the newly selected dense recipe, with an intact
+  dense parent and a same-data dense continuation control.
 - [ ] **Switch and schedules:** Set `phase_start_tokens` to the actual
   complete-update dense checkpoint. The supplied 500,170,752-token HPO
   endpoint is half an update at the 2M batch. Its 50M warmup and 100M decay
@@ -97,4 +87,6 @@ blockers in [TRAINING_RISKS.md](TRAINING_RISKS.md). The detailed evidence and te
 
 Record measured configs, data manifests, preflight reports, comparison
 receipts, evaluation results and checkpoints **outside Git**. Until these
-items are complete, the run is ready for bounded qualification trials only.
+items are complete, the long run is not cleared. Existing tools support
+bounded native bring-up; the new HP/QAT campaign first needs the explicit
+qualification machinery listed in the full plan.

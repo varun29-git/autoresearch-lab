@@ -1,5 +1,11 @@
 # Selected eight-MI325X configuration
 
+**2026-10-28 qualification update:** [FULL_QUALIFICATION_PLAN.md](pretraining_readiness/FULL_QUALIFICATION_PLAN.md)
+supersedes the selection experiment order and 320/480-hour reserves below.
+It proposes 960 hours for fresh full-model qualification. Existing generated
+profiles still use their reviewed defaults until the new tooling and measured
+recipe are implemented; these values are candidates, not the new winner.
+
 Decision: 2026-10-25. These are concrete starting settings for the selected
 1,446,478,126-parameter model. They are ready to generate and test; they are
 not native measurements or permission to launch paid hardware. The executable

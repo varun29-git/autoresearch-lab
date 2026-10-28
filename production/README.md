@@ -5,6 +5,12 @@
 It records the unresolved batch, QAT and native-hardware gates for the
 5,760 GPU-hour allocation.
 
+**2026-10-28 qualification policy:** the user requests fresh full-model HP
+qualification. Follow the [complete eight-MI325X plan](amd/pretraining_readiness/FULL_QUALIFICATION_PLAN.md)
+for the joint LR/batch search, longer learning checks, QAT, recovery and
+960-hour qualification envelope. The recipe below is the code's reviewed
+baseline; it is not automatically the winner of the new campaign.
+
 This folder is the entry point for the selected Terminus Stack 4 implementation. The standalone `CI-1` checkout contains the full model, optimizer, FP8 kernels, streaming data loader, DDP trainer, checkpointing, tests, scripts, completed research history, and `manuscript/terminus_draft.md`. It was created from `paper/technical-draft-v1` at `fa84773`, which includes the final 200M HPO winner at `36d3de9`, the spectral-Muon change, and the E3/E4/E9 speed stack. Historical research files remain available, but the 30-layer/96K configs and pre-spectral 25-layer configs in `configs/` are not the selected production recipe.
 
 The selected settings now live in [`recipe.py`](recipe.py); config generation
