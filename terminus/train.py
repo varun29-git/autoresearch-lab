@@ -285,8 +285,10 @@ class PreparedTraining:
     batches with H2D transfer and all accumulation microsteps; forward, full
     loss, backward and gradient synchronization; nonfinite detection, global
     clipping and all optimizer group updates; FP8 cache invalidation and
-    committed data/update counters. It returns the host-side valid-target
-    count derived from manifest arithmetic. cadence() performs the post-update
+    committed data/update counters. It returns the nominal update token count
+    derived from manifest arithmetic; the measured valid (-100-excluded)
+    target count and the data-wait time for the update are exposed as
+    valid_targets and data_wait_seconds. cadence() performs the post-update
     logging/checkpoint/validation/stop work, which is production cadence
     overhead outside the measured callback.
     """
@@ -320,8 +322,13 @@ class PreparedTraining:
         self.model.set_quantization_strength_(strength)
         self.optimizer.zero_grad(set_to_none=not training.cuda_graphs)
         local_loss_sum = torch.zeros((), dtype=torch.float64, device=self.device)
+        local_valid = torch.zeros((), dtype=torch.float64, device=self.device)
+        data_wait = 0.0
         for micro_index in range(micro_steps):
+            wait_started = time.monotonic()
             batch_index, inputs, targets = next(self.iterator)
+            data_wait += time.monotonic() - wait_started
+            local_valid += targets.ne(-100).sum()
             if batch_index != state["next_micro_step"] + micro_index:
                 raise RuntimeError("prefetch cursor drift")
             if training.cuda_graphs and self.captured is None:
@@ -342,10 +349,10 @@ class PreparedTraining:
                 self.monitor.active = False
         elapsed = time.monotonic() - self.started
         stop = self.should_stop[0] or (training.time_limit_seconds is not None and elapsed >= training.time_limit_seconds)
-        summary = torch.stack((local_loss_sum, local_loss_sum.new_tensor(float(stop))))
+        summary = torch.stack((local_loss_sum, local_loss_sum.new_tensor(float(stop)), local_valid))
         if self.world_size > 1:
             distributed.all_reduce(summary)
-        loss_sum, stop_requests = summary.tolist()
+        loss_sum, stop_requests, valid_targets = summary.tolist()
         if not math.isfinite(loss_sum):
             if self.rank == 0:
                 append_record(self.output_dir / "incidents.jsonl", {"event": "nonfinite_loss", "state": state})
@@ -369,6 +376,8 @@ class PreparedTraining:
                       "tokens_seen": state["tokens_seen"] + update_tokens, "updates": state["updates"] + 1}
         self.sampled = sampled
         self.update_tokens = update_tokens
+        self.valid_targets = int(valid_targets)
+        self.data_wait_seconds = data_wait
         self.loss_sum = loss_sum
         self.stop_requests = stop_requests
         self.scale = scale
@@ -385,7 +394,9 @@ class PreparedTraining:
         if self.rank == 0 and (state["updates"] % training.log_interval == 0 or stopped or complete):
             now = time.monotonic()
             append_event(self.output_dir / "events.jsonl", {"event": "train", **state, "loss": self.loss_sum / self.update_tokens,
-                         "loss_tokens": self.update_tokens, "grad_norm_before_clip": float(self.grad_norm), "lr_scale": self.scale,
+                         "loss_tokens": self.update_tokens, "valid_targets": self.valid_targets,
+                         "data_wait_seconds": self.data_wait_seconds,
+                         "grad_norm_before_clip": float(self.grad_norm), "lr_scale": self.scale,
                          "grad_clip_coefficient": min(1.0, training.grad_clip / (float(self.grad_norm) + 1e-6)) if training.grad_clip else 1.0,
                          "optimizer_group_lr_min": min(group["lr"] for group in self.optimizer.param_groups),
                          "optimizer_group_lr_max": max(group["lr"] for group in self.optimizer.param_groups),
