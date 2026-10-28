@@ -200,6 +200,16 @@ never spend the full 50-hour cap searching and leave no transfer check.
 The human controls paid campaigns. Native failures can leave required work
 incomplete; report that rather than silently exceeding the cap.
 
+**User-reported proxy rate: 200,000 tokens/s.** At that rate, one
+1,006,632,960-token trial takes 1.40 hours; R0-R3 plus H take **6.99 hours**,
+and adding the proxy batch comparison brings the total to **8.39 hours**.
+With the existing 14-hour confirmation allowance and eight-hour check/reserve
+allowance, the forecast is **30.39 H100 hours**, not an instruction to spend
+50. The rate was supplied by the user, not newly measured by this agent.
+Apply it to the proxy only and confirm its scope matches the intended batch,
+geometry and runtime. If it excludes evaluation/checkpoint time, charge those
+costs separately; the full-size model retains its own measured rate/budget.
+
 ## 4. What to record and why
 
 Set `log_interval=1` during qualification. The existing logger's loss and clip
