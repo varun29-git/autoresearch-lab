@@ -4,10 +4,12 @@
 **Current first step:** reuse the completed HPO and use the available single
 Azure H100, capped at 50 hours, for [lower-LR controls at fixed 2M batch,
 followed by a 1M comparison, with explicit monitoring](LR_BATCH_MONITORING.md).
-The four LR controls separate Muon, embedding and joint effects; they are
-approximately 1B tokens each. The 12 completed 200M
+Run the LR controls and historical anchor on the **194M width-scaled proxy**,
+then transfer the winner and perform a short full-size confirmation. Do not
+run every LR candidate at 1.446B. Proxy trials are approximately 1B tokens each.
+The 12 completed 200M
 and six 700M trials were verified against their external event-file hashes.
-The broader proxy LR search is deferred. One GPU can test the intended 2M
+The broad fresh HPO search remains deferred. One GPU can test the intended 2M
 global batch through accumulation; eight GPUs do not multiply that batch again.
 The [complete qualification plan](FULL_QUALIFICATION_PLAN.md) retains the
 broader controls and optional deeper search.
@@ -71,9 +73,10 @@ blockers in [TRAINING_RISKS.md](TRAINING_RISKS.md). The detailed evidence and te
   `batch_3m_mb24`. Require at least 15% of usable HBM free through optimizer,
   validation and checkpoint peaks. Microbatch 16 is a starting point, not a
   measured optimum.
-- [ ] **Global batch and learning:** Begin with the four full-model LR controls
-  in `LR_BATCH_MONITORING.md`, then test the leading complete recipe at 1M
-  if the measured budget permits. Each initial trial
+- [ ] **Global batch and learning:** Begin with the proxy LR controls and
+  historical anchor in `LR_BATCH_MONITORING.md`, then compare proxy batches
+  if the measured budget permits. Reserve a full-size check of the transferred
+  winner at the intended global batch. Each initial trial
   has a complete approximately 1B-token WSD with 10% warmup and 20% cooldown;
   this does not select the eventual production schedule. Compare quality at
   matched tokens and matched GPU-hours. Use measured results to price further

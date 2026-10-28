@@ -2,8 +2,9 @@
 
 **Latest refinement:** the user requests lower published-rate controls as
 well as batch transfer. Follow [LR_BATCH_MONITORING.md](LR_BATCH_MONITORING.md)
-for the current four-way LR comparison at fixed 2M global batch, monitoring
-contract and subsequent 1M check. It uses approximately 1B per initial trial
+for the current LR comparison on the 194M width-scaled proxy at fixed 2M global
+batch, monitoring contract and subsequent 1M check. Transfer the winner for
+one short full-size confirmation. It uses approximately 1B per initial trial
 to stay inside the same 50-hour ceiling. The two approximately 2B trials and
 conditional decay-only ordering below are superseded as immediate work;
 their source review and batch arithmetic remain relevant.

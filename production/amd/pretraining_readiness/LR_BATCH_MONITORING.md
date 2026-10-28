@@ -7,12 +7,16 @@ batch, plus a detailed monitoring contract. This refines the
 two approximately 2B-token trials with the bounded matrix below. The available
 allocation remains **up to 50 hours on one H100**; no new paid run has started.
 
-All trials use the actual **1,446,478,126-parameter production model**, 4096
-context, dense FP8 projections, BF16 residual/head and FP32 master weights,
-gradients and optimizer state. Preserve spectral Muon, NS5/Nesterov and the
-production architecture. Native fit, numerics and the qualification launcher
-are prerequisites. These are reviewed experiment specifications, not changes
-to production defaults or generated executable run configurations.
+**Corrected allocation:** the LR search uses the **194,329,390-parameter
+width-768 proxy**, not the full model. Build it from the production recipe,
+retaining 24 layers, 4096 context, the 512-token local window and global layer
+every sixth layer; set FFN width 1920 and query/KV heads 6/2. Keep head dimension
+128, normalization, initialization, tied vocabulary and optimizer semantics.
+Use dense FP8 projections, BF16 residual/head and FP32 master weights, gradients
+and optimizer state. Reserve production-size work for a short confirmation of
+the transferred winner. An intermediate-width rerun is not mandatory: six
+700M transfer trials already exist. Native fit, numerics and the qualification
+launcher remain prerequisites. Production defaults are unchanged.
 
 ## 1. Why challenge the current rates, and how to compare published values
 
@@ -63,33 +67,46 @@ review, not an unrecorded rescue during a candidate run.
 
 ## 2. Mandatory initial matrix: separate the two main LR effects
 
-Use **2,097,152 global tokens/update in all four runs**. On one H100,
+Use **2,097,152 global tokens/update in all initial proxy runs**. On one H100,
 microbatch 4 x 4096 x accumulation 128 is a fit candidate; on eight MI325X,
 microbatch 16 x 4096 x accumulation 4 has the same global batch. Measure fit
 and keep the chosen H100 microbatch fixed across these LR comparisons.
 
-| ID | Spectral Muon peak | Tied embedding/head AdamW peak | Question |
-| --- | ---: | ---: | --- |
-| R0 | 0.017 | 0.003 | Existing production starting recipe: the control |
-| R1 | 0.017 | 0.00085 | Does the lower published-rate region help the tied table? |
-| R2 | 0.0082 | 0.003 | Does a lower Muon coefficient help with the old AdamW rate? |
-| R3 | 0.0082 | 0.00085 | Do the lower choices work together? |
+Apply the existing **alpha=1 embedding transfer rule** for this comparison:
+`AdamW_2304 = AdamW_768 * 768/2304`; keep spectral Muon's base eta and the
+small-group rates unchanged. This is the hypothesis supported by the completed
+700M bridge. Do not silently replace the implemented parameterization with
+another optimizer or claim exact learning-trajectory invariance.
+
+| ID | Proxy spectral Muon | Proxy embedding/head AdamW | Implied production AdamW | Question |
+| --- | ---: | ---: | ---: | --- |
+| R0 | 0.017 | 0.009 | 0.003 | Proxy representation of the retained production-rate hypothesis |
+| R1 | 0.017 | 0.00255 | 0.00085 | Does the lower published-rate region help the tied table? |
+| R2 | 0.0082 | 0.009 | 0.003 | Does a lower Muon coefficient help with the higher AdamW rate? |
+| R3 | 0.0082 | 0.00255 | 0.00085 | Do the lower choices work together? |
+| H, historical anchor | 0.017 | 0.006 | 0.002 | Existing proxy winner under the actual inverse-width mapping |
 
 These are dense-training candidates, not a QAT switch. 0.0082 is rounded from
 the square-matrix conversion, not a claim of whole-model Moonlight equivalence.
-All table rates are already for **production width 2304**; do not apply the
-proxy-to-production width multiplier a second time when generating configs.
+The proxy 0.009 is **not** the historical winner: it represents production
+0.003 after inverse-width transfer. The measured historical proxy winner is
+0.006, mapping to 0.002; retain H so that distinction stays visible. Run R0-R3
+and H on the proxy. Compare H against its new-batch peers, not its old loss
+under a different geometry/data/schedule. Apply the width multiplier exactly
+once to the winner when constructing the production confirmation.
 The crossed design matters: running only R0 and R3 could not identify whether
 Muon, AdamW or their interaction explains the result. The earlier 200M tests
-do not answer this particular production-width/global-batch comparison.
+do not answer this new-global-batch comparison. Production confirmation then
+checks the selected transferred recipe rather than rerunning every candidate.
 
-For all four, explicitly hold: norm/Peri/final/value LR **0.0003**, Q/K LR
+For R0-R3 and H, explicitly hold: norm/Peri/final/value LR **0.0003**, Q/K LR
 **0.0001**, matrix decay **0.02**, embedding/norm/QK/value decay **zero**,
 momentum **0.95**, Adam betas **(0.9, 0.95)**, epsilon **1e-8**, clip **1.0**.
 No role LR overrides, graphs, compilation, FP8 head or backend changes.
 Fixed auxiliary settings are controls, not newly tuned optima.
 
-Use the same initialization weights as well as seed, representative data
+Within the proxy comparisons, use the same initialization weights as well as
+seed, representative data
 prefix/mixture, tokenizer, masking, loss normalization and evaluator. Verify
 their identities. Warmup/decay are in **global valid training tokens**, not
 microsteps or per-device tokens. Log all optimizer-group LRs explicitly.
@@ -118,19 +135,23 @@ healthy candidate worse before its cooldown. Capture pre-decay and final
 validation separately. Short-annealed performance is a proxy criterion, not
 proof of long-plateau ranking or a production continuation checkpoint.
 
-**Fifth trial, if it fits:** run the leading credible complete recipe at
+**Sixth proxy trial, if it fits after R0-R3 and H:** run the leading credible complete recipe at
 **1,048,576 global tokens/update**, preserving LRs, data and token schedule.
 It has 960 updates (96/672/192). Compare against the existing 2M result.
-This tests sample efficiency at these rates; it does not establish independently
-tuned optimal rates for both batches. Final AMD throughput still determines
-whether any 2M quality/time tradeoff is worthwhile.
+This tests proxy sample efficiency at these rates; it does not establish the
+full model's critical batch or independently tuned optimal rates for both
+batches. The production confirmation uses the proposed deployment batch.
+Final AMD throughput still determines whether any quality/time tradeoff is
+worthwhile. Same-global-batch accumulation removes the GPU-count difference;
+it does not erase model-size effects on batch efficiency.
 
-**Sixth slot, if it fits:** choose exactly one question from the observed
+**Additional proxy diagnostic, only if it fits without consuming the reserved
+production confirmation:** choose one question from the observed
 uncertainty, recording the choice before starting that run:
 
-- If lower embedding LR helps, test **0.002** with the selected Muon LR as
-  the strict historical width-transfer alternative/intermediate. The other
-  settings match the selected parent recipe, but start the trial fresh.
+- If lower embedding LR helps, test proxy **0.006** (production **0.002**)
+  with the selected Muon LR if that complete combination was not already H.
+  Reuse H's result when it is the same candidate. Start any new candidate fresh.
 - If lower Muon helps and shrinkage explains a plausible part of the result,
   use the **0.0414634146 matched-shrinkage** control above at 2M.
 - If 1M materially beats 2M, a direct decay-transport control from the **new
@@ -146,28 +167,38 @@ uncertainty, recording the choice before starting that run:
   apparent winner measures its variability but does not confirm pairwise
   seed robustness. Otherwise report a tie rather than force a winner.
 
-These are alternatives, not a hidden additional sweep. Adding lower rates
-changes the previous budget: four 2B trials would already take **55.92 hours
-at 40k tokens/s**, before setup. The initial horizons are therefore 1B. Longer
-confirmation remains later work or must replace some planned trials; it is
-not obtained by calling a cooled-down 1B run a prefix of a 2B/1T schedule.
+These are alternatives, not a hidden additional sweep. After selection, apply
+the transfer once and run **one production-size winner** for approximately
+1-2B tokens at the intended global batch, with a declared complete schedule,
+full-update/reference checks and held-outs. Choose the exact horizon from
+measured cost before launch. This checks execution and early transferred
+learning; it does not prove optimality relative to every unrun full-size
+candidate. Only a concrete failure or unresolved transfer question justifies
+another production-size candidate. A cooled-down proxy checkpoint is not a
+production initialization or a continuation of the full model.
 
-Reserve **eight H100 hours** for setup, native checks, special reference/replay
-work and contingency, leaving at most 42 for ordinary trial windows. Ordinary
-trial rates must include routine evaluation, logging and checkpoint overhead.
+Reserve **eight H100 hours** for setup/checks/contingency and initially **14
+hours for the production-size confirmation**, leaving up to **28 hours for
+proxy trials**. Price the confirmation from measured full-size throughput
+before adding optional proxy diagnostics. Ordinary rates include routine
+evaluation, logging and checkpoint overhead; separate probes consume the
+setup/check reserve. Unused time is not an instruction to run extra candidates.
 
-| Trials of approximately 1B each | Aggregate tokens | At 30k tokens/s | At 40k | At 50k |
-| --- | ---: | ---: | ---: | ---: |
-| Four LR controls | 4.0265B | 37.28 h | 27.96 h | 22.37 h |
-| Plus the 1M batch trial | 5.0332B | 46.60 h | 34.95 h | 27.96 h |
-| Plus one more 1B diagnostic | 6.0398B | 55.92 h | 41.94 h | 33.55 h |
+| Work | Tokens | Rate scenario | Ordinary trial time |
+| --- | ---: | ---: | ---: |
+| Five proxy controls, R0-R3 and H | 5.0332B | 100k / 150k / 200k tokens/s | 13.98 / 9.32 / 6.99 h |
+| Plus one proxy batch comparison | 6.0398B | 100k / 150k / 200k tokens/s | 16.78 / 11.18 / 8.39 h |
+| One full-size winner, short confirmation | 1.0066B | 30k / 40k / 50k tokens/s | 9.32 / 6.99 / 5.59 h |
+| One full-size winner, longer confirmation | 2.0133B | 30k / 40k / 50k tokens/s | 18.64 / 13.98 / 11.18 h |
 
-These are scenarios, not current Azure measurements. With the eight-hour
-reserve, approximately **33.3k** is needed for five trials and **40k** for six.
-At 30k, do the four LR controls within the cap and keep the batch comparison
-explicitly outstanding. Sum actual per-trial rates if the 1M batch is slower.
-Native failures or slower preparation can reduce the available trial count.
-The human controls paid campaigns; a longer run requires a new budget decision.
+These are scenarios, not new Azure measurements. Do not use the 1.446B rate
+for proxy costing or infer proxy speed by dividing parameter counts. The
+old 200M receipts contain historical rates, but the current geometry and
+batch still need a short measurement. Reallocate unused proxy hours toward
+confirmation if needed, or choose the shorter confirmation before it starts;
+never spend the full 50-hour cap searching and leave no transfer check.
+The human controls paid campaigns. Native failures can leave required work
+incomplete; report that rather than silently exceeding the cap.
 
 ## 4. What to record and why
 
@@ -267,8 +298,9 @@ Do not count a tiny one-seed NLL difference as a proven production optimum.
 
 The four matrix points are controls, not a bracket that proves an interior
 optimum. If the lowest tested rate wins, an additional lower value (for
-example embedding LR 0.0005) remains a possible later experiment; it is not
-silently added to the six-slot budget. Likewise a failure after the 48-update
+example proxy embedding LR 0.0015, mapping to production 0.0005) remains a
+possible later experiment; it is not silently added to the budget. Likewise
+a failure after the 48-update
 warmup establishes a problem with that **LR/warmup combination**. It does not
 prove the peak LR would fail under the longer intended production ramp.
 A longer-warmup control must be explicitly priced and compared before making
