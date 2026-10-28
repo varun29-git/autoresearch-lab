@@ -52,6 +52,44 @@ in tokens and integrated decay. It does not trigger another width multiplier
 or justify an automatic batch-ratio LR increase. See
 [the batch decision](../BATCH_STABILITY.md).
 
+## The HPO horizon does not qualify trillion-token training
+
+The [archived HPO protocol](../../../hpo/program.md) ranks complete
+200M-model candidates at 1,272 updates, or 500,170,752 tokens. The fixed
+2.5B-token WSD schedule warms up over approximately 250M tokens and begins
+LR decay near 2B tokens. Each ranked trial therefore observes roughly
+250M tokens at the peak rate and never observes the LR decay. This is an
+early stable-phase comparison, not a completed 500M-token decay schedule.
+
+A 1T-token production program is approximately 2,000 times that observed
+token horizon. At the 2,097,152-token global batch it contains about
+476,837 updates, versus 1,272 in the HPO trial. Width transfer, global-batch
+transfer and horizon transfer are separate: the spectral width factor does
+not establish that a short-horizon LR ranking remains optimal for hundreds
+of thousands of updates. Early learning may favor a different coefficient
+from late learning; late norm/embedding drift, integrated weight decay,
+data-mixture changes and the decay policy were not qualified by that trial.
+No universal inverse-horizon or square-root-horizon LR factor is selected.
+
+The existing HPO still supplies the search center and credible optimizer
+choices. Use it for a bounded production-width/global-batch comparison,
+including the explicit AdamW 0.003 versus inverse-width 0.002 decision.
+Add a lower Muon bracket only as a separate candidate if justified. Match
+initialization, data prefix, batch, schedule and held-outs when comparing
+rates; retain the intended production schedule and stop early rather than
+compressing its decay into every short trial. A short-decay branch can
+answer an annealed-checkpoint question, but it is not the production prefix.
+
+The 4.026B-token plateau milestone and optional 8.053B extension in
+[BATCH_STABILITY.md](../BATCH_STABILITY.md) provide more early evidence;
+they still cannot certify a 1T-token optimum. Extend only credible finalists
+as measured cost permits within the existing qualification reserve, and
+monitor later production milestones. The current resume contract fixes
+optimizer, schedule, horizon and world size: changing them later requires
+an explicit transition design, not an assumed ordinary resume. If 1T is
+the combined dense/QAT budget, each phase has its own horizon and schedule;
+dense-rate qualification does not qualify the supplied QAT rates.
+
 ## What MiniCPM actually reports
 
 [MiniCPM, §3.3 and §6.2](https://arxiv.org/html/2404.06395v2) reports an

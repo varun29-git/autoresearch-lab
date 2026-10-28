@@ -33,6 +33,12 @@ not disclose a usable pretraining peak LR. Embedding/head LR 0.003 remains
 an aggressive transfer candidate supported by the archived width bridge;
 published recipe coefficients alone do not establish whether it is too high.
 
+The same note records a separate **horizon-transfer gap**: the archived HPO
+ranked at roughly 500M tokens after roughly 250M warmup, before any LR decay.
+Width transfer and an early production bridge do not qualify trillion-token
+learning or the final dense/QAT schedule. Keep HPO as the search center and
+bound any longer LR comparison by measured cost and the qualification reserve.
+
 Read this page before generating the final run configuration or starting a
 training campaign. Review the corrected silent failures and remaining launch
 blockers in [TRAINING_RISKS.md](TRAINING_RISKS.md). The detailed evidence and test order are in
