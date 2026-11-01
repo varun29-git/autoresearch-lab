@@ -167,7 +167,9 @@ def run(args) -> int:
               "--parent-checkpoint", args.parent_checkpoint,
               "--child-config", root / "configs/H.json",
               "--child-manifest", root / "manifests/proxy_2b_m8.json",
-              "--data-root", args.data_root, "--output-dir", h_dir)
+              "--data-root", args.data_root, "--output-dir", h_dir,
+              *(["--runtime-rebuild-receipt", root / "identity/native_rebuild.json"]
+                if (root / "identity/native_rebuild.json").exists() else []))
     if not (h_dir / "fork_receipt.json").exists():
         raise ValueError("the 24-hour campaign requires the verified H checkpoint fork")
     fork = json.loads((h_dir / "fork_receipt.json").read_text())

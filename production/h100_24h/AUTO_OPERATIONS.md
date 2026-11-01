@@ -28,10 +28,18 @@ a persistent operator watcher mirrors status and deallocates on terminal
 status or deadline. VM deallocation is required to end billing.
 
 Reference replays use the previously frozen 0.005 weight and 0.0005 moment
-delta tolerances at initialization/warmup/pre-decay boundaries. Per-update
+delta tolerances at each fresh/resumed first update and warmup/pre-decay boundaries. Per-update
 qualification records retain target counts, all group rates, full finite
 state and required gradients; logical role diagnostics run every 20 updates
 and at boundaries. Any numerical failure, native-contract mismatch, incomplete
 arm, failed durable backup or unaffordable reforecast stops progression.
 Transport requests have bounded retries; numerical failures are never
 automatically repaired, reranked or silently relabeled.
+
+A runtime rebuilt after VM deallocation may have different FA3/DeepGEMM
+shared-object hashes. `native_rebuild.py` accepts only shared-object changes
+with identical runtime versions, Python/header hashes, compiler identities
+and GPU/driver identity. Both native preflights and the full-size recovery
+gate must pass before a checkpoint fork can use that explicit receipt. The
+parent remains unchanged and the fork records both runtime identities.
+This transition does not claim byte-identical binaries or long-run quality.

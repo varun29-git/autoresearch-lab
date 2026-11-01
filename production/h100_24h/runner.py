@@ -152,7 +152,7 @@ def drive(workload, *, boundaries: tuple, ledger_path, final_update: int,
     qualification_log = Path(output_dir) / "qualification.jsonl"
     warmup_updates = workload.training.warmup_tokens // (
         workload.training.gradient_accumulation_steps * workload.micro_tokens)
-    probe_updates = ({1, warmup_updates + 1, sorted(boundaries)[-2] + 1}
+    probe_updates = ({workload.state["updates"] + 1, warmup_updates + 1, sorted(boundaries)[-2] + 1}
                      if reference_tolerances else set())
     clip_window = deque(maxlen=100)
     alarm = None

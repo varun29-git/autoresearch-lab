@@ -78,7 +78,8 @@ def _validated_parent_history(run_dir: Path, updates: int, batch_tokens: int) ->
 def fork_dense_checkpoint(parent_run_dir, parent_manifest_path, child_config_path,
                           child_manifest_path, data_root, output_dir, *,
                           parent_checkpoint=None, device_name="cpu", world_size=1,
-                          expected_parent_updates=campaign.CREDIT_H_UPDATES):
+                          expected_parent_updates=campaign.CREDIT_H_UPDATES,
+                          runtime_rebuild_receipt=None):
     """Create a fresh child run whose past is exactly the verified H prefix."""
     parent_run_dir = Path(external_path(parent_run_dir))
     parent_manifest_path = Path(external_path(parent_manifest_path))
@@ -170,8 +171,14 @@ def fork_dense_checkpoint(parent_run_dir, parent_manifest_path, child_config_pat
     device = torch.device(device_name)
     contract = make_resume_contract(model_config, training, optimizer_config,
                                     manifest_report, world_size, device)
+    rebuild = None
     if contract["runtime"] != parent_contract["runtime"]:
-        raise ValueError("native runtime changed across the checkpoint fork")
+        if runtime_rebuild_receipt is None:
+            raise ValueError("native runtime changed across the checkpoint fork")
+        from .native_rebuild import verify
+        rebuild_path = Path(external_path(runtime_rebuild_receipt))
+        rebuild = verify(json.loads(rebuild_path.read_text()), parent_contract["runtime"],
+                         contract["runtime"], gate_root=rebuild_path.parent.parent / "gates")
     micro_tokens = child_manifest.config.tokens_per_step * world_size
     if (state["next_micro_step"] != state["updates"] * training.gradient_accumulation_steps
             or state["tokens_seen"] != state["next_micro_step"] * micro_tokens):
@@ -200,6 +207,7 @@ def fork_dense_checkpoint(parent_run_dir, parent_manifest_path, child_config_pat
                "child_checkpoint": checkpoint.name, "state": state,
                "past_lr_identical_updates": state["updates"],
                "stream_continuity": stream, "source_difference": sorted(changed),
+               "native_rebuild_review": rebuild,
                "parent_history": {"valid_updates": history["valid_updates"],
                                   "finite_updates": history["finite_updates"],
                                   "incidents": history["incidents"],
@@ -220,11 +228,13 @@ def main() -> int:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--parent-checkpoint")
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--runtime-rebuild-receipt")
     args = parser.parse_args()
     print(json.dumps(fork_dense_checkpoint(
         args.parent_run_dir, args.parent_manifest, args.child_config,
         args.child_manifest, args.data_root, args.output_dir,
-        parent_checkpoint=args.parent_checkpoint, device_name=args.device),
+        parent_checkpoint=args.parent_checkpoint, device_name=args.device,
+        runtime_rebuild_receipt=args.runtime_rebuild_receipt),
         sort_keys=True, default=str))
     return 0
 
