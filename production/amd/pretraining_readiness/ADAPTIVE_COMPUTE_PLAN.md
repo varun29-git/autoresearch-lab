@@ -193,6 +193,54 @@ live schedule changes, data extension or a production budget controller.
 
 ## 4. Protect quality when the horizon changes
 
+### Coordinate the curriculum across dense and QAT
+
+Dense and QAT are two training/weight-representation phases. They need
+coordinated learning-rate and data schedules, but they do not require exactly
+two data mixtures. Define curriculum segments by the learning milestone and
+funded remaining work, rather than a fixed percentage of an assumed 1T/2T
+endpoint. The following is the structure to qualify, not a newly selected
+set of mixture weights:
+
+| Segment | Data policy | Adaptation rule |
+| --- | --- | --- |
+| Dense warmup and stable training | Broad approved mixture covering every target language, math and code from the start | Keep the absolute warmup fixed; extend or shorten only future stable training within approved exposure/repetition limits |
+| Dense finishing/cooldown | Retain the broad mix as the control; a cleaner finishing mix requires a quality comparison and domain coverage floors | Fund and commit its token budget, mixture and decay together before entering it |
+| QAT conversion and rewarm/recovery | Initially continue the distribution used immediately before conversion, with the next unconsumed examples | Protect the qualified recovery budget; isolate quantization from a simultaneous data-distribution change |
+| QAT stable training | Continue learning under ternary weights with a qualified mixture retaining all target capabilities | Allow additional useful tokens here when time and approved data permit; do not treat QAT as only repairing the conversion loss |
+| QAT final cooldown | Qualified finishing mixture with explicit language/domain coverage | Protect and freeze this ending before it begins; preserve final evaluation/export time |
+
+Initially compare conversion using the same mixture and data continuation as
+the matched dense control. Any subsequent QAT mixture change is a separate
+candidate. A high-quality-only final mixture is not automatically better:
+excessive narrowing can forget capabilities. All training segments use
+training data; reserved finishing pools are distinct from held-out evaluation
+sets and must obey the same contamination exclusions.
+
+Prepare a minimum funded curriculum plus optional extensions. The minimum
+must include useful exposure for every target capability and both qualified
+endings. Keep approved finishing-data capacity available before spending the
+remaining inventory on an extension; select actual amounts using measured
+rates and qualified phase minima. Additional data is eligible only within
+source-specific repetition caps. Do not put all advanced math, code or Indic
+coverage in a final optional tranche.
+
+At every phase decision, forecast dense and QAT jointly. Additional dense
+tokens can increase the QAT obligation under a chosen token-ratio policy, so
+they are not free merely because dense runs faster. Before switching, freeze
+the completed dense history and fund the QAT continuation. Once in QAT, any
+further extension belongs to the qualified QAT plateau.
+
+Track both global progress and phase-local progress, plus cumulative exposure
+and absolute source cursors. Regenerating curriculum percentages after a
+throughput update must never reset those cursors or change which data earlier
+tokens represented. The current `phase_source_mixes` entries have exact token
+budgets summing to `total_train_tokens`; they are not live budget-aware rules.
+The future-event/continuation protocol in section 5 must generate only the
+unconsumed suffix and preserve the consumed-stream proof.
+
+### Quality conditions on every extension
+
 - Keep every critical language/domain represented from the start and in the
   lowest funded horizon. Do not defer all math/code/Indic quality work to a
   nominal final tranche that disappears if throughput is lower.
