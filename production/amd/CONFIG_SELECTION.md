@@ -1,10 +1,16 @@
 # Selected eight-MI325X configuration
 
-**2026-10-28 qualification update:** [FULL_QUALIFICATION_PLAN.md](pretraining_readiness/FULL_QUALIFICATION_PLAN.md)
-supersedes the selection experiment order and 320/480-hour reserves below.
-It proposes 960 hours for fresh full-model qualification. Existing generated
-profiles still use their reviewed defaults until the new tooling and measured
-recipe are implemented; these values are candidates, not the new winner.
+**2026-11-01 qualification update:** start with the
+[quality gates](pretraining_readiness/QUALITY_GATES.md), preserve the focused
+[5B proxy/transfer plan](pretraining_readiness/LR_BATCH_MONITORING.md), and use
+the [adaptive compute specification](pretraining_readiness/ADAPTIVE_COMPUTE_PLAN.md)
+for the production horizon. The optional broader qualification envelope does
+not require a fresh full-model LR search. Existing generated profiles still
+use their reviewed defaults and fixed manifest horizon until explicit
+qualification/promotion and schedule-transition tooling are implemented;
+these values are candidates, not a newly measured winner. Charge actual
+qualification/overhead rather than automatically applying the historical
+320/480/960-hour reserves below.
 
 Decision: 2026-10-25. These are concrete starting settings for the selected
 1,446,478,126-parameter model. They are ready to generate and test; they are

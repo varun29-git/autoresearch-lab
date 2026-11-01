@@ -2,12 +2,34 @@
 
 Engineering review: 2026-10-26. Read before generating the final run bundle.
 This page describes code behavior and launch requirements; native measurements
-and campaign receipts belong outside Git. The [2026-10-28 full qualification
-plan](FULL_QUALIFICATION_PLAN.md) supersedes the earlier preserve-HPO-rates
-experiment policy below. Source defaults remain unchanged pending a newly
-qualified recipe; the new plan explicitly tests rates/batches at full width.
+and campaign receipts belong outside Git. The
+[2026-11-01 quality audit](QUALITY_GATES.md) distinguishes newly implemented
+H100 qualification/recovery tools from remaining AMD production requirements.
+Use the focused [5B proxy/transfer plan](LR_BATCH_MONITORING.md), not a fresh
+full-width sweep, as the current experiment order. The
+[adaptive compute specification](ADAPTIVE_COMPUTE_PLAN.md) defines prospective
+horizon changes while protecting finishing work; current source defaults and
+fixed-horizon resume contracts remain unchanged.
 
 ## Corrected failures
+
+### Unexpected target masks could change gradient normalization
+
+The trainer normalizes loss by the declared global update-token count. It now
+compares that denominator with the globally reduced count of valid targets
+and rejects a mismatch before applying the optimizer step. This preserves
+the intended objective for normal data and legitimate padded final batches.
+CPU regressions cover partial/all-masked corruption and unchanged weights and
+progress on failure. Native eight-MI325X qualification remains required.
+
+### FP8 telemetry assumed the H100 range
+
+Operand boundary occupancy now derives the maximum finite value from the
+actual FP8 dtype, including E4M3FN (448) and E4M3FNUZ (240). CPU tests verify
+both formats and E5M2 variants without modifying cached operands. This fixes
+an observation gap; it does not establish all-operand native AMD saturation
+or quantizer correctness. New source-bound receipts are required before
+using the changed code in a previously pinned campaign.
 
 ### A valid new corpus could silently break dense-to-QAT continuation
 

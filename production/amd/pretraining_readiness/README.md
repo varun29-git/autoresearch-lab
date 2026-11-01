@@ -1,7 +1,16 @@
 # MI325X pretraining readiness
 
-**Status on 2026-10-28: the month-long dense-to-ternary run is not cleared.**
-**Current first step:** reuse the completed HPO and use the available single
+**Status on 2026-11-01: the month-long dense-to-ternary run is not cleared.**
+**Start with the [quality gates](QUALITY_GATES.md) and
+[adaptive compute plan](ADAPTIVE_COMPUTE_PLAN.md).** Fix the 5,760 GPU-hour
+budget and qualified learning/data policy; let measured dense/QAT throughput
+determine the useful token horizon. Extend only the uncommitted WSD plateau
+while protecting cooldown, QAT recovery and final evaluation. This policy
+requires explicit future schedule/data transitions; editing a live manifest
+does not implement it. Current production builders still generate fixed
+horizons. Close the offline data/evaluation gates before long paid training.
+
+**Focused learning qualification:** reuse the completed HPO and use the available single
 Azure H100, capped at 50 hours, for [lower-LR controls at fixed 2M batch,
 with explicit monitoring and a transferred-winner check](LR_BATCH_MONITORING.md).
 Run the LR controls and historical anchor on the **194M width-scaled proxy**,
@@ -12,7 +21,9 @@ only at the forecast rates; the additional proxy batch comparison is deferred
 by default. Preserve the 50-hour cap and charge all overhead.
 For execution preparation, use the
 [Kimi handoff folder](../../kimi_h100_5b/README.md), including its paste-ready
-prompt, frozen campaign contract, implementation backlog and CPU forecast tool.
+prompt, frozen campaign contract, implemented qualification tools and CPU
+forecast tool. The source audit below distinguishes implemented H100 tools
+from remaining AMD production integration.
 The 12 completed 200M
 and six 700M trials were verified against their external event-file hashes.
 The broad fresh HPO search remains deferred. One GPU can test the intended 2M
@@ -38,11 +49,14 @@ comparisons, longer finalists, seed confirmation, cooldown probes, QAT/control
 trials, fault recovery and token-budget accounting. The current focused plan
 determines which experiments come first; the larger search is optional.
 
-This is a plan, not newly implemented training machinery. The current AMD
-validator locks the old optimizer values; explicit bounded qualification and
-dense-fork tooling, native QAT, live durable backup, generated task evaluation
-and all-rank safety/acceptance work remain in the plan's engineering backlog.
-Native throughput, memory fit, learning and recovery remain unverified.
+The single-H100 campaign now has a bounded runner, horizon views, full-state
+telemetry, selection/transfer, an allocation ledger and checkpoint/S3 recovery
+tooling. These are implemented, not all still backlog items. They are not an
+eight-MI325X production runner or acceptance evidence for that node. The AMD
+validator still locks the earlier optimizer recipe. Native QAT, production
+schedule extension, generated task evaluation and all-rank acceptance remain
+open; see the [source audit and quality requirements](QUALITY_GATES.md).
+Native AMD throughput, memory fit, learning and recovery remain unverified.
 
 Ternary QAT does not require ternary arithmetic units. The existing H100
 training path represents effective projection weights as FP8 codes `-1`, `0`
@@ -104,14 +118,18 @@ blockers in [TRAINING_RISKS.md](TRAINING_RISKS.md). The detailed evidence and te
   across the switch initially. A CPU-tested transition can rebase the
   microstep cursor if QAT needs another microbatch; native eight-rank
   conversion and exact resume still need verification.
-- [ ] **Final go/no-go:** Freeze the selected batch, dense/QAT token budgets,
-  data mixture, schedules, runtime identity, recovery plan and acceptance
-  evidence. Forecast both phases using measured complete-update rates within
-  the **5,760 GPU-hour total**. A 60/40 dense/QAT token split is a planning
-  default, not a proven optimum.
+- [ ] **Final go/no-go:** Freeze the selected batch, learning/data policy,
+  schedule-transition rules, finishing minima, runtime identity, recovery
+  plan and acceptance evidence. Forecast both phases within the
+  **5,760 GPU-hour total** using measured sustained rates. Keep the future
+  token horizon adjustable only through the reviewed protocol, then commit
+  each ending before decay. Until that protocol is implemented and tested,
+  current generated configs retain a fixed horizon. A 60/40 dense/QAT token
+  split is a planning default, not a proven optimum.
 
 Record measured configs, data manifests, preflight reports, comparison
 receipts, evaluation results and checkpoints **outside Git**. Until these
 items are complete, the long run is not cleared. Existing tools support
-bounded native bring-up; the new HP/QAT campaign first needs the explicit
-qualification machinery listed in the full plan.
+bounded bring-up and single-H100 qualification; the remaining AMD work is
+specified in [QUALITY_GATES.md](QUALITY_GATES.md) and
+[ADAPTIVE_COMPUTE_PLAN.md](ADAPTIVE_COMPUTE_PLAN.md).

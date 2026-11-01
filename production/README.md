@@ -5,6 +5,15 @@
 It records the unresolved batch, QAT and native-hardware gates for the
 5,760 GPU-hour allocation.
 
+**2026-11-01 production policy:** close the
+[data, evaluation and numerical quality gates](amd/pretraining_readiness/QUALITY_GATES.md),
+then use the [adaptive compute plan](amd/pretraining_readiness/ADAPTIVE_COMPUTE_PLAN.md)
+to fund a measured token horizon inside the fixed allocation. Extend the WSD
+plateau while reserving complete finishing phases. The current trainer still
+uses a fixed manifest horizon; prospective schedule/data transitions require
+implementation and testing. The focused five-billion-token proxy comparisons
+below remain fixed and comparable.
+
 **2026-10-28 qualification policy:** the latest direction reuses completed HPO
 and spends up to 50 hours on one Azure H100 on a
 [proxy LR/batch checks followed by winner transfer](amd/pretraining_readiness/LR_BATCH_MONITORING.md),
