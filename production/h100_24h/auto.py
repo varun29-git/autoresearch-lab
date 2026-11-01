@@ -15,6 +15,7 @@ import math
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 from production.artifacts import external_path
 from terminus.integrity import write_json_atomic
@@ -92,7 +93,14 @@ def require_campaign_budget(root: Path, ledger: budget.Ledger, *, h_fork_credit:
 
 
 def _call(module: str, *args: str) -> None:
-    subprocess.run([sys.executable, "-m", module, *map(str, args)], check=True)
+    values = list(map(str, args))
+    trial = next((values[values.index(flag) + 1] for flag in ("--trial", "--confirmation-from")
+                  if flag in values), None)
+    print(json.dumps({"event": "stage_start", "module": module, "trial": trial,
+                      "time_unix": time.time()}), flush=True)
+    subprocess.run([sys.executable, "-m", module, *values], check=True)
+    print(json.dumps({"event": "stage_complete", "module": module, "trial": trial,
+                      "time_unix": time.time()}), flush=True)
 
 
 def _runner_args(root: Path, args, *, trial: str, confirmation: bool,
@@ -116,7 +124,11 @@ def _runner_args(root: Path, args, *, trial: str, confirmation: bool,
                "--ledger", str(root / "budget.jsonl"),
                "--stage-forecast-hours", str(stage_hours),
                "--future-work-hours", str(max(0.0, future_work_hours)),
-               "--backup-destination", args.backup_destination]
+               "--backup-destination", args.backup_destination.rstrip("/")
+               + ("/confirmation/" if confirmation else f"/trials/{trial}/"),
+               "--backup-max-pending-bytes", str(32 * 1024**3),
+               "--reference-probes", "--replay-max-weight-delta", "0.005",
+               "--replay-max-moment-delta", "0.0005"]
     if resume is not None:
         command += ["--resume", str(resume)]
     return command
