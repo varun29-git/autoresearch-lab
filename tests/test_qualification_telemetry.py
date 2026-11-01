@@ -4,12 +4,13 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import torch
 
 from terminus.model import BitNetLlama
 from terminus.optim import OptimizerConfig, build_optimizer
-from terminus.train import run_training
+from terminus.train import prepare_training, run_training
 
 from production.kimi_h100_5b import telemetry
 from tests.helpers import checkpoint_payload, fixture, tiny_config
@@ -128,6 +129,27 @@ class RoleDeltaTests(unittest.TestCase):
 
 
 class NativeFp8CacheTests(unittest.TestCase):
+    def test_boundary_occupancy_uses_actual_operand_format(self):
+        for dtype, maximum in ((torch.float8_e4m3fn, 448.0),
+                               (torch.float8_e4m3fnuz, 240.0),
+                               (torch.float8_e5m2, 57344.0),
+                               (torch.float8_e5m2fnuz, 57344.0)):
+            with self.subTest(dtype=dtype):
+                model = fused_tiny()
+                module = model.layers[0].attn.qkv_proj
+                codes = torch.tensor([-maximum, 0.0, 1.0, maximum]).to(dtype)
+                before = codes.float().clone()
+                module._fp8_weight_cache = (
+                    (None, module.weight.data_ptr(), module.weight._version),
+                    {"codes": codes, "scale": torch.ones(1)})
+                report = telemetry.native_fp8_cache_report(model)
+                entry = report["modules"]["layers.0.attn.qkv_proj"]
+                self.assertEqual(entry["operands.codes"]["max_finite"], maximum)
+                self.assertEqual(entry["operands.codes"]["boundary_occupancy_fraction"], 0.5)
+                self.assertEqual(entry["operands.codes"]["zero_fraction"], 0.25)
+                self.assertNotIn("boundary_occupancy_fraction", entry["operands.scale"])
+                self.assertTrue(torch.equal(codes.float(), before))
+
     def test_absent_cache_is_observed_not_recomputed(self):
         model = fused_tiny()
         report = telemetry.native_fp8_cache_report(model)
@@ -153,6 +175,37 @@ class SnapshotRestoreTests(unittest.TestCase):
 
 
 class TrainerCounterTests(unittest.TestCase):
+    def test_unexpected_target_mask_rejected_before_optimizer_update(self):
+        for masked_per_microbatch in (1, 16):
+            with self.subTest(masked_per_microbatch=masked_per_microbatch), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                fixture(root / "dataset", examples=8, batch_size=2, accumulation=2)
+                with prepare_training(root / "dataset/config.json", root / "dataset/manifest.json",
+                                      root / "dataset", root / "run") as workload:
+                    source_iterator = workload.iterator
+
+                    def masked_batches():
+                        for index, inputs, targets in source_iterator:
+                            targets = targets.clone()
+                            targets.view(-1)[:masked_per_microbatch] = -100
+                            yield index, inputs, targets
+
+                    workload.iterator = masked_batches()
+                    state_before = dict(workload.state)
+                    weights_before = {key: value.clone() for key, value in workload.model.state_dict().items()}
+                    with patch.object(workload.optimizer, "step", wraps=workload.optimizer.step) as step:
+                        with self.assertRaisesRegex(ValueError, "optimizer update was not applied"):
+                            workload.complete_update()
+                        step.assert_not_called()
+                    self.assertEqual(workload.state, state_before)
+                    for key, value in workload.model.state_dict().items():
+                        self.assertTrue(torch.equal(value, weights_before[key]), key)
+                incidents = [json.loads(line) for line in (root / "run/incidents.jsonl").read_text().splitlines()]
+                self.assertEqual(incidents[0]["event"], "token_count_mismatch")
+                self.assertEqual(incidents[0]["update_tokens"], 32)
+                self.assertEqual(incidents[0]["valid_targets"], 32 - 2 * masked_per_microbatch)
+                self.assertFalse((root / "run/checkpoints/latest.json").exists())
+
     def test_valid_targets_and_data_wait_are_logged(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

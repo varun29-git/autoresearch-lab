@@ -357,6 +357,18 @@ class PreparedTraining:
             if self.rank == 0:
                 append_record(self.output_dir / "incidents.jsonl", {"event": "nonfinite_loss", "state": state})
             raise FloatingPointError("nonfinite global training loss; optimizer update was not applied")
+        # Backward used the declared global token count as its denominator.
+        # Reject an unexpected loss mask on every rank before it changes
+        # weights/moments. Legitimate padded tails still have exactly the
+        # declared number of valid targets across the complete global update.
+        if valid_targets != update_tokens:
+            if self.rank == 0:
+                append_record(self.output_dir / "incidents.jsonl", {
+                    "event": "token_count_mismatch", "state": state,
+                    "valid_targets": valid_targets, "update_tokens": update_tokens})
+            raise ValueError(
+                f"valid targets {valid_targets:g} differ from nominal update tokens "
+                f"{update_tokens}; optimizer update was not applied")
         if sampled:
             self.monitor.gradients_before_clip()
         try:

@@ -21,9 +21,11 @@ import time
 
 import torch
 
-# FP8 e4m3 largest finite magnitude; boundary occupancy is reported, not
-# judged: dynamic block scaling can place a block maximum here legitimately.
-FP8_E4M3_MAX_FINITE = 448.0
+# Boundary occupancy is observed using the operand's actual FP8 format.
+# E4M3FN (448) and E4M3FNUZ (240) do not have interchangeable ranges.
+# Dynamic block scaling can legitimately place a block maximum at the edge.
+FP8_DTYPES = (torch.float8_e4m3fn, torch.float8_e4m3fnuz,
+              torch.float8_e5m2, torch.float8_e5m2fnuz)
 
 
 class QualificationFailure(RuntimeError):
@@ -244,14 +246,15 @@ def _operand_tensor_stats(prefix: str, value, out: dict) -> None:
     """Read-only recursive stats over an FP8 operand structure."""
     if torch.is_tensor(value):
         entry = {"dtype": str(value.dtype), "shape": list(value.shape)}
-        if value.is_floating_point() or value.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
+        if value.is_floating_point() or value.dtype in FP8_DTYPES:
             flat = value.detach().reshape(-1)
             as_float = flat.float()
             entry["zero_fraction"] = float((as_float == 0).float().mean()) if flat.numel() else 0.0
             entry["max_abs"] = float(as_float.abs().max()) if flat.numel() else 0.0
-            if value.dtype == torch.float8_e4m3fn:
+            if value.dtype in FP8_DTYPES:
+                entry["max_finite"] = float(torch.finfo(value.dtype).max)
                 entry["boundary_occupancy_fraction"] = float(
-                    (as_float.abs() == FP8_E4M3_MAX_FINITE).float().mean()) if flat.numel() else 0.0
+                    (as_float.abs() == entry["max_finite"]).float().mean()) if flat.numel() else 0.0
         out[prefix] = entry
     elif isinstance(value, dict):
         for key, item in value.items():
