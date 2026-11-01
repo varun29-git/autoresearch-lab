@@ -27,6 +27,17 @@ and uploads; an Azure auto-shutdown schedule is set before the 24-hour cap;
 a persistent operator watcher mirrors status and deallocates on terminal
 status or deadline. VM deallocation is required to end billing.
 
+For the active 2026-11-01 allocation, the external launch packet records the
+operator watcher's version-2 activation and source hash in `amendments.jsonl`.
+Error-triggered deallocation requires two matching status reads one minute
+apart and a separate remote process check showing that the campaign controller
+is gone. A terminal status must also match the supervisor's terminal event.
+If the supervisor dies before writing a terminal status, a running status must
+be over five minutes old, or a finalizing status over ten minutes old, before
+two absent-process checks can trigger deallocation. A failed SSH poll alone
+never triggers it. The local launch agent restarts a crashed watcher; the
+fixed allocation deadline and Azure auto-shutdown remain independent caps.
+
 Reference replays use the previously frozen 0.005 weight and 0.0005 moment
 delta tolerances at each fresh/resumed first update and warmup/pre-decay boundaries. Per-update
 qualification records retain target counts, all group rates, full finite
