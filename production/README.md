@@ -1,5 +1,13 @@
 # CI-1 production handoff
 
+**2026-11-01 H100 qualification update:** The next single-H100 allocation is
+limited to 24 hours. The [new staged 24-hour campaign](h100_24h/README.md)
+shortens the five matched proxy arms to about 2B tokens each, credits H's
+first 725 updates only after a verified future-only schedule fork, and keeps
+one 600M-token full-size confirmation. Its automatic controller advances only
+healthy complete arms and reforecasts the whole remaining budget. The earlier
+5B/50-hour Kimi handoff below is historical and remains unchanged.
+
 **Before an eight-MI325X training campaign:** read the
 [`amd/pretraining_readiness/` entry point](amd/pretraining_readiness/README.md).
 It records the unresolved batch, QAT and native-hardware gates for the
