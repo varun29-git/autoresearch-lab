@@ -12,8 +12,7 @@ def validate_recipe(config):
             or config.fp8_quantizer != "triton_split" or config.weight_scale_layout != "blockwise"
             or config.alpha_group_size != 128 or not config.quantize_activations
             or config.quantization_strength != 1 or config.dim % 128 or config.ffn_dim % 128
-            or (config.n_kv_heads * config.head_dim) % 128 or config.fp8_wgrad_recipe != "1d1d"
-            or config.fused_fp8_producers):
+            or (config.n_kv_heads * config.head_dim) % 128 or config.fp8_wgrad_recipe != "1d1d"):
         raise ValueError("ROCm FP8 requires full-backward 128-block scaling and immediate dense/ternary weights")
     if config.linear_backend == "rocm_fp8_te" and config.fp8_wgrad_splits:
         raise ValueError("TE owns its split-K scheduling; fp8_wgrad_splits must be zero")
@@ -61,25 +60,40 @@ def gemm(lhs, rhs, *, backend, rhs_group_size=128, out_dtype=torch.bfloat16, spl
     return triton_gemm(lhs, rhs, rhs_group_size=rhs_group_size, out_dtype=out_dtype, splits=splits)
 
 
+def _rows(values, activation_rows):
+    codes, scales = activation_rows
+    m, k = values.numel() // values.shape[-1], values.shape[-1]
+    if (codes.dtype != torch.float8_e4m3fnuz or codes.shape != (m, k) or not codes.is_contiguous()
+            or scales.dtype != torch.float32 or scales.shape != (m, k // 128)
+            or scales.stride() != (1, m)
+            or codes.device != values.device or scales.device != values.device):
+        raise ValueError("AMD producer sidecar has incompatible FNUZ codes/scales")
+    return codes, scales
+
+
 def linear(values, weight, *, weight_operands=None, backend="rocm_fp8", splits=1,
-           weight_mode="dense"):
+           weight_mode="dense", activation_rows=None):
     if values.dtype != torch.bfloat16 or weight.dtype != torch.float32:
         raise ValueError("AMD FP8 needs BF16 activations and FP32 master weights")
     if weight_mode not in {"dense", "ternary"}:
         raise ValueError("unknown AMD FP8 weight mode")
     if not torch.is_grad_enabled() or not (values.requires_grad or weight.requires_grad):
-        x, _ = quantize_directions(values.reshape(-1, values.shape[-1]))
+        x = _rows(values, activation_rows) if activation_rows is not None else quantize_directions(values.reshape(-1, values.shape[-1]))[0]
         w, _ = weight_operands or quantize_weight(weight, weight_mode=weight_mode)
         return gemm(x, w, backend=backend).reshape(*values.shape[:-1], weight.shape[0])
-    return DenseFP8.apply(values, weight, weight_operands, backend, splits, weight_mode)
+    return DenseFP8.apply(values, weight, weight_operands, backend, splits, weight_mode, activation_rows)
 
 
 class DenseFP8(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, values, weight, weight_operands, backend, splits, weight_mode):
+    def forward(ctx, values, weight, weight_operands, backend, splits, weight_mode, activation_rows):
         flat = values.reshape(-1, values.shape[-1])
         need_x, need_w = ctx.needs_input_grad[:2]
-        x, xt = quantize_directions(flat, transposed=need_w)
+        if activation_rows is None:
+            x, xt = quantize_directions(flat, transposed=need_w)
+        else:
+            x = _rows(values, activation_rows)
+            xt = quantize_directions(flat, rowwise=False, transposed=True)[1] if need_w else None
         w, wt = weight_operands or quantize_weight(weight, transposed=need_x,
                                                    weight_mode=weight_mode)
         output = gemm(x, w, backend=backend)
@@ -98,4 +112,4 @@ class DenseFP8(torch.autograd.Function):
         dx = gemm(g, (wc, ws), backend=ctx.backend).reshape(ctx.input_shape) if need_x else None
         dw = gemm(gt, (xc, xs), backend=ctx.backend, rhs_group_size=1,
                   out_dtype=torch.float32, splits=ctx.splits) if need_w else None
-        return dx, dw, None, None, None, None
+        return dx, dw, None, None, None, None, None

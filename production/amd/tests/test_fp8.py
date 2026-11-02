@@ -144,3 +144,23 @@ def test_native_quantizer_gemm_and_full_backward():
                         dim=256, n_heads=4, n_kv_heads=2, ffn_dim=640)
         result = fp8_gate(small, torch.device("cuda"))
         assert result["fp32_wgrad"] and result["weight_mode"] == mode
+
+
+@pytest.mark.parametrize('weight_mode',['dense','ternary'])
+@pytest.mark.parametrize('need_x,need_w',[(True,True),(False,True),(True,False),(False,False)])
+def test_fnuz_producer_sidecar_preserves_forward_and_both_gradients(emulated,weight_mode,need_x,need_w):
+    torch.manual_seed(91)
+    x=torch.randn(17,256,dtype=torch.bfloat16,requires_grad=need_x)
+    w=torch.randn(256,256,requires_grad=need_w)
+    rows=reference.directional(x)[0]
+    rows=(rows[0],rows[1].T.contiguous().T)
+    actual=backend.linear(x,w,weight_mode=weight_mode,activation_rows=rows)
+    expected=backend.linear(x,w,weight_mode=weight_mode)
+    torch.testing.assert_close(actual,expected,rtol=0,atol=0)
+    inputs=[v for v in (x,w) if v.requires_grad]
+    if inputs:
+        g=torch.randn_like(actual)
+        for a,b in zip(torch.autograd.grad(actual,inputs,g),torch.autograd.grad(expected,inputs,g)):
+            torch.testing.assert_close(a,b,rtol=0,atol=0)
+    with pytest.raises(ValueError,match='FNUZ'):
+        backend.linear(x,w,activation_rows=(rows[0].float().to(torch.float8_e4m3fn),rows[1]))

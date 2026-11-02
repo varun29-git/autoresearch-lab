@@ -14,7 +14,7 @@ from .recipe import CANDIDATES, SELECTED_DENSE_OPTIMIZER, SELECTED_QAT_OPTIMIZER
 def build_config(*, manifest, world_size, global_batch_tokens, warmup_tokens, decay_tokens,
                  candidate="fp8", attention="rocm_aiter", local_attention="", wgrad_splits=None,
                  loss_chunk_size=4096, ddp_bucket_cap_mb=25, weight_mode="dense",
-                 phase_start_tokens=None):
+                 phase_start_tokens=None, fused_fp8_producers=False, async_checkpoint=True):
     if weight_mode == "ternary":
         if type(global_batch_tokens) is not int or global_batch_tokens <= 0:
             raise ValueError("global_batch_tokens must be a positive integer")
@@ -31,12 +31,13 @@ def build_config(*, manifest, world_size, global_batch_tokens, warmup_tokens, de
                              warmup_tokens=warmup_tokens, decay_tokens=decay_tokens)
     config["model"] = asdict(model_for(candidate, attention=attention, local_attention=local_attention,
                                       wgrad_splits=wgrad_splits, loss_chunk_size=loss_chunk_size,
-                                      weight_mode=weight_mode))
+                                      weight_mode=weight_mode, fused_fp8_producers=fused_fp8_producers))
     config["optimizer"] = SELECTED_DENSE_OPTIMIZER.copy()
     if weight_mode == "ternary":
         config["optimizer"] = SELECTED_QAT_OPTIMIZER.copy()
         config["training"]["phase_start_tokens"] = phase_start_tokens
     config["training"]["ddp_bucket_cap_mb"] = ddp_bucket_cap_mb
+    config["training"]["async_checkpoint"] = async_checkpoint
     # Stability probes add full tensor scans. Keep them available and explicit;
     # performance measurements record whether they were enabled.
     TrainConfig(**config["training"])
@@ -51,6 +52,8 @@ def main():
         p.add_argument("--" + name, type=int, required=True)
     p.add_argument("--world-size", type=int, default=8)
     p.add_argument("--candidate", choices=CANDIDATES, default="fp8")
+    p.add_argument("--fused-fp8-producers", action="store_true", help="Opt-in AMD producer candidate; native gate required")
+    p.add_argument("--synchronous-checkpoint", dest="async_checkpoint", action="store_false")
     p.add_argument("--weight-mode", choices=("dense", "ternary"), default="dense")
     p.add_argument("--phase-start-tokens", type=int)
     p.add_argument("--attention", choices=("rocm_aiter", "rocm_ck"), default="rocm_aiter")

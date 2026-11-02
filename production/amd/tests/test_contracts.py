@@ -52,7 +52,7 @@ def test_dense_promotion_changes_only_embedding_rate_and_rejects_old_config():
 
 
 def test_no_silent_amd_precision_fallback():
-    for options in ({"fp8_backward": "bf16"}, {"fused_fp8_producers": True},
+    for options in ({"fp8_backward": "bf16"},
                     {"fp8_quantizer": "torch"}, {"weight_scale_layout": "rowwise"}):
         with pytest.raises(ValueError):
             replace(model_for(), **options)
@@ -217,3 +217,11 @@ def test_amd_qat_receipt_requires_mode_specific_native_evidence(tmp_path, monkey
     report["report_sha256"] = fingerprint(report)
     path.write_text(json.dumps(report))
     validate_report(path, model, torch.device("cpu"))
+
+
+def test_fp8_producer_candidate_is_explicit_and_uses_qualified_dense_rates():
+    assert not model_for().fused_fp8_producers
+    for mode in ('dense','ternary'):
+        model=model_for('fp8_te',weight_mode=mode,fused_fp8_producers=True)
+        assert model.fused_fp8_producers
+    with pytest.raises(ValueError):model_for('bf16',fused_fp8_producers=True)

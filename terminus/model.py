@@ -90,8 +90,8 @@ class BitNetLlamaConfig:
             raise ValueError("unknown linear cross entropy backend")
         if self.loss_backend.startswith("triton_fp8") and not self.quantize_activations:
             raise ValueError("the FP8 head branch requires the FP8 activation recipe")
-        if self.fused_fp8_producers and not (self.fused_pointwise and self.linear_backend == "deepgemm" and self.quantize_activations):
-            raise ValueError("producer FP8 fusion requires fused pointwise kernels and the DeepGEMM FP8 recipe")
+        if self.fused_fp8_producers and not (self.fused_pointwise and (self.linear_backend == "deepgemm" or self.linear_backend.startswith("rocm_fp8")) and self.quantize_activations):
+            raise ValueError("producer FP8 fusion requires fused pointwise kernels and an explicit native FP8 recipe")
         if self.residual_dtype not in {"fp32", "bf16"}:
             raise ValueError("residual_dtype must be fp32 or bf16")
         if self.embedding_dim is not None and (isinstance(self.embedding_dim, bool)
@@ -296,12 +296,10 @@ class BitLinear(nn.Module):
         if self.linear_backend.startswith("rocm_fp8"):
             from production.amd.backend import linear
 
-            if activation_rows is not None:
-                raise ValueError("Hopper FP8 producer sidecars cannot be used by ROCm")
             return linear(values.to(torch.bfloat16), self.weight,
                           weight_operands=self._weight_operands(values),
                           backend=self.linear_backend, splits=self.fp8_wgrad_splits or 1,
-                          weight_mode=self.weight_mode)
+                          weight_mode=self.weight_mode, activation_rows=activation_rows)
         if self.linear_backend == "deepgemm":
             return deepgemm_bitlinear(values.to(torch.bfloat16), self.weight,
                                      backward_mode=self.fp8_backward, quantizer=self.fp8_quantizer,
@@ -475,7 +473,8 @@ class BitNetFeedForward(nn.Module):
         self.ffn_activation = config.ffn_activation
         self.fused_pointwise = config.fused_pointwise
         self.fused_mlp = config.fused_mlp
-        self.emit_fp8 = config.fused_fp8_producers and config.linear_backend == "deepgemm"
+        self.emit_fp8 = config.fused_fp8_producers
+        self.amd_fp8 = config.linear_backend.startswith("rocm_fp8")
         self.fuse_projections = config.fuse_projections and self.ffn_activation == "swiglu"
         if self.fuse_projections:
             self.gate_up_proj = make_linear(config, config.dim, 2 * config.ffn_dim)
@@ -492,7 +491,10 @@ class BitNetFeedForward(nn.Module):
             eps = self.ffn_sub_norm.eps if weight is not None else 0.
             gate_input = self.gate_up_proj(hidden, activation_rows=hidden_fp8)
             if self.emit_fp8:
-                from .pointwise import packed_swiglu_norm_fp8
+                if self.amd_fp8:
+                    from production.amd.producers import packed_swiglu_norm_fp8
+                else:
+                    from .pointwise import packed_swiglu_norm_fp8
 
                 out, codes, scales = packed_swiglu_norm_fp8(gate_input, weight, eps)
                 return self.down_proj(out, activation_rows=(codes, scales))
@@ -529,9 +531,13 @@ class BitNetBlock(nn.Module):
 
     def forward(self, hidden, cos, sin, attention_mask=None, cache=None, *, value_source=None):
         fuse_fp8 = (self.config.fused_fp8_producers and hidden.is_cuda and cache is None
-                    and self.attn.qkv_proj.linear_backend == "deepgemm")
+                    and (self.attn.qkv_proj.linear_backend == "deepgemm"
+                         or self.attn.qkv_proj.linear_backend.startswith("rocm_fp8")))
         if fuse_fp8:
-            from .pointwise import rms_norm_fp8
+            if self.config.linear_backend.startswith("rocm_fp8"):
+                from production.amd.producers import rms_norm_fp8
+            else:
+                from .pointwise import rms_norm_fp8
 
             normed, codes, scales = rms_norm_fp8(hidden, self.attn_norm.weight, self.attn_norm.eps)
             hidden = hidden + self.attn_out_norm(self.attn(normed, cos, sin, attention_mask, cache,

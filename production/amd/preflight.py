@@ -13,9 +13,8 @@ from terminus.model import BitNetLlama, BitLinear, RMSNorm, apply_rotary
 from terminus.optim import build_optimizer, OptimizerConfig
 from terminus.preflight import count_model, model_numerical_preflight, optimized_kernel_preflight
 from terminus.train import load_config, runtime_contract
-from production.recipe import SELECTED_OPTIMIZER
 from . import backend, reference
-from .recipe import SELECTED_QAT_OPTIMIZER, changes
+from .recipe import SELECTED_DENSE_OPTIMIZER, SELECTED_QAT_OPTIMIZER, changes
 from .runtime import require_gfx942
 
 
@@ -31,6 +30,8 @@ def validate_report(path, config, device):
             or report.get("status") != "passed" or report.get("identity") != identity(config, device)):
         raise ValueError("AMD preflight is stale, incompatible or did not pass")
     required = ("attention", "model_numerics", "optimized_kernels", "packed_learned_qkv", "optimizer")
+    if config.fused_fp8_producers:
+        required += ("fp8_producers",)
     if config.linear_backend.startswith("rocm_fp8"):
         required += ("fp8",)
         if config.weight_mode == "ternary":
@@ -204,13 +205,43 @@ def packed_gate(config, device):
                    [*expected, *torch.autograd.grad(expected, operands, grads)], limit=.012)
 
 
+def producer_gate(config, device):
+    from .producers import rms_norm_fp8, packed_swiglu_norm_fp8
+    from .fp8_kernels import quantize
+    from terminus.pointwise import rms_norm, packed_swiglu_norm
+
+    results = []
+    for kind in ("norm", "swiglu"):
+        width = config.dim if kind == "norm" else config.ffn_dim
+        for rows in (17, 129):
+            for amplitude in (0., 1e-7, 1., 1000.):
+                x = (torch.randn(rows, width * (2 if kind == "swiglu" else 1), device=device,
+                                 dtype=torch.bfloat16) * amplitude).requires_grad_()
+                gain = torch.ones(width if kind == "norm" else (), device=device, requires_grad=True)
+                xr, gr = x.detach().clone().requires_grad_(), gain.detach().clone().requires_grad_()
+                fused = rms_norm_fp8 if kind == "norm" else packed_swiglu_norm_fp8
+                separate = rms_norm if kind == "norm" else packed_swiglu_norm
+                out, codes, scales = fused(x, gain, config.rms_norm_eps)
+                expected = separate(xr, gr, config.rms_norm_eps)
+                expected_codes, expected_scales = quantize(expected.reshape(-1, width), eps=1e-5)
+                if codes.dtype != torch.float8_e4m3fnuz or not torch.equal(codes.float(), expected_codes.float()):
+                    raise AssertionError("fused producer codes differ from separate AMD quantization")
+                if not torch.equal(scales, expected_scales):
+                    raise AssertionError("fused producer scales differ from separate AMD quantization")
+                gradient = torch.randn_like(out)
+                errors = _errors([out, *torch.autograd.grad(out, (x, gain), gradient)],
+                                 [expected, *torch.autograd.grad(expected, (xr, gr), gradient)], limit=.012)
+                results.append({"kind": kind, "rows": rows, "amplitude": amplitude, "errors": errors})
+    return {"cases": results, "fp8_format": "float8_e4m3fnuz", "separate_quantizer_exact": True}
+
+
 def optimizer_gate(config, device):
     reduced = replace(config, dim=256, n_heads=4, n_kv_heads=2, ffn_dim=640,
                       vocab_size=257, n_layers=6, max_seq_len=16, local_attention_window=8,
                       pad_token_id=0, loss_chunk_size=7)
     a, b = BitNetLlama(reduced).to(device), BitNetLlama(reduced).to(device)
     b.load_state_dict(a.state_dict())
-    selected = SELECTED_QAT_OPTIMIZER if config.weight_mode == "ternary" else SELECTED_OPTIMIZER
+    selected = SELECTED_QAT_OPTIMIZER if config.weight_mode == "ternary" else SELECTED_DENSE_OPTIMIZER
     oa, ob = [build_optimizer(m, OptimizerConfig(**selected)) for m in (a, b)]
     ob.batched = False
     errors = []
@@ -244,6 +275,7 @@ def run(config, device):
                   "optimized_kernels": optimized_kernel_preflight(config, device),
                   "model_numerics": model_numerical_preflight(config, device),
                   "optimizer": optimizer_gate(config, device),
+                  "fp8_producers": producer_gate(config, device) if config.fused_fp8_producers else None,
                   "scope": "Kernel and reduced-model gate only. Full-size training, quality, DDP and recovery remain unmeasured."}
         if config.weight_mode == "ternary":
             report["ternary"] = {
