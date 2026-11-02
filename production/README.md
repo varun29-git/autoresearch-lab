@@ -1,5 +1,12 @@
 # CI-1 production handoff
 
+**2026-11-03 tokenizer update:** an
+[encoder-preserving stock decoder candidate](DECODER_REPAIR.md) and contextual
+streaming reference are available. Generate the candidate outside Git; keep
+corpus/checkpoint hashes pinned to their original encoder artifact. Corpus
+source acceptance, ambiguity-policy review and actual output-stack qualification
+remain open. This does not require blanket retokenization.
+
 **2026-11-02 readiness update:** the single-H100 qualification campaign is
 complete; selection/transfer/full-size confirmation receipts are external.
 The AMD baseline now promotes the confirmed dense embedding LR and includes

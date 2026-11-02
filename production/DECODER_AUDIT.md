@@ -40,3 +40,8 @@ normalization policy. Reinspect policy after changing the artifact.
 
 `tokenizers` must be installed in the analysis environment. Reports, source
 samples, candidate tokenizer files and measurements belong outside Git.
+
+The [encoder-preserving repair candidate](DECODER_REPAIR.md) builds a separate
+HF directory and includes a contextual streaming reference. It does not change
+the production tokenizer or authorize data regeneration. Review its collision
+conventions and qualify the actual output stack before promotion.
