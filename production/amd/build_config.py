@@ -8,7 +8,7 @@ from production.build_dense_config import build_config as baseline_config
 from terminus.data import TokenManifest
 from terminus.integrity import write_json_atomic
 from terminus.train import TrainConfig, load_config
-from .recipe import CANDIDATES, SELECTED_QAT_OPTIMIZER, changes, model_for
+from .recipe import CANDIDATES, SELECTED_DENSE_OPTIMIZER, SELECTED_QAT_OPTIMIZER, changes, model_for
 
 
 def build_config(*, manifest, world_size, global_batch_tokens, warmup_tokens, decay_tokens,
@@ -32,6 +32,7 @@ def build_config(*, manifest, world_size, global_batch_tokens, warmup_tokens, de
     config["model"] = asdict(model_for(candidate, attention=attention, local_attention=local_attention,
                                       wgrad_splits=wgrad_splits, loss_chunk_size=loss_chunk_size,
                                       weight_mode=weight_mode))
+    config["optimizer"] = SELECTED_DENSE_OPTIMIZER.copy()
     if weight_mode == "ternary":
         config["optimizer"] = SELECTED_QAT_OPTIMIZER.copy()
         config["training"]["phase_start_tokens"] = phase_start_tokens

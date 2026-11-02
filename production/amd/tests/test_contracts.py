@@ -8,7 +8,7 @@ import torch
 from production.amd.budget import forecast
 from production.amd.build_config import build_config
 from production.amd.measurement import summarize
-from production.amd.recipe import CANDIDATES, SELECTED_QAT_OPTIMIZER, changes, model_for, validate_production
+from production.amd.recipe import CANDIDATES, SELECTED_DENSE_OPTIMIZER, SELECTED_QAT_OPTIMIZER, changes, model_for, validate_production
 from production.amd.runtime import require_gfx942
 from production.amd.staging import create, verify
 from production.recipe import SELECTED_MODEL, SELECTED_OPTIMIZER
@@ -31,13 +31,24 @@ def test_candidate_preserves_geometry_optimizer_and_batch(candidate):
     assert validate_production(model, training, optimizer) == candidate
     assert training.gradient_accumulation_steps == 8
     assert count_model(model)["total"] == 1_446_478_126
-    assert optimizer == OptimizerConfig(**SELECTED_OPTIMIZER)
+    assert optimizer == OptimizerConfig(**SELECTED_DENSE_OPTIMIZER)
     allowed = {"attention_backend", "linear_backend", "fp8_wgrad_splits", "quantize_activations",
                "fp8_backward", "fp8_quantizer", "fp8_cache_weights"}
     assert set(changes(model)) <= allowed
     with torch.device("meta"):
         instance = BitNetLlama(model)
     assert [i + 1 for i, layer in enumerate(instance.layers) if layer.attn.is_global_layer] == [6, 12, 18, 24]
+
+
+def test_dense_promotion_changes_only_embedding_rate_and_rejects_old_config():
+    assert SELECTED_DENSE_OPTIMIZER == SELECTED_OPTIMIZER | {"adamw_lr": .002}
+    assert SELECTED_DENSE_OPTIMIZER["adamw_lr"] == .006 * 768 / 2304
+    assert SELECTED_DENSE_OPTIMIZER["muon_lr"] == .017
+    assert SELECTED_DENSE_OPTIMIZER["muon_lr_rule"] == "spectral_unclamped"
+    assert SELECTED_QAT_OPTIMIZER["adamw_lr"] == .003
+    with pytest.raises(ValueError, match="optimizer"):
+        validate_production(model_for(), TrainConfig(device="cuda", dtype="bf16"),
+                            OptimizerConfig(**SELECTED_OPTIMIZER))
 
 
 def test_no_silent_amd_precision_fallback():

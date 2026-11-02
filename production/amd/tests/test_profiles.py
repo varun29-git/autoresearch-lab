@@ -11,7 +11,7 @@ from production.amd.prepare import prepare
 from production.amd.profiles import (BRIDGE_END_TOKENS, CADENCE_TOKENS, GLOBAL_BATCH_TOKENS,
                                     PROFILES, VALIDATION_SEQUENCES, WARMUP_TOKENS, select)
 from production.amd.recipe import validate_production
-from production.recipe import SELECTED_OPTIMIZER
+from production.amd.recipe import SELECTED_DENSE_OPTIMIZER as SELECTED_OPTIMIZER
 from terminus.data import TokenBatcher, TokenDataConfig, TokenManifest, TokenShardSpec
 from terminus.optim import OptimizerConfig
 from terminus.train import TrainConfig, evaluate, load_config, make_resume_contract, schedule_scale

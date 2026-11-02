@@ -6,6 +6,10 @@ from terminus.model import BitNetLlamaConfig
 from terminus.optim import OptimizerConfig
 
 CANDIDATES = ("fp8", "fp8_triton", "fp8_te", "bf16")
+# Reviewed promotion from the completed H100 width-transfer confirmation.
+# Transfer is already applied: 0.006 * 768 / 2304 = 0.002. No further scaling.
+# Keep the historical H100 baseline and the separately qualified QAT policy distinct.
+SELECTED_DENSE_OPTIMIZER = SELECTED_OPTIMIZER | {"adamw_lr": 0.002}
 SELECTED_QAT_OPTIMIZER = SELECTED_OPTIMIZER | {
     "muon_lr": 0.0085, "adamw_lr": 0.003,
     "norm_lr": 0.00015, "qk_norm_lr": 0.00005,
@@ -49,7 +53,7 @@ def validate_production(model, training, optimizer):
                          local_attention=model.local_attention_backend,
                          wgrad_splits=model.fp8_wgrad_splits, loss_chunk_size=model.loss_chunk_size,
                          weight_mode=model.weight_mode)
-    selected_optimizer = SELECTED_QAT_OPTIMIZER if model.weight_mode == "ternary" else SELECTED_OPTIMIZER
+    selected_optimizer = SELECTED_QAT_OPTIMIZER if model.weight_mode == "ternary" else SELECTED_DENSE_OPTIMIZER
     if model != expected or optimizer != OptimizerConfig(**selected_optimizer):
         raise ValueError("model/optimizer differs from the reviewed AMD migration candidate")
     if training.device != "cuda" or training.dtype != "bf16" or training.development_mode or training.compile or training.cuda_graphs:
