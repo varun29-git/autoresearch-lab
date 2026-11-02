@@ -64,7 +64,7 @@ native numerical agreement, actual memory fit or training speed.
 | Operations | Timed scheduled checkpoint/validation, graceful stop, abrupt worker loss, committed checkpoint recovery and durable restore | Do not rely on a single untested local checkpoint copy |
 | Quality | Preregistered language/domain development metrics and tolerances at matched tokens, plus matched-GPU-hour comparison | FNUZ/BF16/kernel loss proximity is not convergence evidence |
 | Budget | Actual eight-rank phase rates, elapsed bring-up hours, measured cadence/recovery duty cycle, selected token horizon | No 1.5T/2T claim from vendor peaks or the pasted estimates |
-| QAT | Explicit phase tokens/rates/data/state policy; native quantization/transition tests and dense→QAT held-out comparison | No AMD ternary launch from the dense candidate |
+| QAT | Port in [QAT_PORT.md](QAT_PORT.md); native quantization, transition, exact resume and dense→QAT held-out comparison | No sustained AMD ternary campaign before native acceptance |
 | Multi-node scale | Repeat topology, RCCL/DDP correctness, timing, data staging and recovery at each 2/4-node size | Single-node results do not certify 16/32 ranks |
 
 ## Numerical comparisons
@@ -152,7 +152,7 @@ fixed-token budget calculator; it preserves the requested token ratio,
 rounds to complete updates, and accounts for both phase rates and overhead.
 External JSON CLI output, local documentation links and `git diff --check`
 also passed. An extreme-input overflow found during testing was corrected.
-These allocation checks do not enable native AMD ternary execution. The later
+These allocation checks did not enable native AMD ternary execution. The later
 stream-continuity checks and remaining native obligations are described in
 [TRAINING_RISKS.md](pretraining_readiness/TRAINING_RISKS.md).
 

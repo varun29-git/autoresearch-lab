@@ -9,6 +9,10 @@ import math
 import torch
 import triton
 import triton.language as tl
+if torch.version.hip:
+    from triton.language.extra.hip import libdevice
+else:
+    from triton.language.extra.cuda import libdevice
 
 FP8 = torch.float8_e4m3fnuz
 FP8_MAX = torch.finfo(FP8).max
@@ -42,6 +46,25 @@ def _quantize(X, C, S, M: tl.constexpr, K: tl.constexpr, XR: tl.constexpr, XK: t
     y = tl.where(finite, tl.minimum(tl.maximum(y, -LIMIT), LIMIT), float("nan"))
     tl.store(C + row[:, None] * K + col[None, :], y.to(C.dtype.element_ty),
              (row[:, None] < M) & (col[None, :] < K))
+
+
+@triton.jit
+def _quantize_ternary(W, C, S, K: tl.constexpr, WR: tl.constexpr, WK: tl.constexpr):
+    # One 128x128 CTA reads the FP32 master once, computes the H100-compatible
+    # mean-absolute scale and emits FNUZ codes directly. No intermediate
+    # ternary or BF16 tensor is materialized in HBM.
+    rb = tl.program_id(0).to(tl.int64)
+    cb = tl.program_id(1).to(tl.int64)
+    row = rb * 128 + tl.arange(0, 128)
+    col = cb * 128 + tl.arange(0, 128)
+    block = tl.load(W + row[:, None] * WR + col[None, :] * WK).to(tl.float32)
+    scale = tl.maximum(tl.sum(tl.sum(tl.abs(block), 1), 0) * (1.0 / 16384.0), 1e-6)
+    code = libdevice.nearbyint(tl.div_rn(block, scale))
+    code = tl.minimum(tl.maximum(code, -1.0), 1.0)
+    finite = (tl.abs(block) < float("inf")) & (tl.abs(scale) < float("inf"))
+    code = tl.where(finite, code, float("nan")).to(C.dtype.element_ty)
+    tl.store(C + row[:, None] * K + col[None, :], code)
+    tl.store(S + rb * (K // 128) + cb, scale)
 
 
 @triton.jit
@@ -81,6 +104,23 @@ def quantize(values, *, group_rows=1, eps=0.0):
     _quantize[(triton.cdiv(m, rb), k // 128)](
         values, codes, scales, m, k, *values.stride(), *scales.stride(), group_rows, rb, eps, FP8_MAX,
         num_warps=8 if group_rows == 128 else 4)
+    return codes, scales
+
+
+@torch.no_grad()
+def quantize_ternary(weight):
+    from .runtime import require_gfx942
+
+    require_gfx942(weight.device)
+    if (weight.ndim != 2 or min(weight.shape) <= 0 or weight.dtype != torch.float32
+            or weight.shape[0] % 128 or weight.shape[1] % 128):
+        raise ValueError("AMD ternary FP8 needs an aligned FP32 master matrix")
+    rows, width = weight.shape
+    codes = torch.empty((rows, width), device=weight.device, dtype=FP8)
+    scales = torch.empty((rows // 128, width // 128), device=weight.device, dtype=torch.float32)
+    _quantize_ternary[(rows // 128, width // 128)](
+        weight, codes, scales, width, *weight.stride(),
+        num_warps=8, enable_fp_fusion=False)
     return codes, scales
 
 

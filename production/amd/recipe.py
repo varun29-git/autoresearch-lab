@@ -6,14 +6,20 @@ from terminus.model import BitNetLlamaConfig
 from terminus.optim import OptimizerConfig
 
 CANDIDATES = ("fp8", "fp8_triton", "fp8_te", "bf16")
+SELECTED_QAT_OPTIMIZER = SELECTED_OPTIMIZER | {
+    "muon_lr": 0.0085, "adamw_lr": 0.003,
+    "norm_lr": 0.00015, "qk_norm_lr": 0.00005,
+}
 
 
 def model_for(candidate="fp8", *, attention="rocm_aiter", local_attention="",
-              wgrad_splits=None, loss_chunk_size=4096):
+              wgrad_splits=None, loss_chunk_size=4096, weight_mode="dense"):
     if candidate not in CANDIDATES or attention not in {"rocm_aiter", "rocm_ck"} or local_attention not in {"", "rocm_aiter", "rocm_ck"}:
         raise ValueError("unknown AMD linear/attention candidate")
+    if weight_mode not in {"dense", "ternary"} or (candidate == "bf16" and weight_mode == "ternary"):
+        raise ValueError("AMD QAT requires an FP8 candidate and ternary weight mode")
     values = SELECTED_MODEL | {"attention_backend": attention, "local_attention_backend": local_attention,
-                               "loss_chunk_size": loss_chunk_size}
+                               "loss_chunk_size": loss_chunk_size, "weight_mode": weight_mode}
     if candidate == "bf16":
         if wgrad_splits not in (None, 0):
             raise ValueError("BF16 candidate does not use the FP8 split-K setting")
@@ -41,14 +47,20 @@ def validate_production(model, training, optimizer):
     candidate = candidate_of(model)
     expected = model_for(candidate, attention=model.attention_backend,
                          local_attention=model.local_attention_backend,
-                         wgrad_splits=model.fp8_wgrad_splits, loss_chunk_size=model.loss_chunk_size)
-    if model != expected or optimizer != OptimizerConfig(**SELECTED_OPTIMIZER):
+                         wgrad_splits=model.fp8_wgrad_splits, loss_chunk_size=model.loss_chunk_size,
+                         weight_mode=model.weight_mode)
+    selected_optimizer = SELECTED_QAT_OPTIMIZER if model.weight_mode == "ternary" else SELECTED_OPTIMIZER
+    if model != expected or optimizer != OptimizerConfig(**selected_optimizer):
         raise ValueError("model/optimizer differs from the reviewed AMD migration candidate")
     if training.device != "cuda" or training.dtype != "bf16" or training.development_mode or training.compile or training.cuda_graphs:
         raise ValueError("AMD handoff requires eager HIP BF16 training with native preflight")
     if (training.grad_clip != 1.0 or training.quantization_warmup_tokens
             or training.quantization_start_strength != 1.0):
-        raise ValueError("AMD dense handoff preserves clipping and has no QAT curriculum")
+        raise ValueError("AMD handoff preserves clipping and uses immediate weight quantization")
+    if model.weight_mode == "ternary" and not training.phase_start_tokens:
+        raise ValueError("AMD QAT requires a phase_start_tokens offset from a dense transition")
+    if model.weight_mode == "dense" and training.phase_start_tokens:
+        raise ValueError("AMD dense phase cannot use a QAT phase offset")
     return candidate
 
 

@@ -8,7 +8,7 @@ import torch
 from production.amd.budget import forecast
 from production.amd.build_config import build_config
 from production.amd.measurement import summarize
-from production.amd.recipe import CANDIDATES, changes, model_for, validate_production
+from production.amd.recipe import CANDIDATES, SELECTED_QAT_OPTIMIZER, changes, model_for, validate_production
 from production.amd.runtime import require_gfx942
 from production.amd.staging import create, verify
 from production.recipe import SELECTED_MODEL, SELECTED_OPTIMIZER
@@ -40,8 +40,8 @@ def test_candidate_preserves_geometry_optimizer_and_batch(candidate):
     assert [i + 1 for i, layer in enumerate(instance.layers) if layer.attn.is_global_layer] == [6, 12, 18, 24]
 
 
-def test_no_silent_amd_qat_or_precision_fallback():
-    for options in ({"weight_mode": "ternary"}, {"fp8_backward": "bf16"}, {"fused_fp8_producers": True},
+def test_no_silent_amd_precision_fallback():
+    for options in ({"fp8_backward": "bf16"}, {"fused_fp8_producers": True},
                     {"fp8_quantizer": "torch"}, {"weight_scale_layout": "rowwise"}):
         with pytest.raises(ValueError):
             replace(model_for(), **options)
@@ -51,6 +51,42 @@ def test_no_silent_amd_qat_or_precision_fallback():
     for candidate in ("fp8_te", "bf16"):
         with pytest.raises(ValueError, match="split"):
             model_for(candidate, wgrad_splits=8)
+    with pytest.raises(ValueError, match="QAT requires"):
+        model_for("bf16", weight_mode="ternary")
+
+
+@pytest.mark.parametrize("candidate", CANDIDATES[:-1])
+def test_amd_qat_config_preserves_fp8_geometry_and_phase_schedule(candidate):
+    manifest = TokenManifest(TokenDataConfig(batch_size=16, seq_len=4096, total_train_tokens=10**9), [])
+    config = build_config(manifest=manifest, world_size=8, global_batch_tokens=2_097_152,
+                          warmup_tokens=50_331_648, decay_tokens=100_663_296,
+                          candidate=candidate, weight_mode="ternary", phase_start_tokens=503_316_480)
+    model = BitNetLlamaConfig(**config["model"])
+    training, optimizer = TrainConfig(**config["training"]), OptimizerConfig(**config["optimizer"])
+    assert validate_production(model, training, optimizer) == candidate
+    assert training.gradient_accumulation_steps == 4
+    assert training.phase_start_tokens == 503_316_480
+    assert optimizer == OptimizerConfig(**SELECTED_QAT_OPTIMIZER)
+    assert count_model(model)["total"] == 1_446_478_126
+    assert changes(model)["weight_mode"] == {"h100": "dense", "amd": "ternary"}
+    with pytest.raises(ValueError, match="optimizer"):
+        validate_production(model, training, OptimizerConfig(**SELECTED_OPTIMIZER))
+    with pytest.raises(ValueError, match="phase_start"):
+        validate_production(model, replace(training, phase_start_tokens=None), optimizer)
+
+
+def test_amd_qat_schedule_must_fit_remaining_manifest_budget():
+    manifest = TokenManifest(TokenDataConfig(batch_size=16, seq_len=4096, total_train_tokens=10**9), [])
+    common = dict(manifest=manifest, world_size=8, global_batch_tokens=2_097_152,
+                  weight_mode="ternary", phase_start_tokens=838_860_800)
+    with pytest.raises(ValueError, match="remaining phase"):
+        build_config(**common, warmup_tokens=100_000_000, decay_tokens=100_000_000)
+    with pytest.raises(ValueError, match="phase_start"):
+        build_config(**(common | {"phase_start_tokens": None}),
+                     warmup_tokens=1, decay_tokens=2)
+    with pytest.raises(ValueError, match="align"):
+        build_config(**(common | {"phase_start_tokens": 838_860_801}),
+                     warmup_tokens=1, decay_tokens=2)
 
 
 def test_mismatched_global_batch_rejected():
@@ -132,3 +168,29 @@ def test_amd_receipt_cannot_use_h100_or_incomplete_evidence(tmp_path, monkeypatc
     path.write_text(json.dumps(report))
     with pytest.raises(ValueError):
         validate_report(path, model_for(), torch.device("cpu"))
+
+
+def test_amd_qat_receipt_requires_mode_specific_native_evidence(tmp_path, monkeypatch):
+    from production.amd.preflight import validate_report
+
+    monkeypatch.setattr("production.amd.preflight.identity", lambda *a: {"test": "identity"})
+    model = model_for(weight_mode="ternary")
+    report = {"kind": "ci1_amd_preflight", "schema": 1, "status": "passed",
+              "identity": {"test": "identity"},
+              **{k: [True] for k in ("attention", "model_numerics", "optimized_kernels",
+                                      "packed_learned_qkv", "optimizer")},
+              "fp8": {"weight_mode": "ternary", "fp32_wgrad": True,
+                      "weight_cache_refresh": True},
+              "ternary": {"weight_mode": "ternary", "fp8_operand_gate": True,
+                          "reduced_model_numerics": True, "optimizer": True}}
+    path = tmp_path / "qat-preflight.json"
+    for key in ("weight_mode", "fp32_wgrad", "weight_cache_refresh"):
+        changed = copy.deepcopy(report)
+        changed["fp8"][key] = "dense" if key == "weight_mode" else False
+        changed["report_sha256"] = fingerprint(changed)
+        path.write_text(json.dumps(changed))
+        with pytest.raises(ValueError, match="ternary"):
+            validate_report(path, model, torch.device("cpu"))
+    report["report_sha256"] = fingerprint(report)
+    path.write_text(json.dumps(report))
+    validate_report(path, model, torch.device("cpu"))

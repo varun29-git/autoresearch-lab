@@ -37,7 +37,7 @@ checks, not native MI325X or full-size quality/performance measurements.
 | Evaluation | Token NLL, source/language summaries, reference-NLL evaluation contracts, reserved holdout files | Generated capability scoring and document/translation-family isolation; full target coverage and predeclared margins |
 | Recovery | Checkpoint contracts, cursor checks, S3 upload/remote checksum verification tools | Real eight-rank restore and provider-network behaviour, including completion after a failed upload/preemption |
 | Adaptive production | Initial fixed-horizon phase cost calculator | Future-only schedule/data events and an eight-GPU allocation controller; see companion specification |
-| Ternary QAT | Reference quantizer/STE and dense-to-QAT transition machinery | Native AMD path still rejects ternary; implementation, native numerics, recovery quality and export qualification remain required |
+| Ternary QAT | Reference quantizer/STE, dense-to-QAT transition, AMD FNUZ kernel, explicit recipe and CPU checks | Native numerics, recovery quality and export qualification remain required |
 
 Some external H100 packet gates are marked passed, including staging of a
 qualification subset and native preflight/fit. They do not establish that a

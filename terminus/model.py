@@ -221,11 +221,11 @@ class BitLinear(nn.Module):
                 or not quantize_activations or quantization_strength != 1 or in_features % 128 or out_features % 128):
             raise ValueError("DeepGEMM requires full FP8 quantization and aligned 128x128 weight blocks")
         if linear_backend.startswith("rocm_fp8") and (
-                weight_mode != "dense" or fp8_backward != "full" or fp8_quantizer != "triton_split"
+                weight_mode not in {"dense", "ternary"} or fp8_backward != "full" or fp8_quantizer != "triton_split"
                 or weight_scale_layout != "blockwise" or alpha_group_size != 128
                 or not quantize_activations or quantization_strength != 1
                 or in_features % 128 or out_features % 128 or fp8_wgrad_recipe != "1d1d"):
-            raise ValueError("ROCm FP8 requires dense full-backward 128-block scaling; QAT is not certified")
+            raise ValueError("ROCm FP8 requires full-backward 128-block scaling and immediate weight quantization")
         self.in_features, self.out_features = in_features, out_features
         self.eps, self.alpha_group_size = eps, alpha_group_size
         self.quantize_activations = quantize_activations
@@ -284,7 +284,8 @@ class BitLinear(nn.Module):
             if self.linear_backend.startswith("rocm_fp8"):
                 from production.amd.backend import quantize_weight
 
-                operands = quantize_weight(self.weight, transposed=transposed)
+                operands = quantize_weight(self.weight, transposed=transposed,
+                                           weight_mode=self.weight_mode)
             else:
                 operands = quantize_weight_directions(self.weight, weight_mode=self.weight_mode,
                                                       transposed=transposed, backend=self.fp8_quantizer)
@@ -299,7 +300,8 @@ class BitLinear(nn.Module):
                 raise ValueError("Hopper FP8 producer sidecars cannot be used by ROCm")
             return linear(values.to(torch.bfloat16), self.weight,
                           weight_operands=self._weight_operands(values),
-                          backend=self.linear_backend, splits=self.fp8_wgrad_splits or 1)
+                          backend=self.linear_backend, splits=self.fp8_wgrad_splits or 1,
+                          weight_mode=self.weight_mode)
         if self.linear_backend == "deepgemm":
             return deepgemm_bitlinear(values.to(torch.bfloat16), self.weight,
                                      backward_mode=self.fp8_backward, quantizer=self.fp8_quantizer,

@@ -2,7 +2,7 @@
 
 The recommended starting allocation is 60% dense / 40% ternary by tokens.
 Both phase rates are required inputs and are not certified by this calculator.
-See QAT_ALLOCATION.md. AMD ternary execution remains disabled pending its port.
+See QAT_ALLOCATION.md. The AMD QAT port is prepared but not native-qualified.
 """
 import argparse
 from fractions import Fraction

@@ -39,7 +39,8 @@ At the HPO's 393,216-token global batch, `batch_bridge_mb12` uses one
 three smaller microsteps without changing optimizer-update frequency.
 For a final ternary model, [QAT_ALLOCATION.md](QAT_ALLOCATION.md) recommends
 60% dense / 40% QAT by tokens and prices both stages together. Native AMD
-ternary execution still needs implementation and qualification.
+ternary code is prepared for testing; native gfx942 numerical, fit, speed,
+transition and quality qualification remain. See [QAT_PORT.md](QAT_PORT.md).
 
 ## What is selected, and what is a candidate
 
@@ -58,7 +59,7 @@ global token-mean loss, clipping, and checkpoint/data-cursor logic are reused.
 | `fp8_te` (selected lead to test) | Pinned ROCm TE HipKittens | TE 1D×1D, FP32 output | Same FNUZ operands and FP32 scales; TE owns scheduling |
 | `bf16` | PyTorch BF16 GEMMs | PyTorch autograd | Removes FP8 activation/weight/gradient quantization; separate quality candidate |
 
-FP8 scales remain 1×128 for activations and gradients and 128×128 for dense
+FP8 scales remain 1×128 for activations and gradients and 128×128 for dense or ternary
 weights. Wgrad independently quantizes transposed activations/gradients;
 transposing already-quantized activation codes would be wrong. Master weights,
 accumulated gradients and optimizer state remain FP32. The selected tied head
@@ -73,8 +74,8 @@ silently falls back to a CPU/reference implementation.
 These are numerical migration candidates for review against the selected
 baseline. A faster candidate must pass matched-token quality checks before
 the month-long run. The mixed-phase recommendation is a planning policy;
-the AMD FP8 constructor still rejects ternary mode. Dense-to-QAT
-quality/format migration is a separate implementation and qualification gate.
+the AMD FP8 constructor now accepts ternary mode. Dense-to-QAT
+quality/format migration remains a native qualification gate.
 
 ## Build without spending GPU time
 

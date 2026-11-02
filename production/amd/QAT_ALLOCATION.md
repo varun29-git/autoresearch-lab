@@ -23,9 +23,9 @@ The 2026-10-26 [batch/stability review](BATCH_STABILITY.md) evaluates the
 user-supplied QAT rate candidate and its HPO-scale schedule separately.
 
 The new [phase_plan.py](phase_plan.py) computes both phases inside one budget.
-It produces an arithmetic plan, **not a runnable QAT configuration**. Existing
-AMD constructors and preflight still reject ternary mode. No restriction is
-removed by selecting an allocation, and no paid campaign was launched.
+It produces an arithmetic plan, **not a runnable QAT configuration**. The AMD
+QAT kernel and builder were subsequently added; native acceptance remains due.
+Selecting an allocation does not launch a paid campaign.
 
 ## What changes at the switch
 
@@ -148,7 +148,7 @@ fallback. Then use a separate phase-relative QAT schedule over `Tq`. This
 supports comparison to the dense parent and follows the two-cycle approach
 tested by ParetoQ; it is not a proof that a flat dense-to-QAT switch is worse.
 
-Suggested QAT starting candidate for the later native configuration builder:
+Suggested QAT starting candidate, now available in the AMD configuration builder:
 
 - Keep global batch 2,097,152, world size 8 and initially microbatch 16 /
   accumulation 4, provided the QAT memory test passes. Preserve initialization
@@ -232,12 +232,12 @@ silently relax a failed threshold or describe lower NLL as generated accuracy.
 
 ## Required native work, still outstanding
 
-1. Implement/test gfx942 ternary weight codes/scales, both matrix orientations,
+1. Run native tests of the implemented gfx942 ternary weight codes/scales, both matrix orientations,
    padding/nonfinite handling, and cache refresh against the existing STE
    reference. Forward/dgrad must use ternary effective weights; latent wgrad
    must retain the selected FP32-output/full-backward semantics.
-2. Add explicit AMD QAT recipe/preflight/launcher support and then pass it.
-   Do not just remove `weight_mode == dense` guards or silently substitute
+2. Pass the added AMD QAT recipe/preflight/launcher path on the actual runtime.
+   Do not silently substitute
    a BF16 backend. Existing transition checks also reject a backend change.
 3. Audit parent/child data-prefix equivalence, phase counters, carried optimizer
    rates/state and exact within-QAT resume on the actual eight ranks.
@@ -248,6 +248,6 @@ silently relax a failed threshold or describe lower NLL as generated accuracy.
    packed-export parity. Keep the dense checkpoint until ternary quality is
    accepted. FP8 and ternary state checks are separate from deployment speed.
 
-No QAT model constructor or training behavior is changed in this allocation
-work. Source citations were inspected on 2026-10-25; all performance examples
-above are arithmetic scenarios and all new AMD QAT gates remain unrun.
+The allocation analysis is unchanged by the later QAT port. Source citations
+were inspected on 2026-10-25; all performance examples above are arithmetic
+scenarios and all native AMD QAT gates remain unrun.

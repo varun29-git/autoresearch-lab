@@ -8,16 +8,33 @@ from production.build_dense_config import build_config as baseline_config
 from terminus.data import TokenManifest
 from terminus.integrity import write_json_atomic
 from terminus.train import TrainConfig, load_config
-from .recipe import CANDIDATES, changes, model_for
+from .recipe import CANDIDATES, SELECTED_QAT_OPTIMIZER, changes, model_for
 
 
 def build_config(*, manifest, world_size, global_batch_tokens, warmup_tokens, decay_tokens,
                  candidate="fp8", attention="rocm_aiter", local_attention="", wgrad_splits=None,
-                 loss_chunk_size=4096, ddp_bucket_cap_mb=25):
+                 loss_chunk_size=4096, ddp_bucket_cap_mb=25, weight_mode="dense",
+                 phase_start_tokens=None):
+    if weight_mode == "ternary":
+        if type(global_batch_tokens) is not int or global_batch_tokens <= 0:
+            raise ValueError("global_batch_tokens must be a positive integer")
+        if (type(phase_start_tokens) is not int or phase_start_tokens <= 0
+                or phase_start_tokens >= manifest.config.usable_train_tokens):
+            raise ValueError("QAT needs the dense checkpoint's positive phase_start_tokens")
+        if phase_start_tokens % global_batch_tokens:
+            raise ValueError("QAT phase_start_tokens must align with the unchanged global batch")
+        if warmup_tokens + decay_tokens > manifest.config.usable_train_tokens - phase_start_tokens:
+            raise ValueError("QAT warmup and decay must fit the remaining phase budget")
+    elif phase_start_tokens is not None:
+        raise ValueError("phase_start_tokens is only for AMD QAT")
     config = baseline_config(manifest=manifest, world_size=world_size, global_batch_tokens=global_batch_tokens,
                              warmup_tokens=warmup_tokens, decay_tokens=decay_tokens)
     config["model"] = asdict(model_for(candidate, attention=attention, local_attention=local_attention,
-                                      wgrad_splits=wgrad_splits, loss_chunk_size=loss_chunk_size))
+                                      wgrad_splits=wgrad_splits, loss_chunk_size=loss_chunk_size,
+                                      weight_mode=weight_mode))
+    if weight_mode == "ternary":
+        config["optimizer"] = SELECTED_QAT_OPTIMIZER.copy()
+        config["training"]["phase_start_tokens"] = phase_start_tokens
     config["training"]["ddp_bucket_cap_mb"] = ddp_bucket_cap_mb
     # Stability probes add full tensor scans. Keep them available and explicit;
     # performance measurements record whether they were enabled.
@@ -33,6 +50,8 @@ def main():
         p.add_argument("--" + name, type=int, required=True)
     p.add_argument("--world-size", type=int, default=8)
     p.add_argument("--candidate", choices=CANDIDATES, default="fp8")
+    p.add_argument("--weight-mode", choices=("dense", "ternary"), default="dense")
+    p.add_argument("--phase-start-tokens", type=int)
     p.add_argument("--attention", choices=("rocm_aiter", "rocm_ck"), default="rocm_aiter")
     p.add_argument("--local-attention", choices=("", "rocm_aiter", "rocm_ck"), default="")
     p.add_argument("--wgrad-splits", type=int, choices=(0, 1, 2, 4, 8, 16),

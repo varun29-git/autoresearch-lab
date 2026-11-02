@@ -24,6 +24,22 @@ def quantize(values, *, group_rows=1, eps=0.0):
     return quotient.to(FP8)[:m, :k].contiguous(), scale
 
 
+@torch.no_grad()
+def quantize_ternary(weight):
+    """H100 ternary rule with FNUZ operand codes; independent of the Triton kernel."""
+    if (weight.ndim != 2 or min(weight.shape) <= 0 or weight.dtype != torch.float32
+            or weight.shape[0] % BLOCK or weight.shape[1] % BLOCK):
+        raise ValueError("ternary reference needs an aligned FP32 master matrix")
+    rows, width = weight.shape
+    blocks = weight.reshape(rows // BLOCK, BLOCK, width // BLOCK, BLOCK)
+    scales = blocks.abs().mean(dim=(1, 3)).clamp_min(1e-6)
+    expanded = scales.repeat_interleave(BLOCK, 0).repeat_interleave(BLOCK, 1)
+    rounded = (weight / expanded).round().clamp(-1, 1)
+    codes = torch.where(torch.isfinite(weight) & torch.isfinite(expanded), rounded,
+                        torch.full_like(rounded, float("nan")))
+    return codes.to(FP8).contiguous(), scales
+
+
 def dequantize(operand, group_rows=1):
     codes, scale = operand
     return codes.float() * scale.repeat_interleave(group_rows, 0).repeat_interleave(BLOCK, 1)[:codes.shape[0], :codes.shape[1]]

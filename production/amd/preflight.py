@@ -15,7 +15,7 @@ from terminus.preflight import count_model, model_numerical_preflight, optimized
 from terminus.train import load_config, runtime_contract
 from production.recipe import SELECTED_OPTIMIZER
 from . import backend, reference
-from .recipe import changes
+from .recipe import SELECTED_QAT_OPTIMIZER, changes
 from .runtime import require_gfx942
 
 
@@ -33,8 +33,21 @@ def validate_report(path, config, device):
     required = ("attention", "model_numerics", "optimized_kernels", "packed_learned_qkv", "optimizer")
     if config.linear_backend.startswith("rocm_fp8"):
         required += ("fp8",)
+        if config.weight_mode == "ternary":
+            required += ("ternary",)
     if any(not report.get(key) for key in required):
         raise ValueError("AMD preflight lacks required native evidence")
+    if config.weight_mode == "ternary":
+        ternary = report["ternary"]
+        if (not isinstance(ternary, dict) or ternary.get("weight_mode") != "ternary"
+                or ternary.get("fp8_operand_gate") is not True
+                or ternary.get("reduced_model_numerics") is not True
+                or ternary.get("optimizer") is not True
+                or not isinstance(report.get("fp8"), dict)
+                or report["fp8"].get("weight_mode") != "ternary"
+                or report["fp8"].get("fp32_wgrad") is not True
+                or report["fp8"].get("weight_cache_refresh") is not True):
+            raise ValueError("AMD preflight lacks ternary FP8/STE evidence")
     if report.get("report_sha256") != fingerprint({k: v for k, v in report.items() if k != "report_sha256"}):
         raise ValueError("AMD preflight receipt digest mismatch")
     return report
@@ -84,9 +97,12 @@ def attention_gate(config, device):
 
 
 def fp8_gate(config, device):
-    from .fp8_kernels import quantize, quantize_directions
+    from .fp8_kernels import quantize, quantize_directions, quantize_ternary
 
     quantizers, cases = [], []
+    ternary = config.weight_mode == "ternary"
+    weight_quantize = quantize_ternary if ternary else lambda w: quantize(w, group_rows=128)
+    weight_reference = reference.quantize_ternary if ternary else lambda w: reference.quantize(w, group_rows=128)
     for rows in (1, 17, 129, 256):
         for amplitude in (0., 1e-7, 1., 1000.):
             x = torch.randn(rows, 256, dtype=torch.bfloat16, device=device) * amplitude
@@ -101,8 +117,28 @@ def fp8_gate(config, device):
     for special in (float("nan"), float("inf"), -float("inf")):
         x = torch.zeros(128, 128, device=device)
         x[0, 0] = special
-        if not torch.isnan(quantize(x, group_rows=128)[0].float()[0, 0]):
+        if not torch.isnan(weight_quantize(x)[0].float()[0, 0]):
             raise AssertionError("nonfinite master weight was hidden by quantization")
+    if ternary:
+        # Integer values avoid accidental near-ties from reduction-order ulps.
+        pattern = torch.randint(-2, 3, (128, 256), device=device, dtype=torch.int32).float()
+        pattern[:, 128:] = 0
+        native_codes, native_scales = quantize_ternary(pattern)
+        oracle_codes, oracle_scales = reference.quantize_ternary(pattern)
+        if not torch.equal(native_codes.float(), oracle_codes.float()):
+            raise AssertionError("native ternary FNUZ codes differ from the FP32 reference")
+        _errors([native_scales], [oracle_scales], limit=1e-6, atol=1e-6)
+        if torch.count_nonzero(native_codes.float()[:, 128:]) or not torch.all(native_scales[:, 1] == 1e-6):
+            raise AssertionError("zero ternary block did not preserve the scale floor")
+        stride_codes, stride_scales = quantize_ternary(pattern.T)
+        if (not torch.equal(stride_codes.float(), native_codes.float().T.contiguous())
+                or not torch.equal(stride_scales, native_scales.T.contiguous())):
+            raise AssertionError("ternary quantizer mishandled a strided master matrix")
+        ties = torch.full((128, 128), 2., device=device)
+        ties[0, 0], ties[0, 1] = 1., 3.  # Exact mean abs = 2, so 1/2 rounds to even zero.
+        tie_codes, tie_scales = quantize_ternary(ties)
+        if tie_scales[0, 0] != 2 or tie_codes[0, 0].float() != 0:
+            raise AssertionError("ternary half-integer must round to nearest even")
     shapes = [(rows, outputs, width) for outputs, width in sorted(set(projection_shapes(config).values()))
               for rows in (17, 256)]
     # Exercise wgrad's long reduction axis without allocating a full model.
@@ -113,10 +149,11 @@ def fp8_gate(config, device):
             x = torch.randn(rows, width, dtype=torch.bfloat16, device=device, requires_grad=True)
             w = (torch.randn(outputs, width, device=device) * .02).requires_grad_()
             g = torch.randn(rows, outputs, dtype=torch.bfloat16, device=device) * gradient_scale
-            actual = backend.linear(x, w, backend=config.linear_backend, splits=config.fp8_wgrad_splits or 1)
+            actual = backend.linear(x, w, backend=config.linear_backend, splits=config.fp8_wgrad_splits or 1,
+                                    weight_mode=config.weight_mode)
             dx, dw = torch.autograd.grad(actual, (x, w), g)
             xr, xt = reference.directional(x.detach(), transposed=True)
-            wr = reference.quantize(w.detach(), group_rows=128)
+            wr = weight_reference(w.detach())
             wt = wr[0].T.contiguous(), wr[1].T.contiguous()
             gr, gt = reference.directional(g, transposed=True, eps=0.)
             expected = [reference.gemm(xr, wr), reference.gemm(gr, wt),
@@ -127,7 +164,7 @@ def fp8_gate(config, device):
                           "gradient_scale": gradient_scale,
                           "errors": _errors([actual, dx, dw], expected, limit=.025, atol=0.)})
     # Weight version/cache refresh across an actual in-place master update.
-    layer = BitLinear(256, 256, weight_mode="dense", linear_backend=config.linear_backend,
+    layer = BitLinear(256, 256, weight_mode=config.weight_mode, linear_backend=config.linear_backend,
                       weight_scale_layout="blockwise", quantize_activations=True,
                       fp8_backward="full", fp8_quantizer="triton_split", fp8_cache_weights=True).to(device)
     x = torch.randn(17, 256, device=device, dtype=torch.bfloat16, requires_grad=True)
@@ -141,7 +178,8 @@ def fp8_gate(config, device):
     if torch.equal(before, cached):
         raise AssertionError("weight cache did not observe the master weight version")
     return {"cases": cases, "quantizers": quantizers, "fp32_wgrad": True,
-            "weight_cache_refresh": True, "format": "FNUZ E4M3, max 240"}
+            "weight_cache_refresh": True, "weight_mode": config.weight_mode,
+            "format": "FNUZ E4M3, max 240"}
 
 
 def packed_gate(config, device):
@@ -172,7 +210,8 @@ def optimizer_gate(config, device):
                       pad_token_id=0, loss_chunk_size=7)
     a, b = BitNetLlama(reduced).to(device), BitNetLlama(reduced).to(device)
     b.load_state_dict(a.state_dict())
-    oa, ob = [build_optimizer(m, OptimizerConfig(**SELECTED_OPTIMIZER)) for m in (a, b)]
+    selected = SELECTED_QAT_OPTIMIZER if config.weight_mode == "ternary" else SELECTED_OPTIMIZER
+    oa, ob = [build_optimizer(m, OptimizerConfig(**selected)) for m in (a, b)]
     ob.batched = False
     errors = []
     for _ in range(3):
@@ -206,6 +245,13 @@ def run(config, device):
                   "model_numerics": model_numerical_preflight(config, device),
                   "optimizer": optimizer_gate(config, device),
                   "scope": "Kernel and reduced-model gate only. Full-size training, quality, DDP and recovery remain unmeasured."}
+        if config.weight_mode == "ternary":
+            report["ternary"] = {
+                "weight_mode": "ternary",
+                "fp8_operand_gate": report["fp8"]["weight_mode"] == "ternary",
+                "reduced_model_numerics": bool(report["model_numerics"]),
+                "optimizer": bool(report["optimizer"]),
+            }
     finally:
         torch.backends.cuda.matmul.allow_tf32 = previous_tf32
     # Capture after native libraries have loaded/JIT caches are warm.

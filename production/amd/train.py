@@ -32,11 +32,13 @@ def main():
     args = p.parse_args()
     if args.benchmark_updates < 0 or args.warmup_updates < 0 or (args.stop_after_updates is not None and args.stop_after_updates <= 0):
         p.error("invalid update counts")
-    if args.benchmark_updates and (args.resume or args.stop_after_updates):
-        p.error("benchmark uses a fresh run and its own update bound")
+    if args.benchmark_updates and args.stop_after_updates:
+        p.error("benchmark uses its own update bound")
     for key in ("config", "manifest", "data_root", "output_dir", "runtime_report", "preflight_report", "staging_receipt"):
         setattr(args, key, external_path(getattr(args, key)))
     model, training, optimizer = load_config(args.config)
+    if args.benchmark_updates and args.resume and model.weight_mode != "ternary":
+        p.error("a resumed benchmark is only supported for the QAT transition phase")
     candidate = validate_production(model, training, optimizer)
     world, rank = int(os.environ.get("WORLD_SIZE", "1")), int(os.environ.get("RANK", "0"))
     if world != args.expected_world_size:
@@ -48,7 +50,8 @@ def main():
     batch = world * manifest.config.tokens_per_step * training.gradient_accumulation_steps
     if batch != args.expected_global_batch_tokens:
         raise ValueError("global batch changed; retune accumulation or regenerate the config")
-    if args.benchmark_updates and (args.benchmark_updates + args.warmup_updates) * batch > manifest.config.usable_train_tokens:
+    remaining = manifest.config.usable_train_tokens - (training.phase_start_tokens or 0)
+    if args.benchmark_updates and (args.benchmark_updates + args.warmup_updates) * batch > remaining:
         raise ValueError("benchmark needs enough tokens for full warmup and measured updates")
     # Do bounded snapshot checks before opening collectives; torchrun propagates
     # a worker failure to the other workers instead of launching a partial run.
