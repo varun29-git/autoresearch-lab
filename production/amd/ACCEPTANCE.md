@@ -1,9 +1,10 @@
 # Acceptance record and hardware gates
 
-**2026-10-28 plan update:** [FULL_QUALIFICATION_PLAN.md](pretraining_readiness/FULL_QUALIFICATION_PLAN.md)
-adds fresh full-model HPO, longer/decay comparisons, operating limits and an
-engineering backlog. This adds no native passed evidence; historical CPU
-results below are not new checks of an implemented qualification runner.
+**2026-11-02:** start with the [current readiness entry](pretraining_readiness/README.md).
+The single-H100 campaign is complete and the AMD ternary port is implemented.
+The older [full plan](pretraining_readiness/FULL_QUALIFICATION_PLAN.md) retains
+optional deeper studies; it does not require repeating the completed HPO.
+Native AMD receipts and the integration/operating gates are still required.
 
 Prepared 2026-10-24. This handoff is ready for **native testing**, not certified
 for a month-long production campaign. All paid commands remain human-run.

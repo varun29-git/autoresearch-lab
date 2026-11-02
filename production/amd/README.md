@@ -1,9 +1,10 @@
 # CI-1 on MI325X: native test handoff
 
-**2026-10-28:** the [full qualification plan](pretraining_readiness/FULL_QUALIFICATION_PLAN.md)
-now governs fresh full-model HP selection, the one/eight-GPU work split and
-the 960-hour qualification proposal. The existing locked recipe and profiles
-remain code baselines pending the plan's qualification tooling and measurements.
+**2026-11-02:** use the [current readiness entry](pretraining_readiness/README.md).
+The H100 qualification campaign is complete and AMD ternary QAT is implemented;
+native AMD acceptance and production integration remain open. The
+[full qualification plan](pretraining_readiness/FULL_QUALIFICATION_PLAN.md)
+is historical context, not a requirement to repeat HPO or spend 960 GPU-hours.
 
 **Start here before training:**
 [pretraining_readiness/README.md](pretraining_readiness/README.md) tracks the

@@ -1,6 +1,37 @@
 # MI325X pretraining readiness
 
-**Status on 2026-11-01: the month-long dense-to-ternary run is not cleared.**
+**Status on 2026-11-02: the month-long dense-to-ternary run is not cleared.**
+The single-H100 qualification campaign is complete; its selection, transfer
+and full-size confirmation receipts remain outside Git. The AMD FP8 ternary
+port is implemented in [QAT_PORT.md](../QAT_PORT.md), with native acceptance
+still pending. Do not restart the historical HPO plans below as prerequisites.
+
+**Resolve these concrete integration gaps before the production launch:**
+
+- Bind every shard to the encoder that actually produced it. The frozen
+  CI-1 tokenizer and a stock Hugging Face conversion can share every vocabulary
+  ID while differing in routing, normalization, special-token recognition and
+  decoding. Require source-text encoding/round-trip comparisons, special-ID
+  audits, actual document separators and an immutable final mixed manifest.
+  `pack_token_streams` now refuses absent/mismatched tokenizer sidecars; do not
+  manufacture a matching sidecar for incompatible data. Content-only bins
+  with document indices still require document-aware assembly and EOD insertion.
+- Explicitly promote the selected optimizer using the external transfer
+  receipt. The completed H100 transfer used embedding AdamW **0.002**; the
+  reviewed AMD baseline/validator still specifies **0.003**. This is a recipe
+  promotion decision, not an additional automatic width scaling. QAT rates
+  require a separate transition qualification.
+- Establish active checkpoint upload/retention and restore, an allocation
+  deadline that survives restarts, and a bounded failure supervisor. The
+  current checkpoint maintenance command acquires the trainer's run lock and
+  cannot prune during an active invocation. `time_limit_seconds` is an
+  invocation limit, not a durable monthly billing deadline. The H100 campaign
+  supervisor does not automatically govern the eight-MI325X launcher.
+- Build and qualify the actual MI325X image, complete full-update memory/
+  numerical/DDP checks, compare measured candidates, and exercise recovery.
+  Freeze a funded fixed horizon until future-only schedule/data transitions
+  are implemented and tested.
+
 **Start with the [quality gates](QUALITY_GATES.md) and
 [adaptive compute plan](ADAPTIVE_COMPUTE_PLAN.md).** Fix the 5,760 GPU-hour
 budget and qualified learning/data policy; let measured dense/QAT throughput
@@ -10,7 +41,7 @@ requires explicit future schedule/data transitions; editing a live manifest
 does not implement it. Current production builders still generate fixed
 horizons. Close the offline data/evaluation gates before long paid training.
 
-**Focused learning qualification:** reuse the completed HPO and use the available single
+**Historical focused learning qualification:** reuse the completed HPO and use the available single
 Azure H100, capped at 50 hours, for [lower-LR controls at fixed 2M batch,
 with explicit monitoring and a transferred-winner check](LR_BATCH_MONITORING.md).
 Run the LR controls and historical anchor on the **194M width-scaled proxy**,
@@ -62,9 +93,9 @@ Ternary QAT does not require ternary arithmetic units. The existing H100
 training path represents effective projection weights as FP8 codes `-1`, `0`
 or `+1` with block scales while keeping FP32 latent weights and optimizer
 state. MI325X FP8 arithmetic can in principle use the same approach with its
-E4M3 FNUZ format. The current AMD model/backend and launcher explicitly
-reject ternary mode; this is a software implementation and native
-qualification gap.
+E4M3 FNUZ format. The AMD model/backend and launcher now implement this path,
+including a required dense-to-QAT transition checkpoint. Native quantization,
+full-size training, eight-rank recovery and QAT quality still need acceptance.
 
 For historical LR evidence, read [LR_REFERENCES.md](LR_REFERENCES.md). It records
 the original width rules, the 0.003-versus-0.002 AdamW distinction, external
@@ -93,16 +124,14 @@ blockers in [TRAINING_RISKS.md](TRAINING_RISKS.md). The detailed evidence and te
   `batch_3m_mb24`. Require at least 15% of usable HBM free through optimizer,
   validation and checkpoint peaks. Microbatch 16 is a starting point, not a
   measured optimum.
-- [ ] **Global batch and learning:** Begin with the proxy LR controls and
-  historical anchor in `LR_BATCH_MONITORING.md`, then compare proxy batches
-  if the measured budget permits. Reserve a full-size check of the transferred
-  winner at the intended global batch. Each initial trial
-  has a complete approximately 5B-token WSD with 10% warmup and 20% cooldown;
-  this does not select the eventual production schedule. Compare quality at
-  matched tokens and matched GPU-hours. Use measured results to price further
-  full-size batch, seed and longer-horizon tests from the broad plan; they are
-  not all mandatory upfront experiments. A proxy winner alone does not clear
-  the production batch, long horizon or phase allocation.
+- [ ] **Global batch and learning:** Use the completed H100 selection and
+  transferred full-size confirmation at 2,097,152 tokens/update. Reconcile the
+  selected optimizer with the AMD validator before generating production
+  configs. Changing only microbatch/accumulation at that global batch does not
+  call for a new LR scaling. Test the AMD numerical migration and inspect the
+  early full-model trajectory on production data. An increase in global batch
+  is a separate learning comparison. Short qualification WSD schedules do not
+  select the final production warmup/plateau/cooldown.
 - [ ] **Dense-to-QAT transfer:** Qualify FP8 ternary-weight quantization and
   matrix operations on MI325X, plus full-model conversion, before relying on
   a QAT phase. Treat the supplied historical QAT peak rates as background.
