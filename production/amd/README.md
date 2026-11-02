@@ -2,7 +2,11 @@
 
 **2026-11-02:** use the [current readiness entry](pretraining_readiness/README.md).
 The H100 qualification campaign is complete and AMD ternary QAT is implemented;
-native AMD acceptance and production integration remain open. The
+native AMD acceptance and provider/data qualification remain open. New offline
+work includes [dense LR promotion](OPTIMIZER_PROMOTION.md),
+[checkpoint and allocation operations](OPERATIONS.md),
+[prospective WSD transitions](HORIZON.md), and
+[native optimization candidates](NATIVE_OPTIMIZATION.md). The
 [full qualification plan](pretraining_readiness/FULL_QUALIFICATION_PLAN.md)
 is historical context, not a requirement to repeat HPO or spend 960 GPU-hours.
 
@@ -38,8 +42,9 @@ complete-update time without conflating microbatch and global-batch effects.
 At the HPO's 393,216-token global batch, `batch_bridge_mb12` uses one
 12-sequence microstep per rank and can be compared with `batch_bridge`'s
 three smaller microsteps without changing optimizer-update frequency.
-For a final ternary model, [QAT_ALLOCATION.md](QAT_ALLOCATION.md) recommends
-60% dense / 40% QAT by tokens and prices both stages together. Native AMD
+For a final ternary model, the [current fixed-QAT policy](HORIZON.md) reserves
+a qualified absolute QAT token budget and assigns extra affordable tokens to
+dense. [QAT_ALLOCATION.md](QAT_ALLOCATION.md) retains historical split comparisons. Native AMD
 ternary code is prepared for testing; native gfx942 numerical, fit, speed,
 transition and quality qualification remain. See [QAT_PORT.md](QAT_PORT.md).
 
@@ -251,7 +256,7 @@ After [ACCEPTANCE.md](ACCEPTANCE.md) is satisfied, the human can invoke normal
 training with the same environment and a fresh output directory:
 
 ```bash
-bash production/amd/train.sh
+bash production/amd/train.sh --operations-config /external/operations.json
 ```
 
 `--stop-after-updates N` supports a bounded training/recovery drill with a

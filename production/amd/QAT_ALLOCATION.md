@@ -1,5 +1,10 @@
 # Dense and ternary allocation for the MI325X month
 
+**2026-11-02 update:** the current policy keeps a qualified absolute QAT token
+budget fixed and assigns extra affordable tokens to dense. Use the new
+[remaining-budget forecast and WSD fork protocol](HORIZON.md). The percentages
+below are historical candidates, not an automatic rule for the final run.
+
 **2026-11-01:** follow the
 [adaptive compute policy](pretraining_readiness/ADAPTIVE_COMPUTE_PLAN.md) and
 [quality gates](pretraining_readiness/QUALITY_GATES.md). The current focused

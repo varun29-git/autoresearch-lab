@@ -1,8 +1,10 @@
 # Adaptive production horizon within 5,760 GPU-hours
 
-Engineering policy and implementation specification, 2026-11-01. Read with
-[QUALITY_GATES.md](QUALITY_GATES.md). This is the proposed production policy;
-the current trainer does **not** yet implement live horizon changes. No paid
+Engineering policy and implementation specification, updated 2026-11-02. Read with
+[QUALITY_GATES.md](QUALITY_GATES.md). [Stopped-checkpoint WSD forks](../HORIZON.md),
+fixed-QAT remaining-budget forecasts and persistent allocation controls are now
+implemented and CPU-tested. Live mutation and automatic multi-phase orchestration
+are not implemented; native qualification remains open. No paid
 work is launched or authorized by this document. Generated forecasts,
 contracts, receipts and checkpoints belong outside Git.
 
@@ -88,9 +90,10 @@ QAT:                           qualified rewarm/recovery -> stable -> cooldown
    know its cost. Use an actual compatible dense parent and a same-data dense
    continuation control. At the production switch, fund the qualified QAT
    warmup, recovery, stable portion and cooldown together.
-6. QAT can also have an extendable plateau, **after** its recovery requirement
-   is funded and **before** its final cooldown is committed. Dense and QAT
-   cooldowns must not compete for the same remaining hours.
+6. The current user-selected planning policy keeps a qualified absolute QAT
+   budget fixed and assigns additional affordable tokens to dense. Dense and
+   QAT cooldowns must not compete for the same remaining hours. An extendable
+   QAT plateau is a separate future policy decision.
 
 The existing 10% dense cooldown, 20% QAT cooldown and 60/40 token allocation
 are candidates, not measured optima. The 80/20 challenger needs quality
@@ -190,6 +193,11 @@ token target should respond to measurements rather than to an H100 anchor.
 [`phase_plan.py`](../phase_plan.py) already performs initial two-phase
 allocation arithmetic. It does not implement the remaining-work calculation,
 live schedule changes, data extension or a production budget controller.
+The new `allocation.fixed_qat_forecast` and `production.amd.forecast` CLI cover
+remaining work at fixed QAT budget. [Operations](../OPERATIONS.md) charge the
+original allocation across restart; [horizon forks](../HORIZON.md) preserve
+the consumed prefix. The operator must still supply qualified rate evidence
+and data and coordinate phase launches.
 
 ## 4. Protect quality when the horizon changes
 
@@ -262,7 +270,7 @@ unconsumed suffix and preserve the consumed-stream proof.
   final artifact. A last checkpoint is not automatically the best checkpoint.
   Keep a final holdout out of checkpoint/model selection.
 
-## 5. Required implementation: explicit future schedule events
+## 5. Continuation protocol and remaining integration
 
 The current [`terminus/train.py`](../../../terminus/train.py) derives its
 learning horizon from `manifest.config.usable_train_tokens` and computes WSD
@@ -274,8 +282,12 @@ an exact resume.
 explicit dense-to-ternary child with stream-continuation checks. It is not a
 general dense-to-dense horizon extension API. Preserve those protections.
 
-Implement a reviewed production scheduler/continuation protocol before
-promising unattended elastic training:
+The CPU-tested `production.amd.horizon` now implements same-mode WSD children,
+complete-update cursor rebasing, past-LR/data proofs and irreversible ending
+commitment. It requires a stopped, source-identical parent. Its receipt does
+not yet bind automatic rate selection to a live multi-phase orchestrator.
+The following remains the complete protocol before promising unattended
+elastic training; native/integration checks are still required:
 
 1. Separate the available data envelope from the current learning endpoint.
    Represent phase, fixed warmup, plateau status, committed decay start/end,

@@ -195,9 +195,9 @@ receipt alone does not clear the long production run.
     - [ ] Measure real checkpoint size/save duration; verify the selected
       2.013B-token cadence and last-three local retention policy against
       acceptable lost work, free space and durable archive capacity.
-    - [ ] Implement or configure verified S3 upload and restore. Existing
-      `production.checkpoints` accepts filesystem archives; `terminus.s3io`
-      handles read-only ingestion, not checkpoint uploads.
+    - [ ] Configure and qualify the implemented
+      [active S3 upload/restore service](OPERATIONS.md). Historical
+      `production.checkpoints` stopped-run filesystem maintenance remains separate.
     - [ ] From the actual GPU provider, transfer a full checkpoint to and
       from the chosen AWS bucket. Record route/firewall, credentials,
       sustained throughput, retries, backup lag, restore time and transfer
@@ -206,9 +206,9 @@ receipt alone does not clear the long production run.
     - [ ] Upload committed payloads and receipts, make recovery pointers refer
       only to complete verified backups, and verify restored SHA256 hashes.
       Multipart ETags are not interchangeable with those hashes.
-    - [ ] Define safe cleanup. The existing retention tool requires a stopped
-      run; either schedule maintenance or implement/test coordination for live
-      backup and retention. Never remove the sole recoverable checkpoint.
+    - [ ] Qualify active retention coordination: remote verification before
+      deletion, shared reader locks, protected checkpoints and at least two
+      local snapshots. CPU failure tests pass; the provider drill remains due.
     - [ ] Preserve the tokenizer, config, manifest, receipts, source/image
       identity and required run metadata with the recovery artifacts.
 
@@ -228,8 +228,9 @@ receipt alone does not clear the long production run.
     - [ ] Monitor free space, newest committed checkpoint, backup lag and
       validation/clipping trends.
     - [ ] Configure a notification/response mechanism and a human stop/recovery
-      procedure. `production.status` currently reports local logs/disk only;
-      it is not an unattended distributed watchdog or notification service.
+      procedure. Configure and test the new persistent allocation supervisor
+      and independent watchdog, including actual provider stop/verification
+      commands. It is not a notification service or automatic quality selector.
 
 16. **Run a production-cadence rehearsal.**
     - [ ] Exercise multiple checkpoint/evaluation/backup cycles on the chosen
@@ -255,13 +256,14 @@ receipt alone does not clear the long production run.
 
 ## Separate later work, not a prerequisite for the initial dense run
 
-- [x] **QAT allocation planning:** 60/40 by tokens is the recommended starting
-  policy, with 80/20 as a challenger; see [QAT_ALLOCATION.md](QAT_ALLOCATION.md)
-  for phase-rate accounting and the 480 GPU-hour combined qualification reserve.
-- [ ] **QAT execution:** implement and validate the AMD transition and ternary
+- [x] **QAT allocation planning:** [fixed-QAT forecasting](HORIZON.md) now reserves
+  a qualified absolute QAT budget and assigns additional affordable tokens to
+  dense. Historical 60/40 and 80/20 policies remain background comparisons.
+- [ ] **QAT execution:** validate the implemented AMD transition and ternary
   kernels, data-prefix/state carry, recovery quality and throughput. This is
   required before the full mixed campaign, though not before a bounded dense
-  bring-up trial. Current AMD FP8 candidates deliberately reject ternary mode.
+  bring-up trial. Current AMD FP8 candidates support ternary mode; native
+  acceptance remains pending. See [QAT_PORT.md](QAT_PORT.md).
 - [ ] **Multi-node scaling:** repeat network/RCCL, DDP equivalence, staging,
   sustained timing and recovery on each larger topology. Exact resume does
   not silently permit a world-size change.

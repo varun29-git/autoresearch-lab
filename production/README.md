@@ -2,9 +2,10 @@
 
 **2026-11-02 readiness update:** the single-H100 qualification campaign is
 complete; selection/transfer/full-size confirmation receipts are external.
-The AMD baseline still needs an explicit optimizer promotion, consistent
-tokenizer/data provenance, native qualification and month-long operating
-controls. Start with the [current readiness entry](amd/pretraining_readiness/README.md).
+The AMD baseline now promotes the confirmed dense embedding LR and includes
+CPU-tested checkpoint/budget/recovery tools. Consistent tokenizer/data provenance,
+native qualification and actual provider controls remain open. Start with the
+[current readiness entry](amd/pretraining_readiness/README.md).
 The AMD ternary port is implemented, with native checks still pending.
 
 **Historical 2026-11-01 H100 qualification plan:** The next single-H100 allocation is
@@ -25,8 +26,9 @@ It records the unresolved batch, QAT and native-hardware gates for the
 then use the [adaptive compute plan](amd/pretraining_readiness/ADAPTIVE_COMPUTE_PLAN.md)
 to fund a measured token horizon inside the fixed allocation. Extend the WSD
 plateau while reserving complete finishing phases. The current trainer still
-uses a fixed manifest horizon; prospective schedule/data transitions require
-implementation and testing. The focused five-billion-token proxy comparisons
+uses a fixed manifest horizon; [prospective stopped-checkpoint transitions](amd/HORIZON.md)
+now preserve the consumed schedule/data prefix. Automatic multi-phase orchestration
+and native qualification remain open. The focused five-billion-token proxy comparisons
 below remain fixed and comparable.
 
 **2026-10-28 qualification policy:** the latest direction reuses completed HPO
@@ -72,7 +74,7 @@ in [`amd/CONFIG_SELECTION.md`](amd/CONFIG_SELECTION.md); use
 
 The model has 24 layers; width 2304; FFN width 5760; 18 query and 6 KV heads; a tied 65,536-token embedding/readout; 4096-token context; 512-token local attention in 20 layers and global attention at layers 6, 12, 18 and 24; Peri-LN; learned value residual; and 1,446,478,126 trainable parameters. The operator-reviewed change is documented in [`ARCHITECTURE.md`](ARCHITECTURE.md). The new geometry has completed a short single-H100 qualification; its receipts are external. This does not certify MI325X throughput or long-run quality. It retains the original implementation: FA3 attention, DeepGEMM FP8 linear operations, packed QKV/MLP and pointwise kernels, BF16 residuals, and streaming loss. The dense optimizer is spectral Muon (`eta × sqrt(d_out/d_in)` on each logical matrix, without Moonshot's width-growing factor) plus AdamW for the tied embedding and scalar/norm groups. See `docs/MUON_SPECTRAL_IMPLEMENTATION.md` for the exact update.
 
-The *starting* rates are Muon 0.017; tied-embedding AdamW 0.003; ordinary norm 0.0003; learned Q/K norm 0.0001; hidden-matrix weight decay 0.02; tied-embedding weight decay 0. The Muon and small-group settings come from the completed 200M campaign. In the 700M width bridge at 500M tokens, embedding LR 0.003 had lower English cross-entropy than 0.00424 or 0.006 under matched settings. This supports 0.003 as a production starting point, not a proven width law or a full µP guarantee. The 700M records remain external to Git. The dense stage has no QAT. Transition tooling is available; the AMD mixed-phase recommendation is 60/40 by tokens, with actual phase budgets dependent on both measured rates and native QAT qualification.
+The historical H100 starting rates are Muon 0.017; tied-embedding AdamW 0.003; ordinary norm 0.0003; learned Q/K norm 0.0001; hidden-matrix weight decay 0.02; tied-embedding weight decay 0. The Muon and small-group settings come from the completed 200M campaign. In the 700M width bridge at 500M tokens, embedding LR 0.003 had lower English cross-entropy than 0.00424 or 0.006 under matched settings. The later H100 selection/transfer confirmed embedding **0.002**, now [promoted for AMD](amd/OPTIMIZER_PROMOTION.md); the historical recipe remains reproducible. Campaign records remain external to Git. The dense stage has no QAT. The current AMD policy [reserves a qualified fixed QAT budget and extends dense when affordable](amd/HORIZON.md), using measured phase rates and native QAT qualification.
 
 ## Make a runnable config
 

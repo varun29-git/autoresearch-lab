@@ -35,8 +35,8 @@ checks, not native MI325X or full-size quality/performance measurements.
 | Data construction | NFC normalization, ID/exact/MinHash dedup, source adapters and contamination guard in `terminus/corpus.py`; immutable token contracts | Verify those operations ran on the **actual production corpus**, with representative language/domain quality and independent split/contamination audits |
 | Focused qualification | Frozen five 5B proxy contracts, horizon views, bounded runner, selection/transfer, telemetry, ledger and recovery tooling | Complete evidence chain and comparisons; implementation is explicitly single-H100, not an AMD production runner |
 | Evaluation | Token NLL, source/language summaries, reference-NLL evaluation contracts, reserved holdout files | Generated capability scoring and document/translation-family isolation; full target coverage and predeclared margins |
-| Recovery | Checkpoint contracts, cursor checks, S3 upload/remote checksum verification tools | Real eight-rank restore and provider-network behaviour, including completion after a failed upload/preemption |
-| Adaptive production | Initial fixed-horizon phase cost calculator | Future-only schedule/data events and an eight-GPU allocation controller; see companion specification |
+| Recovery | Checkpoint contracts, immutable asynchronous snapshots, cursor checks, bounded active S3 upload/verified retention and restore | Real eight-rank restore and provider-network behaviour, including completion after a failed upload/preemption |
+| Adaptive production | Fixed-QAT remaining-budget forecast, stopped-checkpoint future WSD/data forks, persistent allocation ledger and failure supervisor | Native all-rank transitions/recovery, actual provider shutdown hooks, rate-evidence binding and automatic multi-phase orchestration; see companion specification |
 | Ternary QAT | Reference quantizer/STE, dense-to-QAT transition, AMD FNUZ kernel, explicit recipe and CPU checks | Native numerics, recovery quality and export qualification remain required |
 
 Some external H100 packet gates are marked passed, including staging of a

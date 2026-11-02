@@ -16,28 +16,30 @@ still pending. Do not restart the historical HPO plans below as prerequisites.
   `pack_token_streams` now refuses absent/mismatched tokenizer sidecars; do not
   manufacture a matching sidecar for incompatible data. Content-only bins
   with document indices still require document-aware assembly and EOD insertion.
-- Explicitly promote the selected optimizer using the external transfer
-  receipt. The completed H100 transfer used embedding AdamW **0.002**; the
-  reviewed AMD baseline/validator still specifies **0.003**. This is a recipe
-  promotion decision, not an additional automatic width scaling. QAT rates
-  require a separate transition qualification.
-- Establish active checkpoint upload/retention and restore, an allocation
-  deadline that survives restarts, and a bounded failure supervisor. The
-  current checkpoint maintenance command acquires the trainer's run lock and
-  cannot prune during an active invocation. `time_limit_seconds` is an
-  invocation limit, not a durable monthly billing deadline. The H100 campaign
-  supervisor does not automatically govern the eight-MI325X launcher.
+  The [exact batch adapter and audit command](../../TOKENIZER_COMPATIBILITY.md)
+  are implemented; existing AWS shards have not been repaired by that change.
+- The [confirmed dense optimizer is now promoted](../OPTIMIZER_PROMOTION.md):
+  embedding AdamW **0.002**, spectral Muon **0.017**, with other groups preserved.
+  This applies the selected rate once; QAT rates still require their own
+  transition qualification.
+- Qualify the new [active checkpoint/budget operations](../OPERATIONS.md) on
+  the provider. Immutable asynchronous snapshots, verified upload/retention,
+  restore, persistent allocation accounting, bounded retries and an independent
+  watchdog are CPU-tested. Supply and test actual provider stop/state-verification
+  hooks. A supervisor instance currently governs one training command; automatic
+  dense-to-QAT orchestration is not implemented by these tools.
 - Build and qualify the actual MI325X image, complete full-update memory/
   numerical/DDP checks, compare measured candidates, and exercise recovery.
-  Freeze a funded fixed horizon until future-only schedule/data transitions
-  are implemented and tested.
+  [Fused FP8 producers and shape-specific tuning](../NATIVE_OPTIMIZATION.md)
+  remain opt-in, unmeasured candidates. The [stopped-checkpoint WSD fork](../HORIZON.md)
+  proves consumed history on CPU; eight-rank execution/recovery is still due.
 
 **Start with the [quality gates](QUALITY_GATES.md) and
 [adaptive compute plan](ADAPTIVE_COMPUTE_PLAN.md).** Fix the 5,760 GPU-hour
 budget and qualified learning/data policy; let measured dense/QAT throughput
 determine the useful token horizon. Extend only the uncommitted WSD plateau
 while protecting cooldown, QAT recovery and final evaluation. This policy
-requires explicit future schedule/data transitions; editing a live manifest
+uses explicit future schedule/data transitions; editing a live manifest
 does not implement it. Current production builders still generate fixed
 horizons. Close the offline data/evaluation gates before long paid training.
 
@@ -83,9 +85,9 @@ determines which experiments come first; the larger search is optional.
 The single-H100 campaign now has a bounded runner, horizon views, full-state
 telemetry, selection/transfer, an allocation ledger and checkpoint/S3 recovery
 tooling. These are implemented, not all still backlog items. They are not an
-eight-MI325X production runner or acceptance evidence for that node. The AMD
-validator still locks the earlier optimizer recipe. Native QAT, production
-schedule extension, generated task evaluation and all-rank acceptance remain
+eight-MI325X acceptance evidence. The AMD validator now locks the promoted dense
+optimizer recipe. Native QAT, native schedule-extension recovery,
+generated task evaluation and all-rank acceptance remain
 open; see the [source audit and quality requirements](QUALITY_GATES.md).
 Native AMD throughput, memory fit, learning and recovery remain unverified.
 
@@ -126,7 +128,7 @@ blockers in [TRAINING_RISKS.md](TRAINING_RISKS.md). The detailed evidence and te
   measured optimum.
 - [ ] **Global batch and learning:** Use the completed H100 selection and
   transferred full-size confirmation at 2,097,152 tokens/update. Reconcile the
-  selected optimizer with the AMD validator before generating production
+  selected optimizer through the updated AMD builder/validator when generating
   configs. Changing only microbatch/accumulation at that global batch does not
   call for a new LR scaling. Test the AMD numerical migration and inspect the
   early full-model trajectory on production data. An increase in global batch
@@ -152,9 +154,10 @@ blockers in [TRAINING_RISKS.md](TRAINING_RISKS.md). The detailed evidence and te
   plan and acceptance evidence. Forecast both phases within the
   **5,760 GPU-hour total** using measured sustained rates. Keep the future
   token horizon adjustable only through the reviewed protocol, then commit
-  each ending before decay. Until that protocol is implemented and tested,
-  current generated configs retain a fixed horizon. A 60/40 dense/QAT token
-  split is a planning default, not a proven optimum.
+  each ending before decay using the explicit fork protocol. Current generated
+  configs retain a fixed horizon until forked. The fixed-QAT forecaster assigns
+  extra affordable tokens to dense; the absolute QAT recovery budget still
+  needs qualification. The older 60/40 split is a historical planning default.
 
 Record measured configs, data manifests, preflight reports, comparison
 receipts, evaluation results and checkpoints **outside Git**. Until these
