@@ -8,6 +8,7 @@ import math
 import os
 import random
 import signal
+import sys
 import time
 from dataclasses import asdict, dataclass, replace
 from datetime import timedelta
@@ -53,9 +54,11 @@ class TrainConfig:
     cuda_graphs: bool = False
     ddp_bucket_cap_mb: int = 25
     time_limit_seconds: float | None = None
+    async_checkpoint: bool = False
+    checkpoint_timeout_seconds: float = 600.0
 
     def __post_init__(self):
-        for name in ("development_mode", "compile", "cuda_graphs"):
+        for name in ("development_mode", "compile", "cuda_graphs", "async_checkpoint"):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"{name} must be a boolean")
         if self.device not in {"cpu", "cuda"} or self.dtype not in {"fp32", "bf16"}:
@@ -98,6 +101,8 @@ class TrainConfig:
             raise ValueError("grad_clip must be finite and nonnegative; zero disables clipping")
         if self.time_limit_seconds is not None and (not math.isfinite(self.time_limit_seconds) or self.time_limit_seconds <= 0):
             raise ValueError("time limit must be finite and positive")
+        if not math.isfinite(self.checkpoint_timeout_seconds) or self.checkpoint_timeout_seconds <= 0:
+            raise ValueError("checkpoint timeout must be finite and positive")
 
 
 def load_config(path):
@@ -253,7 +258,7 @@ def evaluate(model, manifest, root, device, amp_dtype, max_batches, rank, world_
     return result
 
 
-def collective_checkpoint(directory, model, optimizer, state, contract, rank, world_size):
+def collective_checkpoint(directory, model, optimizer, state, contract, rank, world_size, *, writer=None, wait=False):
     local_rng = rng_state()
     states = [None] * world_size if rank == 0 else None
     if world_size > 1:
@@ -263,7 +268,12 @@ def collective_checkpoint(directory, model, optimizer, state, contract, rank, wo
     error = [None]
     if rank == 0:
         try:
-            save_checkpoint(directory, model, optimizer, state, contract, states)
+            if writer is None:
+                save_checkpoint(directory, model, optimizer, state, contract, states)
+            else:
+                writer.submit(model, optimizer, state, contract, states)
+                if wait:
+                    writer.flush()
         except Exception as exc:
             error[0] = f"{type(exc).__name__}: {exc}"
     if world_size > 1:
@@ -272,9 +282,23 @@ def collective_checkpoint(directory, model, optimizer, state, contract, rank, wo
         raise RuntimeError(f"checkpoint transaction failed: {error[0]}")
 
 
+def poll_checkpoint_writer(writer, rank, world_size, *, wait=False):
+    error = [None]
+    if rank == 0 and writer is not None:
+        try:
+            writer.flush() if wait else writer.check()
+        except Exception as exc:
+            error[0] = f"{type(exc).__name__}: {exc}"
+    if world_size > 1:
+        distributed.broadcast_object_list(error, src=0)
+    if error[0] is not None:
+        raise RuntimeError(f"background checkpoint failed: {error[0]}")
+
+
 OPERATIONAL_TRAINING_FIELDS = ("checkpoint_interval", "validation_interval",
                                "validation_batches_per_language", "validation_sequences_per_language", "log_interval",
-                               "stability_log_interval", "prefetch_batches", "time_limit_seconds")
+                               "stability_log_interval", "prefetch_batches", "time_limit_seconds",
+                               "async_checkpoint", "checkpoint_timeout_seconds")
 
 
 class PreparedTraining:
@@ -295,6 +319,7 @@ class PreparedTraining:
 
     def __init__(self):
         self.stop_after_updates = None
+        self.checkpoint_writer = None
         self.monitor = None
         self.captured = None
         self.should_stop = [False]
@@ -401,6 +426,8 @@ class PreparedTraining:
         training, state = self.training, self.state
         stopped = self.stop_requests > 0 or (self.stop_after_updates is not None and state["updates"] >= self.stop_after_updates)
         complete = state["tokens_seen"] == self.total_tokens
+        if training.async_checkpoint and (state["updates"] % training.log_interval == 0 or stopped or complete):
+            poll_checkpoint_writer(self.checkpoint_writer, self.rank, self.world_size)
         if self.sampled:
             append_record(self.output_dir / "stability.jsonl", {"event": "stability", **state, **self.monitor.finish()})
         if self.rank == 0 and (state["updates"] % training.log_interval == 0 or stopped or complete):
@@ -418,7 +445,8 @@ class PreparedTraining:
                          "reserved_memory_bytes": torch.cuda.memory_reserved(self.device) if self.device.type == "cuda" else None})
             self.last_log, self.last_log_tokens = now, state["tokens_seen"]
         if state["updates"] % training.checkpoint_interval == 0 or stopped or complete:
-            collective_checkpoint(self.output_dir / "checkpoints", self.model, self.optimizer, state, self.contract, self.rank, self.world_size)
+            collective_checkpoint(self.output_dir / "checkpoints", self.model, self.optimizer, state, self.contract, self.rank, self.world_size,
+                                  writer=self.checkpoint_writer, wait=stopped or complete)
         if state["updates"] % training.validation_interval == 0 or stopped or complete:
             results = evaluate(self.model, self.manifest, self.data_root, self.device, self.amp_dtype,
                                training.validation_batches_per_language, self.rank, self.world_size,
@@ -604,7 +632,13 @@ def prepare_training(config_path, manifest_path, data_root, output_dir, *, resum
         workload.last_log = last_log
         workload.tokens_at_start = tokens_at_start
         workload.last_log_tokens = last_log_tokens
+        if training.async_checkpoint and rank == 0:
+            from .async_checkpoint import AsyncCheckpointWriter
+            workload.checkpoint_writer = AsyncCheckpointWriter(output_dir / "checkpoints",
+                                                              timeout=training.checkpoint_timeout_seconds)
         yield workload
+        if training.async_checkpoint:
+            poll_checkpoint_writer(workload.checkpoint_writer, rank, world_size, wait=True)
     except Exception as exc:
         candidate = Path(output_dir)
         if rank == 0 and (candidate / "run.json").exists():
@@ -618,6 +652,13 @@ def prepare_training(config_path, manifest_path, data_root, output_dir, *, resum
                 pass  # Preserve the original failure if the output disk is also unhealthy.
         raise
     finally:
+        original_error = sys.exc_info()[0]
+        close_error = None
+        try:
+            if workload.checkpoint_writer is not None:
+                workload.checkpoint_writer.close()
+        except Exception as exc:
+            close_error = exc
         if monitor is not None:
             monitor.close()
         if iterator is not None:
@@ -628,6 +669,8 @@ def prepare_training(config_path, manifest_path, data_root, output_dir, *, resum
             lock_handle.close()
         if world_size > 1 and distributed.is_initialized():
             distributed.destroy_process_group()
+        if close_error is not None and original_error is None:
+            raise close_error
 
 
 def run_training(config_path, manifest_path, data_root, output_dir, *, resume=None, stop_after_updates=None, preflight_report=None):

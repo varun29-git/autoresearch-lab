@@ -265,6 +265,10 @@ class TrainingTests(unittest.TestCase):
             root = Path(directory)
             fixture(root / "single_data", batch_size=4)
             fixture(root / "ddp_data", batch_size=2)
+            config_path = root / "ddp_data/config.json"
+            config = json.loads(config_path.read_text())
+            config["training"]["async_checkpoint"] = True
+            config_path.write_text(json.dumps(config))
             run_training(root / "single_data/config.json", root / "single_data/manifest.json", root / "single_data", root / "single")
             with socket.socket() as listener:
                 listener.bind(("127.0.0.1", 0))

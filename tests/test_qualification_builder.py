@@ -38,7 +38,9 @@ class BuilderTests(unittest.TestCase):
                          [0.017, 0.017, 0.017, 0.0082, 0.0082])
         config = configs["H"]
         self.assertEqual(len(config["model"]), 46)
-        self.assertEqual(len(config["training"]), 25)
+        self.assertEqual(len(config["training"]), 27)
+        self.assertFalse(config["training"]["async_checkpoint"])
+        self.assertEqual(config["training"]["checkpoint_timeout_seconds"], 600.)
         self.assertEqual(len(config["optimizer"]), 19)
         self.assertEqual(config["training"]["gradient_accumulation_steps"], 128)
         self.assertEqual(config["training"]["warmup_tokens"], 499_122_176)

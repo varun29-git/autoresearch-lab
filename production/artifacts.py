@@ -5,7 +5,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from terminus.checkpoint import load_checkpoint
+from terminus.checkpoint import checkpoint_lock, load_checkpoint
 from terminus.integrity import file_sha256, fingerprint
 from terminus.model import BitNetLlamaConfig
 
@@ -21,6 +21,12 @@ def external_path(path, *, fresh=False):
 
 
 def verified_checkpoint(source, *, model_config=None):
+    source = Path(source).resolve()
+    with checkpoint_lock(source if source.is_dir() else source.parent):
+        return _verified_checkpoint(source, model_config=model_config)
+
+
+def _verified_checkpoint(source, *, model_config=None):
     source = Path(source).resolve()
     directory = source if source.is_dir() else source.parent
     run = json.loads((directory.parent / "run.json").read_text())
