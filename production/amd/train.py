@@ -16,7 +16,7 @@ from terminus.train import load_config, prepare_training
 from .recipe import validate_production
 from .runtime import capture_runtime, verify, require_gfx942
 from .staging import verify as verify_staging
-from .measurement import summarize
+from .measurement import summarize, validate_window
 
 
 def main():
@@ -37,6 +37,8 @@ def main():
     for key in ("config", "manifest", "data_root", "output_dir", "runtime_report", "preflight_report", "staging_receipt"):
         setattr(args, key, external_path(getattr(args, key)))
     model, training, optimizer = load_config(args.config)
+    if model.weight_mode == "ternary" and not args.resume:
+        p.error("QAT requires --resume from a compatible transition checkpoint")
     if args.benchmark_updates and args.resume and model.weight_mode != "ternary":
         p.error("a resumed benchmark is only supported for the QAT transition phase")
     candidate = validate_production(model, training, optimizer)
@@ -50,9 +52,6 @@ def main():
     batch = world * manifest.config.tokens_per_step * training.gradient_accumulation_steps
     if batch != args.expected_global_batch_tokens:
         raise ValueError("global batch changed; retune accumulation or regenerate the config")
-    remaining = manifest.config.usable_train_tokens - (training.phase_start_tokens or 0)
-    if args.benchmark_updates and (args.benchmark_updates + args.warmup_updates) * batch > remaining:
-        raise ValueError("benchmark needs enough tokens for full warmup and measured updates")
     # Do bounded snapshot checks before opening collectives; torchrun propagates
     # a worker failure to the other workers instead of launching a partial run.
     verify_staging(json.loads(args.staging_receipt.read_text()), manifest, args.data_root, model)
@@ -60,6 +59,10 @@ def main():
     with prepare_training(args.config, args.manifest, args.data_root, args.output_dir,
                           resume=args.resume, preflight_report=args.preflight_report,
                           staging_receipt=args.staging_receipt) as workload:
+        if args.benchmark_updates:
+            validate_window(total_tokens=workload.total_tokens, tokens_seen=workload.state["tokens_seen"],
+                            batch_tokens=batch, warmup_updates=args.warmup_updates,
+                            measured_updates=args.benchmark_updates)
         workload.stop_after_updates = args.stop_after_updates
         if args.stop_after_updates is not None and args.stop_after_updates <= workload.state["updates"]:
             raise ValueError("stop-after-updates must exceed the resumed update count")
@@ -92,7 +95,8 @@ def main():
             dist.all_gather_object(gathered, local)
         if rank == 0:
             result = summarize(gathered, world_size=world)
-            result.update(candidate=candidate, warmup_updates=warm, contract=workload.contract,
+            result.update(candidate=candidate, weight_mode=model.weight_mode,
+                          warmup_updates=warm, contract=workload.contract,
                           training=asdict(training),
                           global_batch_tokens=batch, microbatch=manifest.config.batch_size,
                           accumulation=training.gradient_accumulation_steps,

@@ -129,6 +129,18 @@ def test_slowest_rank_rate_does_not_multiply_global_tokens_twice():
         summarize(ranks[:1], world_size=2)
 
 
+def test_resumed_benchmark_checks_checkpoint_cursor_not_phase_start():
+    from production.amd.measurement import validate_window
+
+    # The phase began at 200 tokens, but the resumed checkpoint is at 900.
+    # Two 100-token updates fit the phase budget but cannot fit this resume.
+    with pytest.raises(ValueError, match="remaining tokens"):
+        validate_window(total_tokens=1000, tokens_seen=900, batch_tokens=100,
+                        warmup_updates=1, measured_updates=1)
+    validate_window(total_tokens=1000, tokens_seen=800, batch_tokens=100,
+                    warmup_updates=1, measured_updates=1)
+
+
 def test_staging_detects_changes_and_writable_files(tmp_path):
     fixture(tmp_path, examples=8)
     manifest = TokenManifest.load(tmp_path / "manifest.json")

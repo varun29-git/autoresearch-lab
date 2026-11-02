@@ -3,6 +3,12 @@ import math
 import statistics
 
 
+def validate_window(*, total_tokens, tokens_seen, batch_tokens, warmup_updates, measured_updates):
+    """A resumed benchmark must have full updates left at its actual cursor."""
+    if (warmup_updates + measured_updates) * batch_tokens > total_tokens - tokens_seen:
+        raise ValueError("benchmark needs enough remaining tokens for full warmup and measured updates")
+
+
 def summarize(ranks, *, world_size):
     if type(world_size) is not int or world_size <= 0 or len(ranks) != world_size:
         raise ValueError("missing rank measurements")

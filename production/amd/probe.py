@@ -33,6 +33,24 @@ def measure(call, device, warmup, iterations):
             "peak_reserved_bytes": torch.cuda.max_memory_reserved(device)}
 
 
+def linear_workload(model, x, weight, gradient):
+    """Use the selected weight recipe with the same warm cache as training."""
+    operands = (backend.quantize_weight(weight, transposed=True, weight_mode=model.weight_mode)
+                if model.linear_backend.startswith("rocm_fp8") else None)
+
+    def call():
+        x.grad = weight.grad = None
+        if operands is None:
+            y = torch.nn.functional.linear(x, weight.to(torch.bfloat16))
+        else:
+            y = backend.linear(x, weight, weight_operands=operands, backend=model.linear_backend,
+                               splits=model.fp8_wgrad_splits or 1, weight_mode=model.weight_mode)
+        y.backward(gradient)
+        return y
+
+    return call
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--config", required=True)
@@ -56,20 +74,11 @@ def main():
             x = torch.randn(rows, k, device=device, dtype=torch.bfloat16, requires_grad=True)
             w = (torch.randn(n, k, device=device) * .02).requires_grad_()
             g = torch.randn(rows, n, device=device, dtype=torch.bfloat16)
-            operands = backend.quantize_weight(w, transposed=True) if model.linear_backend.startswith("rocm_fp8") else None
-
-            def call():
-                x.grad = w.grad = None
-                if operands is None:
-                    y = torch.nn.functional.linear(x, w.to(torch.bfloat16))
-                else:
-                    y = backend.linear(x, w, weight_operands=operands, backend=model.linear_backend,
-                                       splits=model.fp8_wgrad_splits or 1)
-                y.backward(g)
+            call = linear_workload(model, x, w, g)
 
             results[name] = {"m": rows, "n": n, "k": k, "includes": "forward+dgrad+wgrad+activation/gradient quantization; warm weight cache",
                              **measure(call, device, args.warmup, args.iterations)}
-            del x, w, g, operands
+            del call, x, w, g
     elif args.component == "attention":
         for window in (None, model.local_attention_window):
             selected = model.attention_backend if window is None else model.local_attention_backend or model.attention_backend
@@ -105,7 +114,8 @@ def main():
         results["copy"] = measure(lambda: y.copy_(x), device, args.warmup, args.iterations)
         results["copy"]["effective_tb_s"] = 2 * x.nbytes / (results["copy"]["median_ms"] / 1000) / 1e12
     report = {"schema": 1, "kind": "ci1_amd_component_probe", "component": args.component,
-              "microbatch": args.microbatch, "source": source_hashes(), "runtime": runtime_contract(device),
+              "microbatch": args.microbatch, "weight_mode": model.weight_mode,
+              "source": source_hashes(), "runtime": runtime_contract(device),
               "results": results, "scope": "Synthetic component timing; no model throughput or production quality claim"}
     write_json_atomic(output, report)
     print(json.dumps(results, indent=2))

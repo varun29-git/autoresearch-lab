@@ -90,6 +90,28 @@ def test_numerical_gate_rejects_zeroed_small_gradients():
 
 
 @pytest.mark.parametrize("weight_mode", ["dense", "ternary"])
+def test_component_probe_uses_configured_weight_recipe(emulated, weight_mode):
+    from production.amd.probe import linear_workload
+    from production.amd.recipe import model_for
+
+    torch.manual_seed(7)
+    x = torch.randn(17, 256, dtype=torch.bfloat16, requires_grad=True)
+    w = (torch.randn(256, 256) * .02).requires_grad_()
+    g = torch.randn_like(x)
+    call = linear_workload(model_for(weight_mode=weight_mode), x, w, g)
+    actual = call()
+    wr = reference.quantize_ternary(w) if weight_mode == "ternary" else reference.quantize(w, group_rows=128)
+    xr, xt = reference.directional(x, transposed=True)
+    _, gt = reference.directional(g, transposed=True, eps=0.)
+    torch.testing.assert_close(actual, reference.gemm(xr, wr), rtol=0, atol=0)
+    torch.testing.assert_close(w.grad, reference.gemm(gt, xt, rhs_group_size=1, out_dtype=torch.float32), rtol=0, atol=0)
+    # Repeated timing calls must clear, rather than accumulate, the gradient.
+    previous = w.grad.clone()
+    call()
+    torch.testing.assert_close(w.grad, previous, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("weight_mode", ["dense", "ternary"])
 def test_accumulation_and_cache_refresh(emulated, weight_mode):
     layer = BitLinear(256, 256, weight_mode=weight_mode, linear_backend="rocm_fp8",
                       weight_scale_layout="blockwise", quantize_activations=True,
