@@ -1,5 +1,14 @@
 # Frozen tokenizer integration and compatibility gate
 
+The data-engineering fleet explicitly selected a stock HF encoder. The frozen
+adapter below preserves the historical CI-1 implementation; it is not an
+automatic replacement for the encoder of already-written production bins.
+An equality failure establishes that the implementations are not interchangeable,
+not that every different token cut is a corpus defect. Use the
+[decoder audit](DECODER_AUDIT.md) to distinguish deliberate production
+normalization from rendering defects and identical-ID source collisions.
+Align production data/evaluation/inference through a reviewed tokenizer contract.
+
 Use `terminus.tokenizer65k.Frozen65kTokenizer` with the frozen artifact for
 training, evaluation and decoding. `production.tokenizer_gate.FrozenBatchTokenizer`
 provides a minimal batch API (`encode`, `encode_batch`, `decode`) with exactly
