@@ -213,7 +213,7 @@ def gemm(lhs, rhs, *, rhs_group_size=128, out_dtype=torch.bfloat16, splits=1):
     work = torch.empty((splits, m, n), device=a.device, dtype=torch.float32) if splits > 1 else output
     from .tuning import tile_for
 
-    tile = tile_for(m, n, k, rhs_group_size)
+    tile = tile_for(m, n, k, rhs_group_size, splits=splits)
     bm, bn = tile["bm"], tile["bn"]
     _gemm[(triton.cdiv(m, bm) * triton.cdiv(n, bn), splits)](
         a, b, sa, sb, work, m, n, k, *sa.stride(), *sb.stride(), rhs_group_size,
