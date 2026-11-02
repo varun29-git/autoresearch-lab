@@ -3,6 +3,7 @@ import argparse
 from dataclasses import asdict
 import json
 import os
+import sys
 from pathlib import Path
 import time
 
@@ -26,6 +27,7 @@ def main():
     p.add_argument("--expected-world-size", type=int, required=True)
     p.add_argument("--expected-global-batch-tokens", type=int, required=True)
     p.add_argument("--resume")
+    p.add_argument("--operations-config", help="External persistent budget/backup policy for production")
     p.add_argument("--stop-after-updates", type=int)
     p.add_argument("--benchmark-updates", type=int, default=0)
     p.add_argument("--warmup-updates", type=int, default=5)
@@ -36,6 +38,12 @@ def main():
         p.error("benchmark uses its own update bound")
     for key in ("config", "manifest", "data_root", "output_dir", "runtime_report", "preflight_report", "staging_receipt"):
         setattr(args, key, external_path(getattr(args, key)))
+    operations_config = None
+    if args.operations_config:
+        from .operations import load_config as load_operations
+        operations_config = load_operations(args.operations_config)
+    if not args.benchmark_updates and not args.stop_after_updates and operations_config is None:
+        p.error("unbounded production training requires --operations-config; use a bounded native test otherwise")
     model, training, optimizer = load_config(args.config)
     if model.weight_mode == "ternary" and not args.resume:
         p.error("QAT requires --resume from a compatible transition checkpoint")
@@ -67,10 +75,22 @@ def main():
         if args.stop_after_updates is not None and args.stop_after_updates <= workload.state["updates"]:
             raise ValueError("stop-after-updates must exceed the resumed update count")
         if not args.benchmark_updates:
-            while workload.state["next_micro_step"] < workload.total_micro_steps:
-                workload.complete_update()
-                if workload.cadence():
-                    break
+            from .operations import TrainingOperations
+            operations = TrainingOperations(workload, operations_config) if operations_config else None
+            try:
+                while workload.state["next_micro_step"] < workload.total_micro_steps:
+                    if operations: operations.poll()
+                    workload.complete_update()
+                    if workload.cadence():
+                        break
+                if operations: operations.close()
+            finally:
+                if operations and not operations.closed:
+                    # On a rank failure, do not enter new collectives while peers unwind.
+                    original_error = sys.exc_info()[0]
+                    try: operations.close_local()
+                    except Exception:
+                        if original_error is None: raise
             return
         warm, records = args.warmup_updates, []
         torch.cuda.reset_peak_memory_stats(device)
