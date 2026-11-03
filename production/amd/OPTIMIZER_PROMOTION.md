@@ -1,5 +1,9 @@
 # Dense optimizer promotion, 2026-11-02
 
+**2026-11-03:** a separate
+[0.002 versus 0.001 learning/stability check](pretraining_readiness/EMBEDDING_LR_001_CHECK.md)
+is now available for staging. This does not change the promoted rate below.
+
 The completed H100 proxy selection and full-size confirmation used embedding
 AdamW `0.006 * 768 / 2304 = 0.002`. The user authorized integrating this
 tested recipe after the readiness audit. AMD config generation and validation

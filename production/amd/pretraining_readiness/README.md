@@ -1,5 +1,10 @@
 # MI325X pretraining readiness
 
+**2026-11-03 LR check:** the user-requested
+[dense embedding 0.002 versus 0.001 comparison](EMBEDDING_LR_001_CHECK.md)
+is staged as an isolated matched proxy/full-size packet. The selected dense
+rate remains 0.002; no new GPU trial or QAT rate promotion is implied.
+
 **Status on 2026-11-02: the month-long dense-to-ternary run is not cleared.**
 The single-H100 qualification campaign is complete; its selection, transfer
 and full-size confirmation receipts remain outside Git. The AMD FP8 ternary
