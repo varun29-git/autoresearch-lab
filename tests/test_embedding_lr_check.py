@@ -98,10 +98,10 @@ class EmbeddingLRCheckTests(unittest.TestCase):
         from production.amd.recipe import SELECTED_DENSE_OPTIMIZER, model_for, validate_production
         from terminus.optim import OptimizerConfig
         from terminus.train import TrainConfig
-        self.assertEqual(SELECTED_DENSE_OPTIMIZER['adamw_lr'], 0.002)
+        self.assertEqual(SELECTED_DENSE_OPTIMIZER['adamw_lr'], 0.001)
         with self.assertRaisesRegex(ValueError, 'reviewed AMD'):
             validate_production(model_for(), TrainConfig(device='cuda', dtype='bf16'),
-                                OptimizerConfig(**(SELECTED_DENSE_OPTIMIZER | {'adamw_lr': 0.001})))
+                                OptimizerConfig(**(SELECTED_DENSE_OPTIMIZER | {'adamw_lr': 0.002})))
 
     def test_native_entry_refuses_cpu_without_starting_training(self):
         with tempfile.TemporaryDirectory() as root:

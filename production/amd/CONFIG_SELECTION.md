@@ -52,8 +52,8 @@ itself an optimization objective.
 
 The model geometry, local/global pattern, Peri-LN, learned Q/K gains, learned
 value residual and optimizer algorithm are unchanged. The initial optimizer
-rates are Muon **0.017**, embedding AdamW **0.002** after the
-[confirmed-winner promotion](OPTIMIZER_PROMOTION.md), ordinary norms
+rates are Muon **0.017**, embedding AdamW **0.001** after the
+[2026-11-04 user decision](OPTIMIZER_PROMOTION.md), ordinary norms
 **0.0003**, Q/K norms **0.0001**. Preserve momentum 0.95, Adam betas
 (0.9, 0.95), epsilon 1e-8, five NS iterations, logical Q/K/V and gate/up
 updates, matrix weight decay 0.02, embedding decay 0 and global clipping 1.0.

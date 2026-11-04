@@ -1,5 +1,14 @@
 # Dense embedding LR comparison: 0.002 versus 0.001
 
+**2026-11-04:** both proxy arms have completed; results and shutdown receipts
+remain external to Git. The user subsequently selected production dense
+embedding AdamW **0.001** for the long horizon. See the
+[current optimizer decision](../OPTIMIZER_PROMOTION.md). The comparison packet
+and the historical execution/selection contract below remain unchanged;
+they do not override the current production choice.
+
+## Historical comparison contract
+
 The user requested **0.001** as a possible safer large-scale dense embedding
 rate. Stage an isolated comparison; the selected AMD dense AdamW rate remains
 **0.002**. QAT rates and production resume contracts remain unchanged. The new

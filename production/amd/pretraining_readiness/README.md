@@ -1,9 +1,16 @@
 # MI325X pretraining readiness
 
-**2026-11-03 LR check:** the user-requested
+**2026-11-04 selected dense LR:** the user chose tied embedding/head AdamW
+**0.001** for long pretraining. AMD builders and validation now lock that peak;
+Muon remains **0.017** and other groups are preserved. See the
+[decision and regeneration requirements](../OPTIMIZER_PROMOTION.md).
+Keep the completed comparison results external and regenerate fresh production
+configs. This choice does not establish trillion-token quality or change QAT rates.
+
+**Historical 2026-11-03 LR check:** the user-requested
 [dense embedding 0.002 versus 0.001 comparison](EMBEDDING_LR_001_CHECK.md)
 is staged as an isolated matched proxy/full-size packet. The selected dense
-rate remains 0.002; no new GPU trial or QAT rate promotion is implied.
+rate at staging was 0.002. The newer user decision above governs production.
 
 **Status on 2026-11-02: the month-long dense-to-ternary run is not cleared.**
 The single-H100 qualification campaign is complete; its selection, transfer
@@ -23,8 +30,8 @@ still pending. Do not restart the historical HPO plans below as prerequisites.
   with document indices still require document-aware assembly and EOD insertion.
   The [exact batch adapter and audit command](../../TOKENIZER_COMPATIBILITY.md)
   are implemented; existing AWS shards have not been repaired by that change.
-- The [confirmed dense optimizer is now promoted](../OPTIMIZER_PROMOTION.md):
-  embedding AdamW **0.002**, spectral Muon **0.017**, with other groups preserved.
+- The [selected dense optimizer is now locked](../OPTIMIZER_PROMOTION.md):
+  embedding AdamW **0.001**, spectral Muon **0.017**, with other groups preserved.
   This applies the selected rate once; QAT rates still require their own
   transition qualification.
 - Qualify the new [active checkpoint/budget operations](../OPERATIONS.md) on

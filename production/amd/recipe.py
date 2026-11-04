@@ -6,10 +6,10 @@ from terminus.model import BitNetLlamaConfig
 from terminus.optim import OptimizerConfig
 
 CANDIDATES = ("fp8", "fp8_triton", "fp8_te", "bf16")
-# Reviewed promotion from the completed H100 width-transfer confirmation.
-# Transfer is already applied: 0.006 * 768 / 2304 = 0.002. No further scaling.
+# User-selected dense peak, 2026-11-04, for the long pretraining horizon.
+# Transfer is already applied: proxy 0.003 * 768 / 2304 = 0.001. No further scaling.
 # Keep the historical H100 baseline and the separately qualified QAT policy distinct.
-SELECTED_DENSE_OPTIMIZER = SELECTED_OPTIMIZER | {"adamw_lr": 0.002}
+SELECTED_DENSE_OPTIMIZER = SELECTED_OPTIMIZER | {"adamw_lr": 0.001}
 SELECTED_QAT_OPTIMIZER = SELECTED_OPTIMIZER | {
     "muon_lr": 0.0085, "adamw_lr": 0.003,
     "norm_lr": 0.00015, "qk_norm_lr": 0.00005,

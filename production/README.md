@@ -1,5 +1,12 @@
 # CI-1 production handoff
 
+**2026-11-04 dense LR decision:** the user selected tied embedding/head AdamW
+**0.001** for AMD production, with spectral Muon **0.017** and other groups
+preserved. Regenerate fresh external configs using the
+[current optimizer policy](amd/OPTIMIZER_PROMOTION.md). Historical H100 trial
+packets and QAT rates are preserved; native and long-horizon qualification
+remain open.
+
 **2026-11-03 tokenizer update:** an
 [encoder-preserving stock decoder candidate](DECODER_REPAIR.md) and contextual
 streaming reference are available. Generate the candidate outside Git; keep
@@ -81,7 +88,7 @@ in [`amd/CONFIG_SELECTION.md`](amd/CONFIG_SELECTION.md); use
 
 The model has 24 layers; width 2304; FFN width 5760; 18 query and 6 KV heads; a tied 65,536-token embedding/readout; 4096-token context; 512-token local attention in 20 layers and global attention at layers 6, 12, 18 and 24; Peri-LN; learned value residual; and 1,446,478,126 trainable parameters. The operator-reviewed change is documented in [`ARCHITECTURE.md`](ARCHITECTURE.md). The new geometry has completed a short single-H100 qualification; its receipts are external. This does not certify MI325X throughput or long-run quality. It retains the original implementation: FA3 attention, DeepGEMM FP8 linear operations, packed QKV/MLP and pointwise kernels, BF16 residuals, and streaming loss. The dense optimizer is spectral Muon (`eta × sqrt(d_out/d_in)` on each logical matrix, without Moonshot's width-growing factor) plus AdamW for the tied embedding and scalar/norm groups. See `docs/MUON_SPECTRAL_IMPLEMENTATION.md` for the exact update.
 
-The historical H100 starting rates are Muon 0.017; tied-embedding AdamW 0.003; ordinary norm 0.0003; learned Q/K norm 0.0001; hidden-matrix weight decay 0.02; tied-embedding weight decay 0. The Muon and small-group settings come from the completed 200M campaign. In the 700M width bridge at 500M tokens, embedding LR 0.003 had lower English cross-entropy than 0.00424 or 0.006 under matched settings. The later H100 selection/transfer confirmed embedding **0.002**, now [promoted for AMD](amd/OPTIMIZER_PROMOTION.md); the historical recipe remains reproducible. Campaign records remain external to Git. The dense stage has no QAT. The current AMD policy [reserves a qualified fixed QAT budget and extends dense when affordable](amd/HORIZON.md), using measured phase rates and native QAT qualification.
+The historical H100 starting rates are Muon 0.017; tied-embedding AdamW 0.003; ordinary norm 0.0003; learned Q/K norm 0.0001; hidden-matrix weight decay 0.02; tied-embedding weight decay 0. The Muon and small-group settings come from the completed 200M campaign. In the 700M width bridge at 500M tokens, embedding LR 0.003 had lower English cross-entropy than 0.00424 or 0.006 under matched settings. The later H100 selection/transfer confirmed embedding **0.002**; the user subsequently chose **0.001** for AMD long pretraining under the [current optimizer policy](amd/OPTIMIZER_PROMOTION.md). The historical recipe remains reproducible. Campaign records remain external to Git. The dense stage has no QAT. The current AMD policy [reserves a qualified fixed QAT budget and extends dense when affordable](amd/HORIZON.md), using measured phase rates and native QAT qualification.
 
 ## Make a runnable config
 

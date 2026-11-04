@@ -40,15 +40,16 @@ def test_candidate_preserves_geometry_optimizer_and_batch(candidate):
     assert [i + 1 for i, layer in enumerate(instance.layers) if layer.attn.is_global_layer] == [6, 12, 18, 24]
 
 
-def test_dense_promotion_changes_only_embedding_rate_and_rejects_old_config():
-    assert SELECTED_DENSE_OPTIMIZER == SELECTED_OPTIMIZER | {"adamw_lr": .002}
-    assert SELECTED_DENSE_OPTIMIZER["adamw_lr"] == .006 * 768 / 2304
+@pytest.mark.parametrize("old_rate", [.002, .003])
+def test_dense_selection_changes_only_embedding_rate_and_rejects_old_config(old_rate):
+    assert SELECTED_DENSE_OPTIMIZER == SELECTED_OPTIMIZER | {"adamw_lr": .001}
+    assert SELECTED_DENSE_OPTIMIZER["adamw_lr"] == .003 * 768 / 2304
     assert SELECTED_DENSE_OPTIMIZER["muon_lr"] == .017
     assert SELECTED_DENSE_OPTIMIZER["muon_lr_rule"] == "spectral_unclamped"
     assert SELECTED_QAT_OPTIMIZER["adamw_lr"] == .003
     with pytest.raises(ValueError, match="optimizer"):
         validate_production(model_for(), TrainConfig(device="cuda", dtype="bf16"),
-                            OptimizerConfig(**SELECTED_OPTIMIZER))
+                            OptimizerConfig(**(SELECTED_DENSE_OPTIMIZER | {"adamw_lr": old_rate})))
 
 
 def test_no_silent_amd_precision_fallback():
