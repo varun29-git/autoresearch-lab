@@ -1,5 +1,11 @@
 # Quality before extending the MI325X run
 
+**Current data-policy override:** the data engineering preferences explicitly
+omit global MinHash and benchmark-overlap scanning. Preserve those choices;
+label overlap as unaudited rather than making those scans a launch requirement.
+Follow [VALIDATION.md](VALIDATION.md) for indexed holdouts and fixed evaluation
+coverage. The historical checks below do not supersede this policy.
+
 Engineering audit and acceptance specification, 2026-11-01; baseline reviewed
 at `784dc98`, with the two defensive fixes below included in this milestone.
 Complements [ADAPTIVE_COMPUTE_PLAN.md](ADAPTIVE_COMPUTE_PLAN.md).

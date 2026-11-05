@@ -1,5 +1,12 @@
 # MI325X pretraining readiness
 
+**Current data/evaluation workflow:** use [VALIDATION.md](VALIDATION.md) to
+freeze indexed document holdouts and exact curriculum weights outside Git.
+It includes raw-ID scoring, generated-task scoring, whole-document exclusions,
+monitoring requirements and the remaining corpus/native acceptance checks.
+The current data engineering preference omits global MinHash and benchmark
+overlap scans; the older quality checklist does not override that preference.
+
 **2026-11-04 selected dense LR:** the user chose tied embedding/head AdamW
 **0.001** for long pretraining. AMD builders and validation now lock that peak;
 Muon remains **0.017** and other groups are preserved. See the
