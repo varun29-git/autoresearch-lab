@@ -31,6 +31,15 @@ are outside Git:
 
 [`allocation-and-curriculum/README.md`](</Users/varundaiya/terminus-pretraining-readiness/2026-11-06/allocation-and-curriculum/README.md>).
 
+The user's subsequent clarification confirms that larger tokenized pools are
+already available. The current
+[existing-surplus execution steps](</Users/varundaiya/terminus-pretraining-readiness/2026-11-06/allocation-and-curriculum/EXISTING_SURPLUS_STEPS.md>)
+supersede exact preservation of every original source-cell percentage as an
+extension prerequisite. Blend eligible unused records with the remaining core
+data and protect QAT/posttraining. The strict proportional cap applies only
+when that particular mixture is selected; it is not proof that surplus tokens
+are absent.
+
 That packet distinguishes content budgets from optimizer targets and separates
 data phases from LR/quantization semantics. It also records current source
 drift, fresh-data shortfalls, posttraining objective gaps and unrun native
