@@ -1,5 +1,12 @@
 # CI-1 production handoff
 
+**2026-11-06 whole-program budget:** include posttraining, recovery and
+finalization in the same allocation using the CPU-only
+[program budget and unique-data cap](amd/pretraining_readiness/PROGRAM_BUDGET.md).
+The current source-specific phase/mix decision packet is external. The tool
+funds remaining QAT and named reserves before extending dense; it does not
+implement SFT/DPO or automatically launch/switch paid phases.
+
 **2026-11-04 dense LR decision:** the user selected tied embedding/head AdamW
 **0.001** for AMD production, with spectral Muon **0.017** and other groups
 preserved. Regenerate fresh external configs using the

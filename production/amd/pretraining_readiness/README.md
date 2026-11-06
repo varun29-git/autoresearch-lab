@@ -1,5 +1,12 @@
 # MI325X pretraining readiness
 
+**Current complete-program accounting:** the
+[program budget workflow](PROGRAM_BUDGET.md) includes SFT, preference training,
+qualification, recovery and finalization in the original GPU-hour allocation.
+The external dated packet freezes the latest source plans and exact unique
+extension procurement weights. It distinguishes arithmetic planning from
+native acceptance, runtime routing and posttraining implementation.
+
 **Current data/evaluation workflow:** use [VALIDATION.md](VALIDATION.md) to
 freeze indexed document holdouts and exact curriculum weights outside Git.
 It includes raw-ID scoring, generated-task scoring, whole-document exclusions,
