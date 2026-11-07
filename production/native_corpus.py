@@ -189,8 +189,10 @@ def download_source(s3, bucket, job, path):
     return digest.hexdigest()
 
 
-def publish(s3, bucket, path, key):
-    path = Path(path); digest = file_sha256(path); size = path.stat().st_size
+def publish(s3, bucket, path, key, *, expected_sha256=None):
+    path = Path(path); digest = expected_sha256 or file_sha256(path); size = path.stat().st_size
+    if len(digest)!=64 or any(c not in '0123456789abcdef'for c in digest):
+        raise ValueError('invalid publication SHA-256')
     if size > SINGLE_UPLOAD_LIMIT:
         return _publish_multipart(s3, bucket, path, key, digest, size)
     checksum = base64.b64encode(bytes.fromhex(digest)).decode()
@@ -217,10 +219,11 @@ def _publish_multipart(s3, bucket, path, key, digest, size):
         raise ValueError("source output exceeds the bounded multipart capacity")
     upload = s3.create_multipart_upload(Bucket=bucket, Key=key, ChecksumAlgorithm="SHA256",
         ChecksumType="COMPOSITE", Metadata={"sha256": digest})["UploadId"]
-    parts = []; part_hashes = []; finished = False
+    parts = []; part_hashes = []; finished = False;full_hash=hashlib.sha256()
     try:
         with path.open("rb") as handle:
             while chunk := handle.read(MULTIPART_CHUNK_BYTES):
+                full_hash.update(chunk)
                 raw_hash = hashlib.sha256(chunk).digest(); part_hashes.append(raw_hash)
                 checksum = base64.b64encode(raw_hash).decode(); number = len(parts) + 1
                 response = s3.upload_part(Bucket=bucket, Key=key, UploadId=upload,
@@ -228,6 +231,8 @@ def _publish_multipart(s3, bucket, path, key, digest, size):
                 if response.get("ChecksumSHA256") != checksum:
                     raise ValueError("uploaded part checksum differs from local bytes")
                 parts.append({"PartNumber": number, "ETag": response["ETag"], "ChecksumSHA256": checksum})
+        if full_hash.hexdigest()!=digest:
+            raise ValueError('multipart source differs from publication SHA-256')
         checksum = base64.b64encode(hashlib.sha256(b"".join(part_hashes)).digest()).decode() + "-" + str(len(parts))
         try:
             s3.complete_multipart_upload(Bucket=bucket, Key=key, UploadId=upload,

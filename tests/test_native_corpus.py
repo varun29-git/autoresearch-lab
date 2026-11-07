@@ -67,6 +67,16 @@ class MultipartPublicationTests(unittest.TestCase):
             path = Path(directory) / "data"; path.write_bytes(data)
             with patch.object(native_corpus, "SINGLE_UPLOAD_LIMIT", 1), patch.object(native_corpus, "MULTIPART_CHUNK_BYTES", 17):
                 item = native_corpus.publish(s3, "bucket", path, "key")
+                prehashed = S3()
+                with patch.object(native_corpus, "file_sha256", side_effect=AssertionError("unexpected reread")):
+                    same = native_corpus.publish(prehashed, "bucket", path, "prehashed",
+                        expected_sha256=hashlib.sha256(data).hexdigest())
+                self.assertEqual(same['sha256'],item['sha256'])
+                mismatched = S3()
+                with self.assertRaisesRegex(ValueError,'differs'):
+                    native_corpus.publish(mismatched,"bucket",path,"wrong",expected_sha256='0'*64)
+                self.assertTrue(mismatched.aborted)
+                self.assertFalse(hasattr(mismatched,'completed'))
         self.assertEqual(s3.completed, data)
         self.assertEqual(s3.conditional, "*")
         self.assertFalse(s3.aborted)

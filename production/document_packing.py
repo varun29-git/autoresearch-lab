@@ -173,13 +173,18 @@ def file_sha(path):
 
 class ShardWriter:
     """Sequential payload plus descriptors; hashes are emitted on close."""
-    def __init__(self, directory, name, *, length=4096, audit_stride=1024):
+    def __init__(self, directory, name, *, length=4096, audit_stride=1024,
+                 buffer_bytes=1<<20, fast_json=False):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.payload = self.directory / (name + ".uint16")
         self.index = self.directory / (name + ".segments.jsonl")
-        self.data = self.payload.open("xb")
-        self.meta = self.index.open("x", encoding="utf-8")
+        self.data = self.payload.open("xb", buffering=buffer_bytes)
+        self.meta = self.index.open("xb", buffering=buffer_bytes)
+        self.data_hash = hashlib.sha256()
+        self.meta_hash = hashlib.sha256()
+        self.meta_bytes = 0
+        self.fast_json = fast_json
         self.length = length
         self.audit_stride = audit_stride
         self.counts = dict(sequences=0, content_tokens=0, valid_targets=0,
@@ -189,19 +194,31 @@ class ShardWriter:
         inputs, descriptor = encode_pack(items, length=self.length)
         if self.counts["sequences"] % self.audit_stride == 0:
             decode_pack(inputs, descriptor)
-        self.data.write(inputs.tobytes())
-        self.meta.write(json.dumps(descriptor, ensure_ascii=False,
-                                   separators=(",", ":")) + "\n")
+        payload=inputs.tobytes()
+        if self.fast_json:
+            import orjson
+            metadata=orjson.dumps(descriptor,option=orjson.OPT_APPEND_NEWLINE)
+        else:
+            metadata=(json.dumps(descriptor,ensure_ascii=False,separators=(",", ":"))+"\n").encode('utf-8')
+        self.data.write(payload);self.data_hash.update(payload)
+        self.meta.write(metadata);self.meta_hash.update(metadata);self.meta_bytes+=len(metadata)
         self.counts["sequences"] += 1
         for key in self.counts.keys() - {"sequences"}:
             self.counts[key] += descriptor[key]
+
+    def append_encoded(self, payload, metadata, counts):
+        if len(payload)!=counts['sequences']*self.length*2:
+            raise ValueError('encoded chunk payload size differs')
+        self.data.write(payload);self.data_hash.update(payload)
+        self.meta.write(metadata);self.meta_hash.update(metadata);self.meta_bytes+=len(metadata)
+        for name in self.counts:self.counts[name]+=counts[name]
 
     def close(self):
         self.data.close()
         self.meta.close()
         return {"schema": SCHEMA, "sequence_length": self.length,
             **self.counts, "payload": {"path": str(self.payload),
-                "bytes": self.payload.stat().st_size, "sha256": file_sha(self.payload)},
+                "bytes": self.payload.stat().st_size, "sha256": self.data_hash.hexdigest()},
             "index": {"path": str(self.index), "bytes": self.index.stat().st_size,
-                      "sha256": file_sha(self.index)},
+                      "sha256": self.meta_hash.hexdigest()},
             "cross_document_mask_required": True, "native_training_accepted": False}
