@@ -17,6 +17,9 @@ import os
 from pathlib import Path
 from functools import lru_cache
 import shutil
+import re
+from urllib.request import build_opener, HTTPRedirectHandler, Request
+from urllib.parse import urlsplit
 import struct
 import time
 
@@ -27,6 +30,19 @@ from botocore.exceptions import ClientError
 from terminus.hashing import file_sha256
 from terminus.tokenizer_native import Native65kTokenizer
 from terminus import unicode_contract as unicode
+
+
+class _SourceRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if urlsplit(newurl).scheme != "https":
+            raise ValueError("source redirect left HTTPS")
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if urlsplit(req.full_url).netloc != urlsplit(newurl).netloc:
+            redirected.remove_header("Authorization")
+        return redirected
+
+
+urlopen = build_opener(_SourceRedirect()).open
 
 
 @lru_cache(maxsize=2)
@@ -61,7 +77,7 @@ def completed_job(s3, job, plan):
     result = json.loads(payload)
     if result.get("job_fingerprint") != job_fingerprint(job, plan) or result.get("status") != "verified":
         raise ValueError("completion receipt does not match this source job")
-    check_object(s3, bucket, job["source_key"], job["source_snapshot"])
+    check_source(s3, bucket, job)
     for part in job["parts"]:
         check_object(s3, bucket, part["index_key"], part["index_snapshot"])
         check_object(s3, bucket, part["token_key"], part["token_snapshot"])
@@ -104,6 +120,40 @@ def download(s3, bucket, key, path, snapshot):
     if snapshot.get("sha256") and snapshot["sha256"] != value:
         raise ValueError("source payload hash differs from frozen snapshot")
     return value
+
+
+def check_source(s3, bucket, job):
+    key = job["source_key"]
+    if not key.startswith("https://"):
+        return check_object(s3, bucket, key, job["source_snapshot"])
+    # A branch name is mutable. Remote originals require both a commit URL and
+    # the dataset's published LFS payload hash, verified over the whole file.
+    if not re.fullmatch(r"https://huggingface\.co/datasets/[\w.-]+/[\w.-]+/resolve/[a-f0-9]{40}/[^?#]+", key):
+        raise ValueError("remote source must pin an immutable Hugging Face commit")
+    snap = job["source_snapshot"]
+    if not re.fullmatch(r"[a-f0-9]{64}", snap.get("sha256", "")) or type(snap.get("bytes")) is not int or snap["bytes"] <= 0:
+        raise ValueError("remote source needs its published SHA-256 and byte length")
+
+
+def download_source(s3, bucket, job, path):
+    check_source(s3, bucket, job)
+    if not job["source_key"].startswith("https://"):
+        return download(s3, bucket, job["source_key"], path, job["source_snapshot"])
+    snapshot = job["source_snapshot"]; digest = hashlib.sha256(); size = 0
+    headers = {"User-Agent": "Terminus-native-source-conversion/2"}
+    if os.environ.get("HF_TOKEN"):
+        headers["Authorization"] = "Bearer " + os.environ["HF_TOKEN"]
+    request = Request(job["source_key"], headers=headers)
+    with urlopen(request, timeout=120) as response, Path(path).open("wb") as handle:
+        if not response.geturl().startswith("https://"):
+            raise ValueError("source redirect left HTTPS")
+        while chunk := response.read(8 << 20):
+            size += len(chunk)
+            if size > snapshot["bytes"]: raise ValueError("remote source exceeds its pinned byte length")
+            digest.update(chunk); handle.write(chunk)
+    if size != snapshot["bytes"] or digest.hexdigest() != snapshot["sha256"]:
+        raise ValueError("remote source differs from its pinned payload hash or size")
+    return digest.hexdigest()
 
 
 def publish(s3, bucket, path, key):
@@ -241,7 +291,7 @@ def convert_job(job, plan, work_root, profile=None):
             raise ValueError("mixed row-number and UID selection requires a separate source job")
         uid_set = set(by_uid); max_row = max(by_number) if by_number else None
         source_path = work / "source.data"
-        source_sha = download(client, bucket, job["source_key"], source_path, job["source_snapshot"])
+        source_sha = download_source(client, bucket, job, source_path)
         matched_anchors = set(); scanned = 0; processed = 0; encoding_seconds = 0.; comparison_seconds = 0.
         next_progress = time.monotonic() + 15
         for batch in _source_batches(source_path, job):
@@ -302,7 +352,7 @@ def convert_job(job, plan, work_root, profile=None):
         handles.clear()
         if matched_anchors != set(expected_anchors):
             raise ValueError("not every frozen source anchor was found")
-        check_object(client, bucket, job["source_key"], job["source_snapshot"])
+        check_source(client, bucket, job)
         outputs = []
         for i, state in enumerate(part_states):
             part = state["part"]

@@ -44,6 +44,32 @@ class MemoryS3:
 
 @unittest.skipUnless(importlib.util.find_spec("_terminus_tokenizer_native"), "native extension required")
 class NativeCorpusTests(unittest.TestCase):
+    def test_remote_original_requires_commit_and_full_payload_hash(self):
+        text = b"original source"; sha = hashlib.sha256(text).hexdigest()
+        url = "https://huggingface.co/datasets/org/data/resolve/" + "a" * 40 + "/file.parquet"
+        job = {"source_key": url, "source_snapshot": {"bytes": len(text), "sha256": sha}}
+        class Response(BytesIO):
+            def geturl(self): return "https://cdn.example/file"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "source"
+            with patch.object(native_corpus, "urlopen", return_value=Response(text)):
+                self.assertEqual(native_corpus.download_source(None, "b", job, path), sha)
+            with patch.object(native_corpus, "urlopen", return_value=Response(b"wrong")):
+                with self.assertRaisesRegex(ValueError, "pinned payload"):
+                    native_corpus.download_source(None, "b", job, path)
+        job["source_key"] = url.replace("a" * 40, "main")
+        with self.assertRaisesRegex(ValueError, "immutable"):
+            native_corpus.check_source(None, "b", job)
+
+    def test_source_credentials_do_not_follow_cross_host_redirects(self):
+        from urllib.request import Request
+        request = Request("https://huggingface.co/file", headers={"Authorization": "Bearer test"})
+        handler = native_corpus._SourceRedirect()
+        next_request = handler.redirect_request(request, None, 302, "Found", {}, "https://cdn.example/file")
+        self.assertFalse(next_request.has_header("Authorization"))
+        with self.assertRaisesRegex(ValueError, "HTTPS"):
+            handler.redirect_request(request, None, 302, "Found", {}, "http://cdn.example/file")
+
     def run_case(self, *, duplicate=False, bad_offset=False, bad_reference=False, nul=False,
                  missing_field=False, uid_only=False, duplicate_raw_uid=False, resume=False, corrupt=False):
         with tempfile.TemporaryDirectory() as directory:
