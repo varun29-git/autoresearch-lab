@@ -13,7 +13,7 @@ shards remain outside this repository. The current planning packet is under
 `/Users/varundaiya/terminus-pretraining-readiness/2026-11-07/packing-readiness/`.
 Its `PLAN.md` records the source acceptance, multilingual policy, packing
 algorithm, target convention, code gaps and CPU/one-GPU/eight-GPU gates.
-The later `../phase1-packing/FIRST_PHASE_EXECUTION.md` and
+The later `../warmup-shards/SOTA_PLAN.md` and
 `CURRENT_ALLOCATION_OVERRIDE.json` take precedence for the selected replacement
 sources and mandatory masking policy. Neither is a completed shard receipt.
 
