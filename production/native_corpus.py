@@ -1,0 +1,389 @@
+"""Resume-safe source re-tokenization with native BPE and per-document round trips.
+
+A job binds one original source object to all selected, disjoint index parts.
+Reading the source once avoids repeated Parquet decompression for train/val or
+chunked outputs. Published candidates retain holdout membership and document
+identities; global family reconciliation and curriculum packing remain separate.
+This command uses CPU workers and never provisions cloud resources.
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import hashlib
+import json
+import os
+from pathlib import Path
+from functools import lru_cache
+import shutil
+import struct
+import time
+
+import boto3
+from botocore.config import Config
+from botocore.exceptions import ClientError
+
+from terminus.hashing import file_sha256
+from terminus.tokenizer_native import Native65kTokenizer
+from terminus import unicode_contract as unicode
+
+
+@lru_cache(maxsize=2)
+def _tokenizer(path, digest):
+    # A process handles many source files. Compile the vocabulary once per
+    # artifact per process, while bounded native caches remain reusable.
+    return Native65kTokenizer(path, expected_sha256=digest)
+
+
+def job_fingerprint(job, plan):
+    contract = {"job": job, "tokenizer_sha256": plan["tokenizer_sha256"],
+                "runtime_files": plan.get("runtime_files", {}),
+                "comparison": plan.get("comparison"), "schema": 1}
+    return hashlib.sha256(json.dumps(contract, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def completed_job(s3, job, plan):
+    """Trust only a matching receipt whose inputs and durable outputs still match."""
+    bucket = plan["bucket"]; key = plan["output_prefix"] + "/completed/" + job_fingerprint(job, plan) + ".json"
+    try:
+        pointer = json.loads(s3.get_object(Bucket=bucket, Key=key)["Body"].read())
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] in ("NoSuchKey", "404"): return None
+        raise
+    receipt = pointer["receipt"]
+    prefix = f"s3://{bucket}/"
+    if not receipt["uri"].startswith(prefix + plan["output_prefix"] + "/results/"):
+        raise ValueError("completion receipt is outside this campaign")
+    payload = s3.get_object(Bucket=bucket, Key=receipt["uri"][len(prefix):])["Body"].read()
+    if hashlib.sha256(payload).hexdigest() != receipt["sha256"]:
+        raise ValueError("completion receipt hash changed")
+    result = json.loads(payload)
+    if result.get("job_fingerprint") != job_fingerprint(job, plan) or result.get("status") != "verified":
+        raise ValueError("completion receipt does not match this source job")
+    check_object(s3, bucket, job["source_key"], job["source_snapshot"])
+    for part in job["parts"]:
+        check_object(s3, bucket, part["index_key"], part["index_snapshot"])
+        check_object(s3, bucket, part["token_key"], part["token_snapshot"])
+    for output in result["outputs"]:
+        for kind in ("bin", "index"):
+            item = output[kind]
+            if not item["uri"].startswith(prefix + plan["output_prefix"] + "/candidate-output/"):
+                raise ValueError("completed output is outside this campaign")
+            head = s3.head_object(Bucket=bucket, Key=item["uri"][len(prefix):], ChecksumMode="ENABLED")
+            if (head["ContentLength"] != item["bytes"] or head.get("ChecksumSHA256") !=
+                    base64.b64encode(bytes.fromhex(item["sha256"])).decode()):
+                raise ValueError("completed output is missing or changed")
+    return result | {"receipt": receipt, "resumed_from_verified_receipt": True}
+
+
+def s3_client(profile=None):
+    return boto3.Session(profile_name=profile, region_name="us-east-1").client(
+        "s3", config=Config(connect_timeout=15, read_timeout=120,
+                            retries={"max_attempts": 4}, max_pool_connections=16))
+
+
+def check_object(s3, bucket, key, snapshot):
+    head = s3.head_object(Bucket=bucket, Key=key)
+    if (head["ETag"], head["ContentLength"]) != (snapshot["etag"], snapshot["bytes"]):
+        raise ValueError("object changed from its frozen snapshot: " + key)
+    return head
+
+
+def download(s3, bucket, key, path, snapshot):
+    check_object(s3, bucket, key, snapshot)
+    response = s3.get_object(Bucket=bucket, Key=key, IfMatch=snapshot["etag"])
+    digest = hashlib.sha256()
+    with Path(path).open("wb") as handle:
+        for chunk in iter(lambda: response["Body"].read(8 << 20), b""):
+            handle.write(chunk); digest.update(chunk)
+    check_object(s3, bucket, key, snapshot)
+    if Path(path).stat().st_size != snapshot["bytes"]:
+        raise ValueError("source read length differs from frozen snapshot")
+    value = digest.hexdigest()
+    if snapshot.get("sha256") and snapshot["sha256"] != value:
+        raise ValueError("source payload hash differs from frozen snapshot")
+    return value
+
+
+def publish(s3, bucket, path, key):
+    path = Path(path); digest = file_sha256(path); size = path.stat().st_size
+    if size > 5 * 1024 ** 3:
+        raise ValueError("part exceeds single-object upload limit; split the source selection before launch")
+    checksum = base64.b64encode(bytes.fromhex(digest)).decode()
+    try:
+        with path.open("rb") as handle:
+            s3.put_object(Bucket=bucket, Key=key, Body=handle, ContentLength=size,
+                          ChecksumSHA256=checksum, IfNoneMatch="*")
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] not in ("PreconditionFailed", "412"):
+            raise
+    head = s3.head_object(Bucket=bucket, Key=key, ChecksumMode="ENABLED")
+    if head.get("ChecksumSHA256") != checksum or head["ContentLength"] != size:
+        raise ValueError("published object checksum differs from local output")
+    return {"uri": f"s3://{bucket}/{key}", "sha256": digest, "bytes": size}
+
+
+def _source_batches(path, job):
+    if job.get("source_format", "parquet") == "text_lines":
+        base = job.get("line_number_base")
+        if base not in (0, 1):
+            raise ValueError("text sources require a proven zero- or one-based line convention")
+        batch = []
+        with path.open("rb") as handle:
+            for number, line in enumerate(handle):
+                value = line.removesuffix(b"\n").removesuffix(b"\r").decode(
+                    "utf-8-sig" if number == 0 else "utf-8", errors="strict")
+                batch.append((number + base, {"text": value}))
+                if len(batch) == 512:
+                    yield batch; batch = []
+        if batch: yield batch
+        return
+    if job.get("source_format", "parquet") != "parquet":
+        raise ValueError("unsupported source format")
+    import pyarrow.parquet as pq
+    parquet = pq.ParquetFile(path)
+    columns = job.get("text_columns", ["text"])
+    available = set(parquet.schema_arrow.names)
+    if not all(c in available for c in columns):
+        raise ValueError("explicit source text columns are missing")
+    ids = [c for c in ("uuid", "source_uuid", "doc_id", "document_id", "id") if c in available]
+    number = 0
+    for batch in parquet.iter_batches(batch_size=512, columns=sorted(set(columns + ids)), use_threads=False):
+        values = batch.to_pylist()
+        yield list(enumerate(values, start=number)); number += len(values)
+
+
+def _source_text(value, job):
+    renderer = job.get("renderer", "field")
+    columns = job.get("text_columns", ["text"])
+    if renderer == "field" and len(columns) == 1:
+        text = value[columns[0]]
+    elif renderer == "join_nonempty_strings":
+        # Field order and separator are an explicit, source-checked recipe.
+        if any(value.get(c) is not None and not isinstance(value[c], str) for c in columns):
+            raise ValueError("source renderer encountered a non-string field")
+        text = job["field_separator"].join(value[c] for c in columns if value.get(c))
+    else:
+        raise ValueError("source renderer requires a reviewed explicit recipe")
+    if not isinstance(text, str) or not text:
+        raise ValueError("selected document has no source text")
+    return text
+
+
+def convert_job(job, plan, work_root, profile=None):
+    start = time.monotonic(); client = s3_client(profile)
+    bucket = plan["bucket"]; prefix = plan["output_prefix"]; job_id = job["job_id"]
+    if Path(job_id).name != job_id:
+        raise ValueError("job ID must be a simple filename")
+    for path, digest in plan.get("runtime_files", {}).items():
+        if file_sha256(path) != digest:
+            raise ValueError("runtime file changed: " + path)
+    if plan.get("resume_verified", False):
+        previous = completed_job(client, job, plan)
+        if previous is not None: return previous
+    work = Path(work_root) / job_id; work.mkdir(parents=True, exist_ok=True)
+    result = {"schema": 1, "job_id": job_id, "cell": job.get("cell"),
+              "status": "started", "job_fingerprint": job_fingerprint(job, plan), "training_accepted": False,
+              "global_heldout_reconciliation_complete": False}
+    handles = []; part_states = []
+    try:
+        for path, digest in plan.get("runtime_files", {}).items():
+            if file_sha256(path) != digest:
+                raise ValueError("runtime file changed: " + path)
+        tok = _tokenizer(plan["tokenizer_path"], plan["tokenizer_sha256"])
+        result["encoder_identity"] = tok.identity()
+        comparison = plan.get("comparison")
+        reference = (_tokenizer(comparison["tokenizer_path"], comparison["tokenizer_sha256"]) if comparison else None)
+        expansions = ({int(k): v for k, v in comparison.get("expand_target_ids", {}).items()}
+                      if comparison else {})
+        by_number = {}; by_uid = {}; expected_anchors = {}; seen = set()
+        for part_index, part in enumerate(job["parts"]):
+            if type(part.get("validation")) is not bool:
+                raise ValueError("original holdout assignment must be explicit")
+            check_object(client, bucket, part["token_key"], part["token_snapshot"])
+            index_path = work / f"original-{part_index}.index.jsonl"
+            index_sha = download(client, bucket, part["index_key"], index_path, part["index_snapshot"])
+            out_path = work / f"candidate-{part_index}.uint16"
+            index_out = work / f"candidate-{part_index}.index.jsonl"
+            out = out_path.open("wb"); idx = index_out.open("w", encoding="utf-8")
+            handles.extend([out, idx])
+            state = {"part": part, "index_sha256": index_sha, "out": out, "idx": idx,
+                     "out_path": out_path, "index_path": index_out, "documents": 0,
+                     "tokens": 0, "expected_documents": 0, "reference_hash": hashlib.sha256(),
+                     "reference_tokens": 0, "content_hash": hashlib.sha256()}
+            part_states.append(state); cursor = 0
+            with index_path.open(encoding="utf-8") as source_index:
+                for line in source_index:
+                    if not line.strip(): continue
+                    r = json.loads(line); count = r.get("n_tokens", r.get("token_count"))
+                    if type(count) is not int or count <= 0 or r.get("token_start", cursor) != cursor:
+                        raise ValueError("index counts or split-local offsets are invalid")
+                    cursor += count; state["expected_documents"] += 1
+                    uid = str(r.get("doc_id", r.get("uuid", "")))
+                    if not uid: raise ValueError("selected source identity missing")
+                    row_key = r.get("row_key", "")
+                    coordinate_prefix = job.get("row_identity_prefix", job["source_key"]) + ":"
+                    if not row_key and job.get("id_encodes_row"):
+                        row_key = uid
+                    if row_key.startswith(coordinate_prefix) and row_key[len(coordinate_prefix):].isdigit():
+                        coordinate = int(row_key[len(coordinate_prefix):]); target = by_number
+                    else: coordinate = uid; target = by_uid
+                    if coordinate in target:
+                        raise ValueError("duplicate selected source row or ambiguous UID across parts")
+                    target[coordinate] = (part_index, uid, r)
+                    anchor = part.get("anchors", {}).get(uid)
+                    if anchor: expected_anchors[(part_index, uid)] = anchor
+            if 2 * cursor != part["token_snapshot"]["bytes"]:
+                raise ValueError("source index does not exactly exhaust its original token bin")
+            state["old_tokens"] = cursor
+        if by_number and by_uid:
+            raise ValueError("mixed row-number and UID selection requires a separate source job")
+        uid_set = set(by_uid); max_row = max(by_number) if by_number else None
+        source_path = work / "source.data"
+        source_sha = download(client, bucket, job["source_key"], source_path, job["source_snapshot"])
+        matched_anchors = set(); scanned = 0; processed = 0; encoding_seconds = 0.; comparison_seconds = 0.
+        next_progress = time.monotonic() + 15
+        for batch in _source_batches(source_path, job):
+            chosen = []; texts = []
+            for number, value in batch:
+                scanned += 1
+                aliases = {str(value[c]) for c in ("uuid", "source_uuid", "doc_id", "document_id", "id") if value.get(c) is not None}
+                if by_number: match = by_number.get(number)
+                else:
+                    hits = aliases & uid_set
+                    if len(hits) > 1: raise ValueError("source row matches conflicting selected identities")
+                    match = by_uid[next(iter(hits))] if hits else None
+                if match is None: continue
+                pi, uid, r = match
+                unique = number if by_number else uid
+                if unique in seen: raise ValueError("selected UID occurs at multiple raw source coordinates")
+                seen.add(unique)
+                if by_number and aliases and uid not in aliases and uid not in (r.get("row_key"), job["source_key"] + ":" + str(number)):
+                    raise ValueError("source identity differs at indexed coordinate")
+                text = _source_text(value, job); raw = text.encode("utf-8", errors="strict")
+                if "n_bytes" in r and r["n_bytes"] != len(raw):
+                    raise ValueError("source text byte count differs from its original index")
+                digest = hashlib.sha256(raw).hexdigest()
+                anchor_key = (pi, uid)
+                if anchor_key in expected_anchors:
+                    if expected_anchors[anchor_key] != digest: raise ValueError("source text differs from the frozen source-replay anchor")
+                    matched_anchors.add(anchor_key)
+                family = r.get("split_family_id", r.get("family_id", value.get("source_uuid", uid)))
+                chosen.append((pi, uid, number, digest, family)); texts.append(text)
+            tick = time.monotonic(); buffers = tok.encode_batch_bytes(texts); encoding_seconds += time.monotonic() - tick
+            old_buffers = None
+            if reference:
+                tick = time.monotonic(); old_buffers = reference.encode_batch_bytes(texts); comparison_seconds += time.monotonic() - tick
+            for position, ((pi, uid, number, digest, family), data) in enumerate(zip(chosen, buffers)):
+                state = part_states[pi]; part = state["part"]; ntokens = len(data) // 2
+                if old_buffers is not None:
+                    old = old_buffers[position]
+                    if len(data) > len(old): raise ValueError("candidate increased document token count")
+                    if data != old:
+                        new_ids = struct.unpack("<" + "H" * ntokens, data)
+                        expanded = [x for token in new_ids for x in expansions.get(token, [token])]
+                        expanded_bytes = struct.pack("<" + "H" * len(expanded), *expanded)
+                        if expanded_bytes != old: raise ValueError("candidate changed content beyond the declared atom replacements")
+                    state["reference_hash"].update(old); state["reference_tokens"] += len(old) // 2
+                record = {"doc_id": uid, "row_key": job["source_key"] + ":" + str(number),
+                          "source_text_sha256": digest, "validation": part["validation"],
+                          "split_family_id": str(family), "token_start": state["tokens"], "n_tokens": ntokens}
+                state["idx"].write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+                state["out"].write(data); state["content_hash"].update(data)
+                state["tokens"] += ntokens; state["documents"] += 1; processed += 1
+            if time.monotonic() >= next_progress:
+                progress = result | {"documents": processed, "content_tokens": sum(s["tokens"] for s in part_states),
+                                     "elapsed_seconds": time.monotonic() - start}
+                client.put_object(Bucket=bucket, Key=prefix + "/progress/" + job_id + ".json", Body=json.dumps(progress).encode())
+                next_progress = time.monotonic() + 15
+            if by_number and batch and batch[-1][0] >= max_row: break
+        for h in handles: h.close()
+        handles.clear()
+        if matched_anchors != set(expected_anchors):
+            raise ValueError("not every frozen source anchor was found")
+        check_object(client, bucket, job["source_key"], job["source_snapshot"])
+        outputs = []
+        for i, state in enumerate(part_states):
+            part = state["part"]
+            if state["documents"] != state["expected_documents"]:
+                raise ValueError("source scan did not cover every selected document")
+            check_object(client, bucket, part["token_key"], part["token_snapshot"])
+            ref_sha = state["reference_hash"].hexdigest() if reference else None
+            if part.get("reference_bin_sha256") and ref_sha != part["reference_bin_sha256"]:
+                raise ValueError("native v1 IDs differ from the completed Python reference file")
+            bin_sha = state["content_hash"].hexdigest(); index_sha = file_sha256(state["index_path"])
+            if part.get("expected_output_bin_sha256") and bin_sha != part["expected_output_bin_sha256"]:
+                raise ValueError("candidate IDs differ from the qualified native output file")
+            key = f"{prefix}/candidate-output/{job_id}/{i}/{bin_sha}-{index_sha}"
+            outputs.append({"original_index_key": part["index_key"], "original_index_sha256": state["index_sha256"],
+                            "validation": part["validation"], "documents": state["documents"],
+                            "original_tokens": state["old_tokens"], "tokens": state["tokens"],
+                            "reference_tokens": state["reference_tokens"] if reference else None,
+                            "reference_bin_sha256": ref_sha,
+                            "python_reference_file_matched": bool(part.get("reference_bin_sha256")),
+                            "bin": publish(client, bucket, state["out_path"], key + ".uint16"),
+                            "index": publish(client, bucket, state["index_path"], key + ".index.jsonl")})
+        result.update(status="verified", source_key=job["source_key"], source_sha256=source_sha,
+                      documents=processed, source_rows_scanned=scanned,
+                      content_tokens=sum(s["tokens"] for s in part_states),
+                      encoding_seconds=encoding_seconds, comparison_seconds=comparison_seconds,
+                      elapsed_seconds=time.monotonic() - start, outputs=outputs,
+                      declared_atom_expansion_verified=bool(comparison),
+                      original_holdout_assignments_preserved=True)
+    except Exception as exc:
+        result.update(status="rejected", error=type(exc).__name__ + ": " + str(exc),
+                      elapsed_seconds=time.monotonic() - start)
+    finally:
+        for handle in handles: handle.close()
+    path = work / "result.json"; path.write_text(json.dumps(result, indent=2) + "\n")
+    receipt = publish(client, bucket, path, prefix + "/results/" + job_id + "/" + file_sha256(path) + ".json")
+    result["receipt"] = receipt
+    client.put_object(Bucket=bucket, Key=prefix + "/progress/" + job_id + ".json", Body=json.dumps(result).encode())
+    if result["status"] == "verified":
+        client.put_object(Bucket=bucket, Key=prefix + "/completed/" + result["job_fingerprint"] + ".json",
+                          Body=json.dumps({"receipt": receipt}).encode())
+    if plan.get("clean_work", False):
+        # Only discard local files after durable receipt publication. A spot
+        # retry validates the receipt or replays this one source object.
+        shutil.rmtree(work)
+    return result
+
+
+def run_plan(plan, work_root, profile=None):
+    start = time.monotonic(); results = []
+    if plan.get("schema") != 1 or type(plan.get("workers")) is not int or plan["workers"] < 1:
+        raise ValueError("invalid native corpus plan")
+    ids = [j["job_id"] for j in plan["jobs"]]
+    if len(ids) != len(set(ids)): raise ValueError("duplicate source job ID")
+    worker_plan = {k: v for k, v in plan.items() if k != "jobs"}
+    with ProcessPoolExecutor(max_workers=plan["workers"]) as pool:
+        futures = [pool.submit(convert_job, job, worker_plan, work_root, profile) for job in plan["jobs"]]
+        for future in as_completed(futures):
+            result = future.result(); results.append(result)
+            print(json.dumps({k: result[k] for k in ("job_id", "status", "documents", "content_tokens", "elapsed_seconds", "error") if k in result}), flush=True)
+    summary = {"schema": 1, "complete": len(results) == len(plan["jobs"]),
+               "verified_jobs": sum(r["status"] == "verified" for r in results),
+               "rejected_jobs": sum(r["status"] == "rejected" for r in results),
+               "wall_seconds": time.monotonic() - start, "results": results,
+               "training_ready": False}
+    path = Path(work_root) / "summary.json"; path.write_text(json.dumps(summary, indent=2) + "\n")
+    s3 = s3_client(profile); receipt = publish(s3, plan["bucket"], path,
+                                             plan["output_prefix"] + "/results/summary-" + file_sha256(path) + ".json")
+    s3.put_object(Bucket=plan["bucket"], Key=plan["output_prefix"] + "/PILOT_RESULT.json",
+                  Body=json.dumps(summary | {"receipt": receipt}).encode())
+    return summary
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--plan", required=True); parser.add_argument("--work-root", required=True)
+    parser.add_argument("--profile")
+    args = parser.parse_args(); work = Path(args.work_root).resolve(); repo = Path(__file__).resolve().parents[1]
+    if work == repo or repo in work.parents: raise ValueError("source data and results must stay outside Git")
+    work.mkdir(parents=True, exist_ok=True)
+    plan = json.loads(Path(args.plan).read_text()); result = run_plan(plan, work, args.profile)
+    if result["rejected_jobs"]: raise SystemExit(1)
+
+
+if __name__ == "__main__": main()
