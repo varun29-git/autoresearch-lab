@@ -30,6 +30,16 @@ class QueueTests(unittest.TestCase):
         # Launch state and its immutable task hash were persisted before EC2.
         self.assertIn('expected_plan_sha256',record)
 
+        # A lost EC2 response must not leave an untracked paid worker behind.
+        dispatcher.state={'tasks':{}}
+        dispatcher.ec2.reset_mock()
+        dispatcher.ec2.run_instances.side_effect=TimeoutError('lost launch response')
+        dispatcher.ec2.describe_instances.return_value={'Reservations':[{'Instances':[{'InstanceId':'i-ambiguous'}]}]}
+        with patch('production.preparation_dispatcher.bootstrap',return_value='bootstrap'):
+            dispatcher.launch(task)
+        self.assertEqual(dispatcher.state['tasks']['book']['status'],'failed')
+        dispatcher.ec2.terminate_instances.assert_called_once_with(InstanceIds=['i-ambiguous'])
+
     def test_resolve_binds_protected_selection_and_predecessor(self):
         task={'id':'bridge','kind':'packing','runtime_seconds':100,'jobs_file':'jobs.jsonl',
               'jobs_sha256':'a'*64,'ledger_from':'reserve','fixed_selection_from':'reserve',

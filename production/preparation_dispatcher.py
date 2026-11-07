@@ -230,6 +230,22 @@ class Dispatcher:
                 raise ValueError('independent termination deadline differs')
             record.update(status='running',schedule=name,launched_unix=int(time.time()))
         except Exception as exc:
+            # A timed-out RunInstances request may have created a VM even when
+            # the response did not reach us. Resolve the persisted client token
+            # before declaring the launch failed, rather than orphaning it.
+            if not instance_id:
+                try:
+                    response=self.ec2.describe_instances(Filters=[{'Name':'client-token',
+                        'Values':[hashlib.sha256((q['run']+'/'+tid).encode()).hexdigest()]}])
+                    ids=[i['InstanceId'] for group in response['Reservations'] for i in group['Instances']]
+                    if ids:
+                        self.ec2.terminate_instances(InstanceIds=ids)
+                        record['ambiguous_launch_terminated']=ids
+                except Exception as recovery_error:
+                    # Retain the SAME idempotent launch request for the next
+                    # dispatcher invocation; this is not a fresh paid attempt.
+                    record.update(status='launching',error=str(exc),recovery_error=str(recovery_error))
+                    self.save();return
             if instance_id:
                 self.ec2.terminate_instances(InstanceIds=[instance_id])
             record.update(status='failed',error=type(exc).__name__+': '+str(exc),automatic_paid_retry=False)
