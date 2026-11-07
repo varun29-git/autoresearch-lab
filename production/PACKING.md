@@ -8,6 +8,23 @@ requirement, confirmed by the operator on 7 November 2026. The current
 continuous-stream trainer does not implement that requirement; no native
 acceptance is recorded here. An unmasked path is not a production fallback.
 
+**2026-11-08 read-order correction:** physical creation remains grouped by
+source and dataset stratum. `packed_mixture.py` now provides a CPU reader that
+interleaves language, aggregate source and individual dataset children, with
+exact finite sequence counts and deterministic bounded permutations. This
+prevents a Hindi Specialized aggregate from being read as one Code-Concepts
+block followed by one STEM-SFT block. The legacy router remains sequential
+within a source and is incompatible with this packed-format candidate.
+Native trainer, attention and graph integration are still required below.
+
+`packed_index.py` builds descriptor byte offsets directly from already published
+sidecars, independently of the allocation ledger. The first four-worker
+campaign indexed 44.759B tokens across 455 warmup shards; its receipts remain
+external. Future fast workers emit offsets during packing and publish a
+`MIXTURE_CANDIDATE.json` only for a completed, quota-satisfied physical allocation.
+This preserves existing payloads, boundaries and source quotas. A candidate
+read-order artifact is not a native training acceptance report.
+
 Generated allocations, source catalogs, audit outputs, sequence descriptors and
 shards remain outside this repository. The current planning packet is under
 `/Users/varundaiya/terminus-pretraining-readiness/2026-11-07/packing-readiness/`.

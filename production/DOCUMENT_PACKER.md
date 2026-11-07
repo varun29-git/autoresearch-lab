@@ -48,6 +48,32 @@ isolation, padding, local/global masks, exact quota suffixes, tokenizer control
 ID rejection, integer rare-source allocation, heldout exclusion, payload
 publication and pinned raw textbook conversion.
 
+Physical source/stratum order is not the intended training order. The CPU
+`PackedMixture` and `PackedSequenceReader` in `production.packed_mixture`
+hierarchically interleave language, aggregate source and dataset child using
+integer finite populations. They shuffle bounded global read windows, shard
+order and rows inside a shard, while visiting every sequence exactly once.
+Small sources do not disappear through 0.001 weight rounding. Content-token
+budgets, valid-target counts and padded sampling slots remain distinct.
+
+The reader requires a verified descriptor-offset table for each shard.
+`production.packed_index` creates these independently from existing sidecars;
+new fast workers write them during shard assembly. Completed fast physical
+allocations publish a `MIXTURE_CANDIDATE.json` binding the exact population and
+all payload/descriptor/offset hashes. This candidate requires the new
+segment-aware reader and is incompatible with the legacy continuous stream
+loader. The source-selection seed and record ownership are unchanged.
+
+Additional CPU checks:
+
+```sh
+python3 -m unittest tests.test_packed_index tests.test_packed_mixture
+```
+
+These cover arbitrary Unicode descriptor chunk boundaries, corruption,
+finite permutations with no replay, rare-source retention, child mixing in
+read windows, rank-independent resume, and preserved targets/segment masks.
+
 The existing training loader and AMD attention path still need integration
 with this format. Graph replay, distributed valid-target normalization and
 native forward/backward remain unqualified. Candidate creation does not

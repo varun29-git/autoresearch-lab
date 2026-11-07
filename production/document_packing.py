@@ -174,7 +174,7 @@ def file_sha(path):
 class ShardWriter:
     """Sequential payload plus descriptors; hashes are emitted on close."""
     def __init__(self, directory, name, *, length=4096, audit_stride=1024,
-                 buffer_bytes=1<<20, fast_json=False):
+                 buffer_bytes=1<<20, fast_json=False, write_offsets=False):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.payload = self.directory / (name + ".uint16")
@@ -184,6 +184,10 @@ class ShardWriter:
         self.data_hash = hashlib.sha256()
         self.meta_hash = hashlib.sha256()
         self.meta_bytes = 0
+        self.offset_file = self.directory / (name + '.offsets.uint64')
+        self.offsets = self.offset_file.open('xb',buffering=buffer_bytes) if write_offsets else None
+        self.offset_hash = hashlib.sha256()
+        if self.offsets:self._write_offsets(np.asarray([0],dtype='<u8'))
         self.fast_json = fast_json
         self.length = length
         self.audit_stride = audit_stride
@@ -202,13 +206,24 @@ class ShardWriter:
             metadata=(json.dumps(descriptor,ensure_ascii=False,separators=(",", ":"))+"\n").encode('utf-8')
         self.data.write(payload);self.data_hash.update(payload)
         self.meta.write(metadata);self.meta_hash.update(metadata);self.meta_bytes+=len(metadata)
+        if self.offsets:self._write_offsets(np.asarray([self.meta_bytes],dtype='<u8'))
         self.counts["sequences"] += 1
         for key in self.counts.keys() - {"sequences"}:
             self.counts[key] += descriptor[key]
 
-    def append_encoded(self, payload, metadata, counts):
+    def _write_offsets(self,values):
+        raw=np.asarray(values,dtype='<u8').tobytes()
+        self.offsets.write(raw);self.offset_hash.update(raw)
+
+    def append_encoded(self, payload, metadata, counts, *, offsets=None):
         if len(payload)!=counts['sequences']*self.length*2:
             raise ValueError('encoded chunk payload size differs')
+        if self.offsets:
+            values=np.asarray(offsets,dtype=np.uint64)
+            if (len(values)!=counts['sequences'] or not len(values)
+                    or values[-1]!=len(metadata) or np.any(values[1:]<=values[:-1]) or values[0]<=0):
+                raise ValueError('encoded chunk descriptor offsets differ')
+            self._write_offsets(values+self.meta_bytes)
         self.data.write(payload);self.data_hash.update(payload)
         self.meta.write(metadata);self.meta_hash.update(metadata);self.meta_bytes+=len(metadata)
         for name in self.counts:self.counts[name]+=counts[name]
@@ -216,9 +231,15 @@ class ShardWriter:
     def close(self):
         self.data.close()
         self.meta.close()
-        return {"schema": SCHEMA, "sequence_length": self.length,
+        result={"schema": SCHEMA, "sequence_length": self.length,
             **self.counts, "payload": {"path": str(self.payload),
                 "bytes": self.payload.stat().st_size, "sha256": self.data_hash.hexdigest()},
             "index": {"path": str(self.index), "bytes": self.index.stat().st_size,
                       "sha256": self.meta_hash.hexdigest()},
             "cross_document_mask_required": True, "native_training_accepted": False}
+        if self.offsets:
+            self.offsets.close()
+            result['index_offsets']={'path':str(self.offset_file),'bytes':self.offset_file.stat().st_size,
+                                     'sha256':self.offset_hash.hexdigest()}
+            result['index_offsets_bind_to_sha256']=result['index']['sha256']
+        return result

@@ -90,7 +90,7 @@ unzip -q runtime.zip
 aws s3 cp s3://{queue['bucket']}/{task_key} TASK.json --region us-east-1 --only-show-errors
 echo '{task_sha}  TASK.json' | sha256sum -c -
 python3.11 -m pip install --no-build-isolation ./native/tokenizer65k
-python3.11 -m unittest tests.test_document_packing tests.test_packing_worker tests.test_textbook_source tests.test_preparation_queue tests.test_fast_packing_worker
+python3.11 -m unittest tests.test_document_packing tests.test_packing_worker tests.test_textbook_source tests.test_preparation_queue tests.test_fast_packing_worker tests.test_packed_index tests.test_packed_mixture
 python3.11 -u -m production.preparation_queue --task TASK.json --assets /opt/ci1-next --work /work/ci1/task
 '''
 

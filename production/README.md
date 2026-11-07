@@ -1,5 +1,12 @@
 # CI-1 production handoff
 
+**2026-11-08 dataset-child mixing:** the [packed-data contract](PACKING.md)
+now includes a CPU reader that interleaves individual dataset children inside
+each language/source, rather than consuming their physical creation order.
+Independent descriptor indexing can run ahead of the warmup allocation ledger.
+Future fast packers emit descriptor offsets and a completed-allocation mixture
+candidate. Native segment-aware trainer integration remains pending.
+
 **2026-11-07 CPU packing optimization:** the [parallel preparation worker](PREPARATION_QUEUE.md)
 adds a compact RAM allocation ledger, bounded source prefetch, native JSON
 processing, multiprocess packing and overlapped verified uploads. CPU tests

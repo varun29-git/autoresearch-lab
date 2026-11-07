@@ -287,7 +287,7 @@ class FastWorker(ReferenceWorker):
                 if self.current is None:
                     self.part_counter+=1
                     self.current=ShardWriter(self.scratch,'part-'+str(self.part_counter).zfill(6),
-                        length=self.plan['sequence_length'],buffer_bytes=64<<20)
+                        length=self.plan['sequence_length'],buffer_bytes=64<<20,write_offsets=True)
                     self.current_leaf,self.current_stratum=leaf,stratum
                 n=min(chunk['sequences']-start,self.plan['sequences_per_shard']-self.current.counts['sequences'])
                 stop=start+n;byte_count=n*self.plan['sequence_length']*2
@@ -298,7 +298,8 @@ class FastWorker(ReferenceWorker):
                 data_hash.update(payload);meta_hash.update(metadata)
                 delta=chunk['prefixes'][stop]-chunk['prefixes'][start]
                 counts={'sequences':n}|{name:int(value)for name,value in zip(chunk['names'],delta)}
-                self.current.append_encoded(payload,metadata,counts);start=stop
+                self.current.append_encoded(payload,metadata,counts,
+                    offsets=chunk['offsets'][start+1:stop+1]-chunk['offsets'][start]);start=stop
                 if self.current.counts['sequences']==self.plan['sequences_per_shard']:self.finish_shard()
         if data_hash.hexdigest()!=chunk['payload']['sha256']or meta_hash.hexdigest()!=chunk['index']['sha256']:
             raise ValueError('packing chunk differs from worker checksum')
@@ -309,7 +310,7 @@ class FastWorker(ReferenceWorker):
         result=self.current.close();self.current=None;ordinal=self.part_counter
         leaf,stratum=self.current_leaf,self.current_stratum
         def upload():
-            for name in ('payload','index'):
+            for name in ('payload','index','index_offsets'):
                 spec=result[name];path=Path(spec['path'])
                 result[name]=publish(self.client,self.bucket,path,self.prefix+'/parts/'+path.name,
                     expected_sha256=spec['sha256']);path.unlink()
@@ -420,6 +421,13 @@ class FastWorker(ReferenceWorker):
 
     def run(self):
         try:
+            if self.plan.get('predecessor_mixture_preparation'):
+                from production.packed_mixture_finalize import prepare_phase
+                preparation=self.plan['predecessor_mixture_preparation']|{
+                    'expected_input_ledger':self.plan['input_ledger']}
+                prepared=prepare_phase(self.client,preparation,
+                    self.work/'predecessor-mixture')
+                self.event('predecessor_mixture_ready',**prepared)
             results=self.materialize_fixed()if self.plan.get('fixed_selection')else self.select_sources()
             self.finish_stratum();self.provenance.close()
             if self.reserved:self.reserved.close()
@@ -444,6 +452,11 @@ class FastWorker(ReferenceWorker):
                     'working_ledger_storage':mode,'ledger_records':count,
                     'metadata_processes':self.plan.get('metadata_workers',4),
                     'packing_processes':self.plan.get('packing_workers',8)}}
+            if not self.reservation_only and report['all_curriculum_quotas_satisfied']:
+                from production.packed_mixture import mixture_candidate
+                mixture=self.work/'MIXTURE_CANDIDATE.json'
+                mixture.write_text(json.dumps(mixture_candidate(report),indent=2)+'\n')
+                artifacts[mixture.name]=publish(self.client,self.bucket,mixture,self.prefix+'/audit/'+mixture.name)
             target=self.work/'MATERIALIZATION.json';target.write_text(json.dumps(report,indent=2)+'\n')
             publish(self.client,self.bucket,target,self.prefix+'/MATERIALIZATION.json')
             self.event('finished',quotas_satisfied=report['all_curriculum_quotas_satisfied']);return report

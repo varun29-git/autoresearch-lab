@@ -144,6 +144,18 @@ class FastPackingTests(unittest.TestCase):
                 for name in ('payload','index'):
                     self.assertEqual(a[name]['sha256'],b[name]['sha256'])
             self.assertTrue(fast['all_curriculum_quotas_satisfied'])
+            candidate=json.loads((root/'fast/MIXTURE_CANDIDATE.json').read_text())
+            self.assertEqual(candidate['content_tokens'],440)
+            self.assertFalse(candidate['legacy_continuous_stream_loader_compatible'])
+            self.assertEqual(candidate['hierarchy'],['language','source_leaf','dataset_stratum'])
+            from production.packed_mixture_finalize import prepare_phase
+            with patch('production.packed_mixture_finalize.publish',side_effect=publish):
+                prepared=prepare_phase(client,{'bucket':'bucket','output_prefix':'phase-mixture',
+                    'source_plan_sha256':'plan','expected_content_tokens':440,
+                    'source_report':{'uri':'s3://bucket/fast/MATERIALIZATION.json'}},root/'phase-mixture')
+            self.assertEqual(prepared['content_tokens'],440)
+            self.assertEqual(prepared['cached_shards_reused'],len(fast['shards']))
+            self.assertEqual(prepared['newly_indexed_shards'],0)
 
     def test_compact_ledger_suffix_reservation_and_fixed_partition_keep_original_offsets(self):
         with tempfile.TemporaryDirectory()as t:
