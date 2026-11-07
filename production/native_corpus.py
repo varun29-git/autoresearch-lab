@@ -133,6 +133,10 @@ def download(s3, bucket, key, path, snapshot):
 
 
 def check_source(s3, bucket, job):
+    recovery = _text_recovery(job)
+    if recovery.get("tail_completion"):
+        tail = recovery["tail_completion"]
+        check_object(s3, bucket, tail["source_key"], tail["source_snapshot"])
     key = job["source_key"]
     if not key.startswith("https://"):
         return check_object(s3, bucket, key, job["source_snapshot"])
@@ -148,7 +152,26 @@ def check_source(s3, bucket, job):
 def download_source(s3, bucket, job, path):
     check_source(s3, bucket, job)
     if not job["source_key"].startswith("https://"):
-        return download(s3, bucket, job["source_key"], path, job["source_snapshot"])
+        digest = download(s3, bucket, job["source_key"], path, job["source_snapshot"])
+        tail = _text_recovery(job).get("tail_completion")
+        if tail:
+            snapshot = tail["source_snapshot"]
+            response = s3.get_object(Bucket=bucket, Key=tail["source_key"],
+                Range=f"bytes=0-{tail['bytes'] - 1}", IfMatch=snapshot["etag"])
+            try:
+                raw = response["Body"].read(tail["bytes"] + 1)
+            finally:
+                response["Body"].close()
+            if (len(raw) != tail["bytes"] or hashlib.sha256(raw).hexdigest() != tail["sha256"]
+                    or not raw.endswith(b"\n") or raw.count(b"\n") != 1):
+                raise ValueError("text tail completion differs from its reviewed first-line bytes")
+            # Append the next raw object's first line exactly, including its LF.
+            # Never decode the two fragments independently or replace bad bytes.
+            with Path(path).open("ab") as handle:
+                handle.write(raw)
+            check_object(s3, bucket, tail["source_key"], snapshot)
+            digest = file_sha256(path)
+        return digest
     snapshot = job["source_snapshot"]; digest = hashlib.sha256(); size = 0
     headers = {"User-Agent": "Terminus-native-source-conversion/2"}
     if os.environ.get("HF_TOKEN"):
@@ -225,14 +248,38 @@ def _publish_multipart(s3, bucket, path, key, digest, size):
             s3.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=upload)
 
 
+def _text_recovery(job):
+    recovery = job.get("text_source_recovery", {})
+    if not recovery:
+        return {}
+    if (job.get("source_format") != "text_lines" or job["source_key"].startswith("https://")
+            or recovery.get("schema") != 1):
+        raise ValueError("text source recovery requires a reviewed S3 text-lines recipe")
+    skip = recovery.get("unselected_prefix_lines", 0)
+    if type(skip) is not int or not 0 <= skip <= 2:
+        raise ValueError("text recovery prefix must be zero, one or two unselected physical lines")
+    tail = recovery.get("tail_completion")
+    if tail:
+        if (not isinstance(tail.get("source_key"), str) or tail["source_key"].startswith("https://")
+                or tail["source_key"] == job["source_key"] or type(tail.get("bytes")) is not int
+                or not 0 < tail["bytes"] <= 1024 ** 2
+                or not re.fullmatch(r"[a-f0-9]{64}", tail.get("sha256", ""))
+                or not isinstance(tail.get("source_snapshot"), dict)):
+            raise ValueError("text recovery tail needs distinct pinned source and bounded prefix hash")
+    return recovery
+
+
 def _source_batches(path, job):
     if job.get("source_format", "parquet") == "text_lines":
         base = job.get("line_number_base")
         if base not in (0, 1):
             raise ValueError("text sources require a proven zero- or one-based line convention")
+        skip = _text_recovery(job).get("unselected_prefix_lines", 0)
         batch = []
         with path.open("rb") as handle:
             for number, line in enumerate(handle):
+                if number < skip:
+                    continue
                 value = line.removesuffix(b"\n").removesuffix(b"\r").decode(
                     "utf-8-sig" if number == 0 else "utf-8", errors="strict")
                 batch.append((number + base, {"text": value}))
@@ -289,6 +336,8 @@ def convert_job(job, plan, work_root, profile=None):
               "global_heldout_reconciliation_complete": False}
     handles = []; part_states = []; disk_selection = None
     try:
+        recovery = _text_recovery(job)
+        skip_prefix = recovery.get("unselected_prefix_lines", 0)
         for path, digest in plan.get("runtime_files", {}).items():
             if file_sha256(path) != digest:
                 raise ValueError("runtime file changed: " + path)
@@ -343,6 +392,8 @@ def convert_job(job, plan, work_root, profile=None):
                     if row_key.startswith(coordinate_prefix) and row_key[len(coordinate_prefix):].isdigit():
                         coordinate = int(row_key[len(coordinate_prefix):]); target = by_number
                     else: coordinate = uid; target = by_uid
+                    if skip_prefix and (target is not by_number or coordinate < skip_prefix + job.get("line_number_base", 0)):
+                        raise ValueError("text recovery would skip a selected or unproven source row")
                     if disk_selection is not None:
                         disk_selection.add("number" if target is by_number else "uid", coordinate, part_index, uid, r)
                     elif coordinate in target:
@@ -385,7 +436,8 @@ def convert_job(job, plan, work_root, profile=None):
                     raise ValueError("source identity differs at indexed coordinate")
                 text = _source_text(value, job); raw = text.encode("utf-8", errors="strict")
                 if "n_bytes" in r and r["n_bytes"] != len(raw):
-                    raise ValueError("source text byte count differs from its original index")
+                    raise ValueError(f"source text byte count differs from its original index at "
+                                     f"{job['source_key']}:{number}: expected {r['n_bytes']}, got {len(raw)}")
                 digest = hashlib.sha256(raw).hexdigest()
                 anchor_key = (pi, uid)
                 if anchor_key in expected_anchors:
@@ -453,6 +505,9 @@ def convert_job(job, plan, work_root, profile=None):
                       elapsed_seconds=time.monotonic() - start, outputs=outputs,
                       declared_atom_expansion_verified=bool(comparison),
                       original_holdout_assignments_preserved=True)
+        if job.get("text_source_recovery"):
+            result.update(text_source_recovery=job["text_source_recovery"],
+                          source_sha256_scope="primary raw bytes plus reviewed tail completion")
     except Exception as exc:
         result.update(status="rejected", error=type(exc).__name__ + ": " + str(exc),
                       elapsed_seconds=time.monotonic() - start)

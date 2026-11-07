@@ -5,6 +5,23 @@ changes addresses into a token bin; it does not change its encoding. Preserve
 the original source selection, dataset exclusions and holdout families.
 All plans, catalogs, source records and results must remain outside Git.
 
+## Recover text split across raw objects
+
+The native converter accepts an explicit `text_source_recovery` recipe for S3
+text-line sources. It can append the next object's exact first-line bytes to
+complete the preceding object's final document. Pin both object snapshots,
+the appended byte count and SHA-256; the prefix must contain exactly one final
+LF. Decode after joining the bytes so a split UTF-8 character remains intact.
+The receipt hashes the reconstructed source and binds the recovery recipe.
+
+A leading fragment already assigned to the preceding object may be skipped
+with `unselected_prefix_lines` (at most two physical lines). The converter
+checks every original index record and rejects the recipe if it would skip any
+selected training or validation row. Later row numbers retain their original
+coordinates. Strict UTF-8 and indexed byte-length checks still apply. Resume
+also rechecks the companion object's snapshot. This repairs original source
+boundaries; it does not decode historical token bins as input.
+
 ## Repair split-local source indices
 
 `source_index_repair` takes a frozen external S3 plan. Each object supplies
