@@ -34,7 +34,8 @@ class NativeTokenizerTests(unittest.TestCase):
     def test_boundary_regressions(self):
         for text in ["", " ", "  ", "\r\n\t", "café", "cafÃ©", "e\u0301", "Ġ",
                      "नमस्ते Ġ दुनिया", "क 2 क", "क a2 क", "a2क", "क्‍क", "क्‌क",
-                     "main जा रहा hoon", "ঐতিহাসিক", "ಠಾಕೂರ್", "\x01",
+                     "main जा रहा hoon", "ঐতিহাসিক", "ಠಾಕೂರ್", "\x01", "\x00",
+                     "a\x00b", "क\x00क", "\x00\x00\n", "café\x00😀",
                      "def f():\n    return 'café'\n", "\\frac{x}{2} + \\pi",
                      "<s> </s> <pad> <eod> <reserved_0005> <reserved_space_545>",
                      "😀 中文 العربية", "2. తెలుగు", " जा", "जा "]:
@@ -74,7 +75,7 @@ class NativeTokenizerTests(unittest.TestCase):
 
     def test_unused_ids_and_strict_inputs(self):
         self.assertEqual(len(self.native.unused_token_ids), 39)
-        for text in (None, b"hello", 42, "\ud800", "\x00"):
+        for text in (None, b"hello", 42, "\ud800"):
             with self.assertRaises((ValueError, UnicodeError)): self.native.encode(text)
         for ids in ([-1], [65536], [1.5], [True], [4]):
             with self.assertRaises(ValueError): self.native.decode(ids)

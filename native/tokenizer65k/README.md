@@ -56,6 +56,9 @@ markers return 404 rather than an ambiguous access-denied error. Workers must
 have independent termination deadlines supplied by the CPU fleet launcher.
 
 Content-addressed output bins, document indices and receipts are immutable.
+Outputs above 5 GiB use SHA-256-verified multipart uploads. Receipts preserve
+both the full-file hash and S3's composite checksum; verified resume checks the
+appropriate checksum format. Interrupted uploads are aborted on caught errors.
 Progress/completion pointers are separate. Conversion does not qualify a
 training corpus by itself: cross-source holdout/family reconciliation, exclusion
 policy, quota recounting, and final curriculum packing are separate gates.

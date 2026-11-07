@@ -31,6 +31,17 @@ from terminus.hashing import file_sha256
 from terminus.tokenizer_native import Native65kTokenizer
 from terminus import unicode_contract as unicode
 
+SINGLE_UPLOAD_LIMIT = 5 * 1024 ** 3
+MULTIPART_CHUNK_BYTES = 64 * 1024 ** 2
+
+
+def _output_matches(head, item):
+    checksum = item.get("s3_checksum_sha256", base64.b64encode(bytes.fromhex(item["sha256"])).decode())
+    return (head["ContentLength"] == item["bytes"] and head.get("ChecksumSHA256") == checksum
+            and (item.get("s3_checksum_type") != "COMPOSITE" or
+                 (head.get("ChecksumType") == "COMPOSITE" and
+                  head.get("Metadata", {}).get("sha256") == item["sha256"])))
+
 
 class _SourceRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -87,8 +98,7 @@ def completed_job(s3, job, plan):
             if not item["uri"].startswith(prefix + plan["output_prefix"] + "/candidate-output/"):
                 raise ValueError("completed output is outside this campaign")
             head = s3.head_object(Bucket=bucket, Key=item["uri"][len(prefix):], ChecksumMode="ENABLED")
-            if (head["ContentLength"] != item["bytes"] or head.get("ChecksumSHA256") !=
-                    base64.b64encode(bytes.fromhex(item["sha256"])).decode()):
+            if not _output_matches(head, item):
                 raise ValueError("completed output is missing or changed")
     return result | {"receipt": receipt, "resumed_from_verified_receipt": True}
 
@@ -158,8 +168,8 @@ def download_source(s3, bucket, job, path):
 
 def publish(s3, bucket, path, key):
     path = Path(path); digest = file_sha256(path); size = path.stat().st_size
-    if size > 5 * 1024 ** 3:
-        raise ValueError("part exceeds single-object upload limit; split the source selection before launch")
+    if size > SINGLE_UPLOAD_LIMIT:
+        return _publish_multipart(s3, bucket, path, key, digest, size)
     checksum = base64.b64encode(bytes.fromhex(digest)).decode()
     try:
         with path.open("rb") as handle:
@@ -172,6 +182,47 @@ def publish(s3, bucket, path, key):
     if head.get("ChecksumSHA256") != checksum or head["ContentLength"] != size:
         raise ValueError("published object checksum differs from local output")
     return {"uri": f"s3://{bucket}/{key}", "sha256": digest, "bytes": size}
+
+
+def _publish_multipart(s3, bucket, path, key, digest, size):
+    """Verify each uploaded part and S3's composite digest; retain full-file SHA.
+
+    A multipart SHA-256 is a hash of part hashes, not the full-file SHA-256.
+    Both are pinned in the receipt so resume never confuses the two formats.
+    """
+    if (size + MULTIPART_CHUNK_BYTES - 1) // MULTIPART_CHUNK_BYTES > 10000:
+        raise ValueError("source output exceeds the bounded multipart capacity")
+    upload = s3.create_multipart_upload(Bucket=bucket, Key=key, ChecksumAlgorithm="SHA256",
+        ChecksumType="COMPOSITE", Metadata={"sha256": digest})["UploadId"]
+    parts = []; part_hashes = []; finished = False
+    try:
+        with path.open("rb") as handle:
+            while chunk := handle.read(MULTIPART_CHUNK_BYTES):
+                raw_hash = hashlib.sha256(chunk).digest(); part_hashes.append(raw_hash)
+                checksum = base64.b64encode(raw_hash).decode(); number = len(parts) + 1
+                response = s3.upload_part(Bucket=bucket, Key=key, UploadId=upload,
+                    PartNumber=number, Body=chunk, ChecksumSHA256=checksum)
+                if response.get("ChecksumSHA256") != checksum:
+                    raise ValueError("uploaded part checksum differs from local bytes")
+                parts.append({"PartNumber": number, "ETag": response["ETag"], "ChecksumSHA256": checksum})
+        checksum = base64.b64encode(hashlib.sha256(b"".join(part_hashes)).digest()).decode() + "-" + str(len(parts))
+        try:
+            s3.complete_multipart_upload(Bucket=bucket, Key=key, UploadId=upload,
+                MultipartUpload={"Parts": parts}, ChecksumType="COMPOSITE", IfNoneMatch="*")
+            finished = True
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] not in ("PreconditionFailed", "412"):
+                raise
+        item = {"uri": f"s3://{bucket}/{key}", "sha256": digest, "bytes": size,
+                "s3_checksum_type": "COMPOSITE", "s3_checksum_sha256": checksum,
+                "multipart_chunk_bytes": MULTIPART_CHUNK_BYTES, "multipart_parts": len(parts)}
+        head = s3.head_object(Bucket=bucket, Key=key, ChecksumMode="ENABLED")
+        if not _output_matches(head, item):
+            raise ValueError("published multipart object checksum differs from local output")
+        return item
+    finally:
+        if not finished:
+            s3.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=upload)
 
 
 def _source_batches(path, job):

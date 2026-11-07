@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import importlib.util
 from io import BytesIO
@@ -40,6 +41,40 @@ class MemoryS3:
         if kwargs.get("IfMatch") is not None and kwargs["IfMatch"] != self.head_object(Bucket, Key)["ETag"]:
             raise ValueError("snapshot mismatch")
         return {"Body": BytesIO(self.objects[Key])}
+
+
+class MultipartPublicationTests(unittest.TestCase):
+    def test_composite_checksum_is_distinct_from_file_digest(self):
+        data = b"source corpus bytes" * 29
+        class S3:
+            def __init__(self): self.parts = {}; self.aborted = False
+            def create_multipart_upload(self, **kwargs):
+                self.metadata = kwargs["Metadata"]; return {"UploadId": "test"}
+            def upload_part(self, **kwargs):
+                self.parts[kwargs["PartNumber"]] = kwargs["Body"]
+                return {"ETag": str(kwargs["PartNumber"]), "ChecksumSHA256": kwargs["ChecksumSHA256"]}
+            def complete_multipart_upload(self, **kwargs):
+                self.completed = b"".join(self.parts[n] for n in sorted(self.parts))
+                self.conditional = kwargs["IfNoneMatch"]
+            def head_object(self, **kwargs):
+                hashes = b"".join(hashlib.sha256(self.parts[n]).digest() for n in sorted(self.parts))
+                return {"ContentLength": len(self.completed), "Metadata": self.metadata,
+                        "ChecksumType": "COMPOSITE",
+                        "ChecksumSHA256": base64.b64encode(hashlib.sha256(hashes).digest()).decode() + "-" + str(len(self.parts))}
+            def abort_multipart_upload(self, **kwargs): self.aborted = True
+        s3 = S3()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "data"; path.write_bytes(data)
+            with patch.object(native_corpus, "SINGLE_UPLOAD_LIMIT", 1), patch.object(native_corpus, "MULTIPART_CHUNK_BYTES", 17):
+                item = native_corpus.publish(s3, "bucket", path, "key")
+        self.assertEqual(s3.completed, data)
+        self.assertEqual(s3.conditional, "*")
+        self.assertFalse(s3.aborted)
+        self.assertEqual(item["sha256"], hashlib.sha256(data).hexdigest())
+        head = s3.head_object()
+        self.assertTrue(native_corpus._output_matches(head, item))
+        self.assertFalse(native_corpus._output_matches(head | {"ChecksumSHA256": "wrong"}, item))
+        self.assertFalse(native_corpus._output_matches(head | {"Metadata": {"sha256": "wrong"}}, item))
 
 
 @unittest.skipUnless(importlib.util.find_spec("_terminus_tokenizer_native"), "native extension required")
@@ -152,8 +187,8 @@ class NativeCorpusTests(unittest.TestCase):
     def test_reject_reference_disagreement(self):
         self.assertIn("Python reference", self.run_case(bad_reference=True)["error"])
 
-    def test_reject_nul_without_dropping_text(self):
-        self.assertIn("NUL", self.run_case(nul=True)["error"])
+    def test_preserve_nul_without_dropping_text(self):
+        self.assertEqual(self.run_case(nul=True)["status"], "verified")
 
     def test_explicit_source_field_required(self):
         self.assertIn("text columns", self.run_case(missing_field=True)["error"])

@@ -38,11 +38,17 @@ remain attached to their original tokenization; do not relabel them as v2.
 Required correctness checks cover exact NFC round trips, reference/native ID
 agreement, English merge ranks, Indic merge scores/ties, mixed-script routing,
 format characters, indentation, literal special-token spellings, all supported
-Unicode scalar values, NUL/surrogate rejection, bounded caches, and incremental
+Unicode scalar values (including NUL), unpaired-surrogate rejection, bounded caches, and incremental
 decoding across every token boundary. Expanding each of the twelve new atoms
 back into its former UTF-8 fallback IDs must reproduce the original token stream.
 Whole-source Linux qualification additionally compares file hashes against
 reference outputs and checks original selection and holdout assignments.
+
+The earlier native wrapper rejected NUL despite both the frozen reference and
+the C++ core supporting it losslessly. Source qualification exposed this in
+code data. The revised wrapper accepts it without changing vocabulary, IDs or
+normalization; it does not strip, replace or silently drop the document. Older
+native receipts remain valid for their already accepted, NUL-free inputs.
 
 Quality comparisons use the same raw source texts for Terminus, Sarvam-1,
 Qwen3 and MiniCPM4 tokenizers, with no automatic special tokens. The external

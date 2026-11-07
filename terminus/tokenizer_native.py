@@ -84,8 +84,8 @@ class Native65kTokenizer:
 
     @staticmethod
     def _normalized(text):
-        if not isinstance(text, str) or "\x00" in text:
-            raise ValueError("encode expects Unicode text without NUL")
+        if not isinstance(text, str):
+            raise ValueError("encode expects Unicode text")
         normalized = unicodedata.normalize("NFC", text)
         normalized.encode("utf-8", errors="strict")
         return normalized
@@ -115,7 +115,7 @@ class Native65kTokenizer:
             "schema": 1, "encoder": "Native65kTokenizer", "normalization": "NFC",
             "native_abi": 3,
             "special_policy": "literal_text_no_automatic_special_ids",
-            "input_policy": "reject_NUL_and_unpaired_surrogates",
+            "input_policy": "accept_all_Unicode_scalars_reject_unpaired_surrogates",
             "tokenizer_sha256": self.sha256,
             "python_version": platform.python_version(),
             "unicode_database": unicodedata.unidata_version,
