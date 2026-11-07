@@ -23,6 +23,10 @@ without applying GPT-2 ByteLevel conversion to already-Unicode text. It removes
 one synthetic Indic marker using the reviewed router grammar, rather than
 globally shrinking every space pair. It restores newline/tab/CR while preserving
 the context that distinguishes some literal marker letters from controls.
+Its prefix lookahead includes source newlines, which matter for Indic Markdown
+tables and math separators. It preserves multiple leading spaces in code;
+one genuine leading space can still collide with a synthetic prefix, so the
+candidate renders the unindented representative of that ambiguous case.
 
 The builder rejects an unrecognized router and a non-deterministic model.
 `qualification.json` binds the original full-artifact hash, candidate hash,

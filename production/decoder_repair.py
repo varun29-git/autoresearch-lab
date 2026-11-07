@@ -44,10 +44,21 @@ def repaired_decoder():
     # A literal indentation run before Greek/Chinese letters is not an Indic
     # prefix. Also stop at internal doubled markers: these were introduced by
     # earlier router rules and prevented either start-of-line insertion.
+    # The router's lookahead can cross source newlines. Ċ represents those
+    # newlines but belongs to Unicode Latin; explicitly include it here or
+    # synthetic prefixes survive on Markdown separators/table/math lines.
+    # A genuine leading space can collide with that synthetic prefix in the
+    # original encoder. Prefer the unindented representative of that collision;
+    # decoder changes cannot recover which spelling the source used.
     line_prefix = (r'(?:(?:Ġ*(?=[\p{N}\p{P}\p{S}\p{Z}\p{M}]|' + INDIC + r'))|'
                    r'(?=[^\p{Latin}Ġ\t\r]))(?:[^\p{Latin}Ġ\t\r]|Ġ(?!Ġ))*' + INDIC)
+    # A cross-line dummy precedes an originally unindented symbol/script.
+    # Do not apply this extension when another leading marker follows it:
+    # those can be real code indentation and must not lose a space.
+    crossline_prefix = (r'(?=[^\p{Latin}Ġ\t\r])(?:Ċ|[^\p{Latin}Ġ\t\r]|'
+                        r'Ġ+(?=[\p{N}\p{P}\p{S}\p{Z}\p{M}Ċ])|Ġ(?!Ġ))*' + INDIC)
     remove_dummy = (
-        r'(?:\A|(?<=Ċ))Ġ(?=' + line_prefix + r')|'
+        r'(?:\A|(?<=Ċ))Ġ(?=(?:' + line_prefix + '|' + crossline_prefix + r'))|'
         r'(?<=' + LATIN + r'[0-9\p{P}\p{S}]*)Ġ(?=Ġ*' + INDIC + r')|'
         r'(?<=[Ċ\t\r])Ġ(?=Ġ*' + INDIC + r')|'
         r'(?<!Ġ)Ġ(?=Ġ+' + INDIC + ')'
@@ -114,7 +125,15 @@ class ContextualDecodeStream:
         if indic is None or space is None:
             raise ValueError('stream probes are absent from the vocabulary')
         self.tokenizer = tokenizer
-        self.probes = ([indic], [space, indic], [space, space, indic])
+        dash, newline = tokenizer.token_to_id('-'), tokenizer.token_to_id('Ċ')
+        if dash is None or newline is None:
+            raise ValueError('cross-line stream probes are absent from the vocabulary')
+        # A pending prefix can become synthetic after whitespace closes with
+        # punctuation or a newline, not only after an immediate Indic token.
+        # Include those lookahead classes before emitting an earlier space.
+        self.probes = tuple([space] * count + suffix
+                            for count in range(3)
+                            for suffix in ([indic], [dash, indic], [newline, indic]))
         self.special = {i for i, token in tokenizer.get_added_tokens_decoder().items() if token.special}
         self.skip_special_tokens = skip_special_tokens
         self.ids = []

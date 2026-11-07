@@ -105,6 +105,42 @@ def test_irrecoverable_collisions_have_explicit_canonical_output(codec):
         assert candidate.decode(ids, skip_special_tokens=False) == canonical
 
 
+@pytest.mark.parametrize('text', [
+    '|---|\n| नाम |', '---\n\n### **नाम**',
+    '$$\n\n### नाम', '\\]\n*नाम*',
+    '   ```\n\n2. **नाम**', '   $$\n\n2. **नाम**',
+    '$$  \n*नाम*', '*   **नाम**',
+])
+def test_markdown_prefix_lookahead_crosses_source_newlines(codec, text):
+    original, candidate, _ = codec
+    ids = original.encode(text, add_special_tokens=False).ids
+    assert candidate.encode(text, add_special_tokens=False).ids == ids
+    assert candidate.decode(ids, skip_special_tokens=False) == text
+    assert stream_text(candidate, ids) == text
+
+
+def test_multiline_prefix_collision_is_not_claimed_as_lossless(codec):
+    _, candidate, _ = codec
+    a, b = '|---|\n| नाम |', ' |---|\n| नाम |'
+    ids = candidate.encode(a, add_special_tokens=False).ids
+    assert ids == candidate.encode(b, add_special_tokens=False).ids
+    assert candidate.decode(ids, skip_special_tokens=False) == a
+
+
+def test_identical_vocabularies_do_not_prove_encoding_semantics(codec):
+    literal, candidate, _ = codec
+    payload = json.loads(literal.to_str())
+    byte_encoder = Tokenizer(models.BPE(payload['model']['vocab'], [],
+        unk_token='<unk>', byte_fallback=True))
+    byte_encoder.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=False)
+    assert byte_encoder.get_vocab() == literal.get_vocab()
+    legacy_ids = byte_encoder.encode('café', add_special_tokens=False).ids
+    literal_ids = literal.encode('cafÃ©', add_special_tokens=False).ids
+    assert legacy_ids == literal_ids
+    assert legacy_ids != literal.encode('café', add_special_tokens=False).ids
+    assert candidate.decode(legacy_ids, skip_special_tokens=False) == 'cafÃ©'
+
+
 def stream_text(candidate, ids, *, skip_special_tokens=False):
     stream = ContextualDecodeStream(candidate, skip_special_tokens=skip_special_tokens)
     chunks = [chunk for token_id in ids if (chunk := stream.step(token_id)) is not None]
