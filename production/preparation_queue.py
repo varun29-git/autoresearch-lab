@@ -123,7 +123,9 @@ def queue_runner(task_path, assets, work):
             module='production.textbook_source'
         else:
             plan.update(exclusions_path=str(root/'training-exclusions.jsonl'))
-            module='production.packing_worker'
+            module=plan.get('worker_module','production.packing_worker')
+            if module not in {'production.packing_worker','production.fast_packing_worker'}:
+                raise ValueError('unknown packing worker module')
         plan_path=work/'plan.json';plan_path.write_text(json.dumps(plan,sort_keys=True,indent=2)+'\n')
         subprocess.run([sys.executable,'-u','-m',module,'--plan',str(plan_path),'--work',str(work/'data')],check=True)
         if task['kind']=='textbook':

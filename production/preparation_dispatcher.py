@@ -83,14 +83,14 @@ ulimit -n 8192
 mkdir -p /opt/ci1-next /work/ci1
 cd /opt/ci1-next
 dnf -y install python3.11 python3.11-pip python3.11-devel gcc-c++ unzip
-python3.11 -m pip install --disable-pip-version-check --no-cache-dir 'boto3==1.40.0' 'pyarrow==22.0.0' 'regex==2026.7.19' 'unicodedata2==16.0.0' 'numpy==1.26.4' 'pybind11==3.0.1' 'setuptools==80.9.0' 'fasttext-wheel==0.9.2'
+python3.11 -m pip install --disable-pip-version-check --no-cache-dir 'boto3==1.40.0' 'pyarrow==22.0.0' 'regex==2026.7.19' 'unicodedata2==16.0.0' 'numpy==1.26.4' 'pybind11==3.0.1' 'setuptools==80.9.0' 'fasttext-wheel==0.9.2' 'orjson==3.11.4'
 aws s3 cp {queue['runtime']['uri']} runtime.zip --region us-east-1 --only-show-errors
 echo '{queue['runtime']['sha256']}  runtime.zip' | sha256sum -c -
 unzip -q runtime.zip
 aws s3 cp s3://{queue['bucket']}/{task_key} TASK.json --region us-east-1 --only-show-errors
 echo '{task_sha}  TASK.json' | sha256sum -c -
 python3.11 -m pip install --no-build-isolation ./native/tokenizer65k
-python3.11 -m unittest tests.test_document_packing tests.test_packing_worker tests.test_textbook_source tests.test_preparation_queue
+python3.11 -m unittest tests.test_document_packing tests.test_packing_worker tests.test_textbook_source tests.test_preparation_queue tests.test_fast_packing_worker
 python3.11 -u -m production.preparation_queue --task TASK.json --assets /opt/ci1-next --work /work/ci1/task
 '''
 

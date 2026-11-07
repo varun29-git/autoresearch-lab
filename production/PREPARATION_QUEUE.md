@@ -19,3 +19,56 @@ Native training-loader integration, masked attention equivalence, loss normaliza
 Dense metadata reservation and physical materialization can be pipelined. Dense reservations may explicitly carry unused protected suffixes into a successor: each immutable ledger binds the allocation that owns that span, and materialization preserves its original document offset. Fixed source ranges split protected QAT selections into disjoint balanced jobs. Tests verify that split payloads reconstruct the original span and that suffix transitions neither replay nor skip content.
 
 A `drained_outputs` ledger records fully consumed/excluded source indexes and their token-payload hashes. Successors skip those indexes without rescanning previously allocated records. Bounded SQLite cache settings support the provisioned CPU RAM. Multipart ledger artifacts retain their composite upload evidence while dependency checks compare full-file SHA-256, byte length and URI.
+
+## Parallel worker and checkpoint boundary
+
+`fast_packing_worker.py` preserves the reference worker's quota decisions,
+source/row ordering, packing seeds, suffix offsets, EOD and target semantics.
+The runner accepts this module only through an explicit allowlisted
+`worker_module` setting. The reference worker remains available for comparison.
+
+The fast path uses a compact SQLite allocation ledger in RAM, 32-byte source
+and row-identity hashes, interned source/allocation names and batched inserts.
+It migrates a legacy predecessor once, and writes a closed snapshot after
+the task finishes. The snapshot must pass SQLite integrity and exact record
+count checks before it becomes a published dependency. Original full row
+identities remain in the source and segment manifests. Compact ledgers require
+the fast worker for their successors.
+
+Working SQLite state uses `synchronous=OFF`, `journal_mode=MEMORY`,
+`temp_store=MEMORY` and `locking_mode=EXCLUSIVE`. This is disposable scratch
+state, not a resumable checkpoint. If it exceeds the assigned RAM budget,
+the worker spills to a bounded file cache. A crash discards the task's working
+state; it cannot advance descendants without a verified completion report.
+Independent instance termination deadlines and the no-paid-retry policy
+remain in force.
+
+On a 16-vCPU, 128-GiB worker the starting budgets are 64 GiB for ledger pages,
+8 GiB for the optional membership set, 8 GiB for prefetched input files and
+12 GiB for prefetched index metadata. Packing and metadata process pools
+use eight and four processes respectively; S3 transfers use bounded threads.
+Individual oversized input files spill sequentially to EBS. Packing chunks
+and completed shard buffers use `/dev/shm`, with 64-MiB buffered writes.
+Only the ordered coordinator changes quotas and deduplication ownership.
+
+Inputs are hashed during download. Packing processes hash encoded chunks;
+the coordinator validates their hashes while assembling the original shard
+boundaries. Uploads use those digests and verify S3 checksum evidence,
+avoiding another complete local file read. Source receipts are consolidated
+into a buffered audit archive. These changes reduce small random EBS writes
+and overlap source preparation, packing and publication.
+
+The CPU equivalence tests compare every payload and segment-sidecar SHA-256
+with the reference, including Unicode identities, duplicate/heldout records,
+long-document cuts, protected fixed ranges and cross-chunk shard boundaries.
+Additional checks cover legacy migration, bounded spill, invalid checkpoints
+and rejection of corrupted prefetched payloads:
+
+```sh
+python3 -m unittest tests.test_fast_packing_worker tests.test_document_packing tests.test_packing_worker tests.test_preparation_queue tests.test_native_corpus.MultipartPublicationTests
+```
+
+The fast runtime requires `orjson==3.11.4`. Performance measurements, queue
+definitions and benchmark source subsets remain outside Git. A small benchmark
+does not establish the finish time of the complete corpus, especially when the
+global ledger grows and several workers share S3/network bandwidth.

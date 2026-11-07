@@ -1,5 +1,12 @@
 # CI-1 production handoff
 
+**2026-11-07 CPU packing optimization:** the [parallel preparation worker](PREPARATION_QUEUE.md)
+adds a compact RAM allocation ledger, bounded source prefetch, native JSON
+processing, multiprocess packing and overlapped verified uploads. CPU tests
+compare complete packed payload and segment hashes with the reference worker.
+Measured performance and deployment receipts remain external; this change
+does not establish native training-loader acceptance.
+
 **2026-11-07 phase handoff:** the [CPU preparation queue](PREPARATION_QUEUE.md)
 adds hashed allocation-ledger handoff, protected finishing records and bounded
 CPU dispatch. Physical candidate data still requires native loader acceptance.
