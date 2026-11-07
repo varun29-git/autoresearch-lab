@@ -11,6 +11,13 @@ tokens separately from validation, and bind source locales explicitly rather
 than inferring language from an `english` storage prefix. Local writer or index
 repairs do not certify existing cloud outputs or authorize paid launches.
 
+Use the [source recovery workflow](../../SOURCE_RECOVERY.md) for immutable
+split-index repair and source-based conversion pilots. Shared vocabulary IDs
+can still have conflicting byte/Unicode meanings across execution paths.
+Require one reviewed encoder/decoder path, preserve existing holdout families,
+and regenerate incompatible IDs from original source text. Decoder repair
+alone cannot qualify a mixed-encoder corpus or replace source conversion.
+
 **Current complete-program accounting:** the
 [program budget workflow](PROGRAM_BUDGET.md) includes SFT, preference training,
 qualification, recovery and finalization in the original GPU-hour allocation.

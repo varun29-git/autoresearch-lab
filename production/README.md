@@ -19,7 +19,9 @@ remain open.
 streaming reference are available. Generate the candidate outside Git; keep
 corpus/checkpoint hashes pinned to their original encoder artifact. Corpus
 source acceptance, ambiguity-policy review and actual output-stack qualification
-remain open. This does not require blanket retokenization.
+remain open. Decoder repair preserves existing encoding; incompatible source
+execution paths need [source-based conversion](SOURCE_RECOVERY.md) before
+they can share a production manifest.
 
 **2026-11-02 readiness update:** the single-H100 qualification campaign is
 complete; selection/transfer/full-size confirmation receipts are external.
