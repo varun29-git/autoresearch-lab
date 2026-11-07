@@ -21,6 +21,7 @@ import numpy as np
 
 from production.document_packing import ShardWriter, best_fit, file_sha, fragments
 from production.native_corpus import publish, _output_matches
+from production.preparation_queue import object_spec
 
 
 def fingerprint(value):
@@ -105,10 +106,11 @@ class Worker:
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.execute('PRAGMA synchronous=NORMAL')
         cache_mib = plan.get('sqlite_cache_mib', 512)
-        if type(cache_mib) is not int or not 32 <= cache_mib <= 16384:
+        if type(cache_mib) is not int or not 32 <= cache_mib <= 98304:
             raise ValueError('invalid SQLite cache budget')
         self.db.execute('PRAGMA cache_size=-'+str(cache_mib*1024))
         self.db.execute('CREATE TABLE IF NOT EXISTS selected (text_sha TEXT PRIMARY KEY, row_key TEXT, leaf TEXT) WITHOUT ROWID')
+        self.db.execute('CREATE TABLE IF NOT EXISTS drained_outputs (index_sha TEXT PRIMARY KEY, bin_sha TEXT NOT NULL) WITHOUT ROWID')
         # Never continue a partial local cursor implicitly: restarting an
         # interrupted campaign needs an explicitly bound replay plan.
         if not plan.get('input_ledger') and self.db.execute('SELECT COUNT(*) FROM selected').fetchone()[0]:
@@ -128,7 +130,11 @@ class Worker:
                 sha = row['source_text_sha256']
                 selected = self.db.execute('SELECT row_key,leaf,allocation FROM selected WHERE text_sha=?', (sha,)).fetchone()
                 if (sha in seen or not selected or selected[0] != row['row_key']
-                        or selected[1] != row['leaf'] or selected[2].startswith('protected:')
+                        or selected[1] != row['leaf']
+                        or (selected[2].startswith('protected:')
+                            and selected[2] != 'protected:'+row.get('protected_allocation',''))
+                        or (row.get('protected_allocation')
+                            and selected[2] != 'protected:'+row['protected_allocation'])
                         or not 0 < row['next_document_offset'] < row['original_content_tokens']
                         or row['remaining_content_tokens'] != row['original_content_tokens']-row['next_document_offset']):
                     raise ValueError('predecessor suffix does not match its allocation ledger')
@@ -243,7 +249,7 @@ class Worker:
         self.deadline()
 
     def consume_suffixes(self, leaf, stratum, target, buffer):
-        if self.reservation_only:
+        if self.reservation_only and not self.plan.get('reservation_reuse_suffixes'):
             return 0
         selected = 0
         retained = []
@@ -254,28 +260,44 @@ class Worker:
             spec = {'uri': record['source_bin_uri'], 'sha256': record['source_bin_sha256']}
             b, k = spec['uri'][5:].split('/', 1)
             spec['bytes'] = self.client.head_object(Bucket=b, Key=k)['ContentLength']
-            path = self.work/'suffix.uint16'
-            self.download(spec, path)
-            tokens = np.memmap(path, dtype='<u2', mode='r')
             offset = record['next_document_offset']
             take = min(record['remaining_content_tokens'], target-selected)
             begin = record['source_token_start']+offset
-            if begin+take > len(tokens):
+            if begin+take > spec['bytes']//2:
                 raise ValueError('suffix exceeds source payload')
             document = {k:v for k,v in record.items() if k not in (
-                'next_document_offset','remaining_content_tokens','leaf','stratum')}
-            for part in fragments(tokens[begin:begin+take], document,
-                    length=self.plan['sequence_length'], offset=offset,
-                    document_end=offset+take==record['original_content_tokens']):
-                buffer.append(part)
-                if len(buffer) >= self.plan['packing_buffer_fragments']:
-                    self.flush(buffer)
+                'next_document_offset','remaining_content_tokens','leaf','stratum','protected_allocation')}
+            if self.reservation_only:
+                if object_spec(self.client,b,k)['sha256'] != spec['sha256']:
+                    raise ValueError('reserved suffix source payload identity differs')
+                self.db.execute('UPDATE selected SET allocation=? WHERE text_sha=?',
+                    ('protected:'+self.allocation,record['source_text_sha256']))
+                reservation=document|{'leaf':leaf,'stratum':stratum,'allocation':self.allocation,
+                    'allocated_content_tokens':take,'allocated_document_offset':offset,
+                    'whole_record_protected':True}
+                with (self.work/'protected-records.jsonl').open('a') as stream:
+                    stream.write(json.dumps(reservation,separators=(',',':'))+'\n')
+                self.totals['reserved_content_tokens'] += take
+                self.totals['protected_whole_record_tokens'] += record['original_content_tokens']
+            else:
+                path = self.work/'suffix.uint16'
+                self.download(spec, path)
+                tokens = np.memmap(path, dtype='<u2', mode='r')
+                for part in fragments(tokens[begin:begin+take], document,
+                        length=self.plan['sequence_length'], offset=offset,
+                        document_end=offset+take==record['original_content_tokens']):
+                    buffer.append(part)
+                    if len(buffer) >= self.plan['packing_buffer_fragments']:
+                        self.flush(buffer)
+                del tokens
+                path.unlink()
             selected += take
             if take < record['remaining_content_tokens']:
-                retained.append(record | {'next_document_offset':offset+take,
-                    'remaining_content_tokens':record['remaining_content_tokens']-take})
-            del tokens
-            path.unlink()
+                remaining=record | {'next_document_offset':offset+take,
+                    'remaining_content_tokens':record['remaining_content_tokens']-take}
+                if self.reservation_only:
+                    remaining['protected_allocation']=self.allocation
+                retained.append(remaining)
         self.pending_suffixes = retained
         return selected
 
@@ -302,6 +324,13 @@ class Worker:
                 outputs = sorted((o for o in result['outputs'] if not o['validation']),
                     key=lambda o: fingerprint([self.plan['seed'], o.get('original_index_key', o['index']['uri'])]))
                 for output in outputs:
+                    drained = self.db.execute('SELECT bin_sha FROM drained_outputs WHERE index_sha=?',
+                        (output['index']['sha256'],)).fetchone()
+                    if drained:
+                        if drained[0] != output['bin']['sha256']:
+                            raise ValueError('drained source index has a different token payload')
+                        rejected['previously_drained_outputs'] += 1
+                        continue
                     index_path = self.work/'input.index.jsonl'
                     bin_path = self.work/'input.uint16'
                     self.download(output['index'], index_path)
@@ -327,6 +356,10 @@ class Worker:
                             or document_count != output['documents']):
                         raise ValueError('index coverage differs from token payload')
                     if not rows:
+                        self.db.execute('INSERT INTO drained_outputs VALUES(?,?)',
+                            (output['index']['sha256'],output['bin']['sha256']))
+                        self.db.commit()
+                        index_path.unlink()
                         continue
                     if self.reservation_only:
                         b,k = output['bin']['uri'][5:].split('/',1)
@@ -336,8 +369,10 @@ class Worker:
                         self.download(output['bin'], bin_path)
                         tokens = np.memmap(bin_path, dtype='<u2', mode='r')
                     rows.sort(key=lambda r: fingerprint([self.plan['seed'], r['row_key']]))
+                    exhausted = True
                     for row in rows:
                         if selected >= target:
+                            exhausted = False
                             break
                         text_sha = row['source_text_sha256']
                         try:
@@ -364,6 +399,10 @@ class Worker:
                             self.totals['reserved_content_tokens'] += take
                             self.totals['protected_whole_record_tokens'] += row['n_tokens']
                             selected += take
+                            if take < row['n_tokens'] and self.plan.get('reservation_reuse_suffixes'):
+                                self.pending_suffixes.append(document|{'next_document_offset':take,
+                                    'remaining_content_tokens':row['n_tokens']-take,
+                                    'leaf':leaf,'stratum':stratum,'protected_allocation':self.allocation})
                             continue
                         for piece in fragments(tokens[begin:begin+take], document,
                                 length=self.plan['sequence_length'], document_end=take==row['n_tokens']):
@@ -376,6 +415,11 @@ class Worker:
                                 'remaining_content_tokens': row['n_tokens']-take,
                                 'leaf': leaf, 'stratum': stratum}
                             self.pending_suffixes.append(suffix)
+                    if exhausted:
+                        # A partial final document is either carried explicitly
+                        # in pending_suffixes or protected as a whole record.
+                        self.db.execute('INSERT INTO drained_outputs VALUES(?,?)',
+                            (output['index']['sha256'],output['bin']['sha256']))
                     self.db.commit()
                     if not self.reservation_only:
                         del tokens
@@ -448,6 +492,16 @@ class Worker:
         tokens = None
         buffer = []
         counts = Counter()
+        observed = Counter()
+        ranges = self.plan.get('fixed_source_ranges')
+        if ranges is not None:
+            if set(ranges) != set(self.plan['source_targets']):
+                raise ValueError('fixed source ranges must cover the assigned sources')
+            for leaf, interval in ranges.items():
+                if (len(interval) != 2 or any(type(x) is not int for x in interval)
+                        or not 0 <= interval[0] <= interval[1]
+                        or interval[1]-interval[0] != self.plan['source_targets'][leaf]):
+                    raise ValueError('fixed source range differs from its token quota')
         self.buffer_number = 0
         self.leaf = self.stratum = None
         try:
@@ -463,6 +517,20 @@ class Worker:
                         raise ValueError('fixed selection is not protected in its predecessor ledger')
                     if self.exclusions.excludes(record | {'validation':False}):
                         raise ValueError('protected record overlaps frozen heldouts')
+                    original_n = record['allocated_content_tokens']
+                    record_offset = record.get('allocated_document_offset',0)
+                    if (not 0 <= record_offset < record['original_content_tokens']
+                            or not 0 < original_n <= record['original_content_tokens']-record_offset):
+                        raise ValueError('invalid protected source span')
+                    base = observed[record['leaf']]
+                    observed[record['leaf']] += original_n
+                    offset, n = record_offset, original_n
+                    if ranges is not None:
+                        lo, hi = ranges[record['leaf']]
+                        begin, end = max(base,lo), min(base+original_n,hi)
+                        if begin >= end:
+                            continue
+                        offset, n = record_offset+begin-base, end-begin
                     if (record['leaf'],record['stratum']) != (self.leaf,self.stratum):
                         self.flush(buffer)
                         self.finish_shard()
@@ -480,20 +548,24 @@ class Worker:
                         self.download(source, bin_path)
                         tokens = np.memmap(bin_path,dtype='<u2',mode='r')
                         current_bin = record['source_bin_uri']
-                    n = record['allocated_content_tokens']
-                    start = record['source_token_start']
-                    if not 0 < n <= record['original_content_tokens'] or start+n > len(tokens):
+                    start = record['source_token_start']+offset
+                    if start < 0 or start+n > len(tokens):
                         raise ValueError('invalid fixed source span')
                     document = {k:v for k,v in record.items() if k not in
-                        ('allocation','allocated_content_tokens','whole_record_protected','leaf','stratum')}
+                        ('allocation','allocated_content_tokens','allocated_document_offset',
+                         'whole_record_protected','leaf','stratum')}
                     for piece in fragments(tokens[start:start+n],document,
-                            length=self.plan['sequence_length'],document_end=n==record['original_content_tokens']):
+                            length=self.plan['sequence_length'],offset=offset,
+                            document_end=offset+n==record['original_content_tokens']):
                         buffer.append(piece)
                         if len(buffer) >= self.plan['packing_buffer_fragments']:
                             self.flush(buffer)
                     counts[record['leaf']] += n
                     if counts[record['leaf']] > self.plan['source_targets'][record['leaf']]:
                         raise ValueError('fixed selection exceeds declared source quota')
+            if (self.plan.get('fixed_total_source_targets') is not None
+                    and dict(observed) != self.plan['fixed_total_source_targets']):
+                raise ValueError('fixed selection total differs from its reservation')
             self.flush(buffer)
             self.finish_shard()
         finally:

@@ -57,6 +57,15 @@ def object_spec(client, bucket, key):
     return {'uri':'s3://'+bucket+'/'+key,'sha256':digest,'bytes':head['ContentLength']}
 
 
+def verify_artifact(client, spec):
+    """Compare full object identity, retaining optional multipart evidence."""
+    bucket,key = spec['uri'][5:].split('/',1)
+    actual = object_spec(client,bucket,key)
+    if any(spec.get(k) != value for k,value in actual.items()):
+        raise ValueError('dependency artifact identity differs')
+    return True
+
+
 def validate_completion(task, report, expected_plan_sha=None):
     if not report.get('all_curriculum_quotas_satisfied'):
         raise ValueError('predecessor has unresolved source deficits')

@@ -14,7 +14,7 @@ import math
 import os
 import time
 
-from production.preparation_queue import object_spec, ready_tasks, sha, validate_completion
+from production.preparation_queue import object_spec, ready_tasks, sha, tranches, validate_completion, verify_artifact
 
 
 def encoded(value):
@@ -43,6 +43,18 @@ def resolved_task(task, state, bucket, now):
                 raise ValueError('fixed selection is not complete')
             plan['fixed_selection'] = fixed['artifacts']['protected-records.jsonl']
             task['source_targets'] = plan['source_targets'] = fixed['effective_source_targets']
+            if task.get('fixed_partition_sizes'):
+                sizes = task['fixed_partition_sizes']
+                number = task['fixed_partition_index']
+                if type(number) is not int or not 0 <= number < len(sizes):
+                    raise ValueError('invalid fixed partition index')
+                full = fixed['effective_source_targets']
+                parts = tranches(full, sizes)
+                selected = {k:parts[number].get(k,0) for k in full}
+                starts = {k:sum(part.get(k,0) for part in parts[:number]) for k in full}
+                plan['fixed_total_source_targets'] = full
+                plan['fixed_source_ranges'] = {k:[starts[k],starts[k]+selected[k]] for k in full}
+                task['source_targets'] = plan['source_targets'] = selected
     if plan['bucket'] != bucket:
         raise ValueError('task bucket differs from queue bucket')
     return task
@@ -153,9 +165,7 @@ class Dispatcher:
                         if complete['artifacts']!=report['artifacts']:
                             raise ValueError('completion artifact bindings differ')
                         for name in ['selected.sqlite','quota-suffix-reservations.jsonl']:
-                            b,k=complete['artifacts'][name]['uri'][5:].split('/',1)
-                            if object_spec(self.s3,b,k)!=complete['artifacts'][name]:
-                                raise ValueError('dependency artifact identity differs')
+                            verify_artifact(self.s3,complete['artifacts'][name])
                     record.update(complete,status='complete',completed_unix=int(time.time()))
                 except ValueError as exc:
                     record.update(status='failed',error=str(exc))

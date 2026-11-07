@@ -161,6 +161,20 @@ class PackingWorkerTests(unittest.TestCase):
                     fixed_allocation_id='qat',source_targets={'en/source':6}),root/'fixed').run()
                 self.assertEqual(fixed['totals']['content_tokens'],6)
                 self.assertTrue(fixed['all_curriculum_quotas_satisfied'])
+                slices=[]
+                for number,(lo,hi) in enumerate(((0,2),(2,6))):
+                    part=Worker(common|dict(output_prefix='slice'+str(number),allocation_id='qat-slice',
+                        input_ledger=reserve['artifacts']['selected.sqlite'],
+                        fixed_selection=reserve['artifacts']['protected-records.jsonl'],
+                        fixed_allocation_id='qat',source_targets={'en/source':hi-lo},
+                        fixed_total_source_targets={'en/source':6},
+                        fixed_source_ranges={'en/source':[lo,hi]}),root/('slice'+str(number))).run()
+                    shard=part['shards'][0];b,k=shard['payload']['uri'][5:].split('/',1)
+                    slices.extend(np.frombuffer(client.objects[(b,k)],dtype='<u2')[:hi-lo].tolist())
+                    b,k=shard['index']['uri'][5:].split('/',1)
+                    self.assertEqual(json.loads(client.objects[(b,k)])['segments'][0]['document_offset'],lo)
+                b,k=fixed['shards'][0]['payload']['uri'][5:].split('/',1)
+                self.assertEqual(slices,np.frombuffer(client.objects[(b,k)],dtype='<u2')[:6].tolist())
                 second=Worker(common|dict(output_prefix='second',allocation_id='dense-01',
                     input_ledger=reserve['artifacts']['selected.sqlite'],
                     input_suffixes=reserve['artifacts']['quota-suffix-reservations.jsonl'],
@@ -174,10 +188,41 @@ class PackingWorkerTests(unittest.TestCase):
                 self.assertFalse(segment['document_end'])
                 suffix=second['artifacts']['quota-suffix-reservations.jsonl'];b,k=suffix['uri'][5:].split('/',1)
                 self.assertEqual(json.loads(client.objects[(b,k)])['next_document_offset'],9)
+                tail=Worker(common|dict(output_prefix='tail-reserve',allocation_id='dense-reserve',
+                    reservation_only=True,reservation_reuse_suffixes=True,
+                    input_ledger=second['artifacts']['selected.sqlite'],
+                    input_suffixes=second['artifacts']['quota-suffix-reservations.jsonl'],
+                    source_targets={'en/source':3}),root/'tail-reserve').run()
+                tail_payload=Worker(common|dict(output_prefix='tail-payload',allocation_id='dense-payload',
+                    input_ledger=tail['artifacts']['selected.sqlite'],
+                    fixed_selection=tail['artifacts']['protected-records.jsonl'],
+                    fixed_allocation_id='dense-reserve',source_targets={'en/source':3}),root/'tail-payload').run()
+                b,k=tail_payload['shards'][0]['index']['uri'][5:].split('/',1)
+                self.assertEqual(json.loads(client.objects[(b,k)])['segments'][0]['document_offset'],9)
+                tail_next=Worker(common|dict(output_prefix='tail-next',allocation_id='dense-next',
+                    input_ledger=tail['artifacts']['selected.sqlite'],
+                    input_suffixes=tail['artifacts']['quota-suffix-reservations.jsonl'],
+                    source_targets={'en/source':2}),root/'tail-next').run()
+                b,k=tail_next['shards'][0]['index']['uri'][5:].split('/',1)
+                self.assertEqual(json.loads(client.objects[(b,k)])['segments'][0]['document_offset'],12)
                 import sqlite3
                 db=sqlite3.connect(root/'second/selected.sqlite')
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM selected WHERE allocation='protected:qat'").fetchone()[0],1)
                 db.close()
+                b,k=reserve['artifacts']['protected-records.jsonl']['uri'][5:].split('/',1)
+                protected=json.loads(client.objects[(b,k)])['original_content_tokens']
+                rest=Worker(common|dict(output_prefix='rest',allocation_id='rest',
+                    input_ledger=second['artifacts']['selected.sqlite'],
+                    input_suffixes=second['artifacts']['quota-suffix-reservations.jsonl'],
+                    source_targets={'en/source':len(values)-protected-9}),root/'rest').run()
+                self.assertTrue(rest['all_curriculum_quotas_satisfied'])
+                with patch.object(client,'download_file',wraps=client.download_file) as download:
+                    exhausted=Worker(common|dict(output_prefix='exhausted',allocation_id='exhausted',
+                        input_ledger=rest['artifacts']['selected.sqlite'],
+                        source_targets={'en/source':1}),root/'exhausted').run()
+                self.assertEqual(exhausted['results'][0]['rejections']['previously_drained_outputs'],1)
+                self.assertEqual(exhausted['results'][0]['selected'],0)
+                self.assertEqual(download.call_count,1)  # predecessor ledger only, no repeated source index/bin
 
 
 if __name__ == '__main__':

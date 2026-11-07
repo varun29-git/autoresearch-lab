@@ -2,7 +2,7 @@ import base64
 import unittest
 from unittest.mock import Mock, patch
 
-from production.preparation_queue import object_spec, ready_tasks, tranches, validate_completion
+from production.preparation_queue import object_spec, ready_tasks, tranches, validate_completion, verify_artifact
 from production.preparation_dispatcher import Dispatcher, resolved_task
 
 
@@ -53,6 +53,13 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(result['plan']['fixed_selection'],artifacts['protected-records.jsonl'])
         self.assertEqual(result['source_targets'],state['reserve']['effective_source_targets'])
         self.assertNotIn('input_ledger',task['plan'])
+        first=resolved_task(task|{'fixed_partition_sizes':[5,5],'fixed_partition_index':0},state,'b',1000)
+        last=resolved_task(task|{'fixed_partition_sizes':[5,5],'fixed_partition_index':1},state,'b',1000)
+        for k in state['reserve']['effective_source_targets']:
+            self.assertEqual(first['plan']['fixed_source_ranges'][k][1],last['plan']['fixed_source_ranges'][k][0])
+            self.assertEqual(last['plan']['fixed_source_ranges'][k][1],state['reserve']['effective_source_targets'][k])
+        self.assertEqual(sum(first['source_targets'].values()),5)
+        self.assertEqual(sum(last['source_targets'].values()),5)
         state['reserve']['status']='failed'
         with self.assertRaises(ValueError):
             resolved_task(task,state,'b',1000)
@@ -107,6 +114,10 @@ class QueueTests(unittest.TestCase):
             object_spec(s3,'b','k')
         s3.head['Metadata']={'sha256':'b'*64}
         self.assertEqual(object_spec(s3,'b','k')['sha256'],'b'*64)
+        spec=object_spec(s3,'b','k')|{'s3_checksum_type':'COMPOSITE','multipart_parts':4}
+        self.assertTrue(verify_artifact(s3,spec))
+        with self.assertRaises(ValueError):
+            verify_artifact(s3,spec|{'sha256':'c'*64})
 
 
 if __name__ == '__main__':
