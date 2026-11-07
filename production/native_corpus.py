@@ -236,7 +236,7 @@ def convert_job(job, plan, work_root, profile=None):
     result = {"schema": 1, "job_id": job_id, "cell": job.get("cell"),
               "status": "started", "job_fingerprint": job_fingerprint(job, plan), "training_accepted": False,
               "global_heldout_reconciliation_complete": False}
-    handles = []; part_states = []
+    handles = []; part_states = []; disk_selection = None
     try:
         for path, digest in plan.get("runtime_files", {}).items():
             if file_sha256(path) != digest:
@@ -247,6 +247,11 @@ def convert_job(job, plan, work_root, profile=None):
         reference = (_tokenizer(comparison["tokenizer_path"], comparison["tokenizer_sha256"]) if comparison else None)
         expansions = ({int(k): v for k, v in comparison.get("expand_target_ids", {}).items()}
                       if comparison else {})
+        if plan.get("force_disk_selection") or sum(p["index_snapshot"]["bytes"] for p in job["parts"]) > (32 << 20):
+            from .native_selection import DiskSelection
+            selection_path = work / "selection.sqlite"
+            selection_path.unlink(missing_ok=True)
+            disk_selection = DiskSelection(selection_path)
         by_number = {}; by_uid = {}; expected_anchors = {}; seen = set()
         for part_index, part in enumerate(job["parts"]):
             if type(part.get("validation")) is not bool:
@@ -279,9 +284,11 @@ def convert_job(job, plan, work_root, profile=None):
                     if row_key.startswith(coordinate_prefix) and row_key[len(coordinate_prefix):].isdigit():
                         coordinate = int(row_key[len(coordinate_prefix):]); target = by_number
                     else: coordinate = uid; target = by_uid
-                    if coordinate in target:
+                    if disk_selection is not None:
+                        disk_selection.add("number" if target is by_number else "uid", coordinate, part_index, uid, r)
+                    elif coordinate in target:
                         raise ValueError("duplicate selected source row or ambiguous UID across parts")
-                    target[coordinate] = (part_index, uid, r)
+                    else: target[coordinate] = (part_index, uid, r)
                     anchor = part.get("anchors", {}).get(uid)
                     if anchor: expected_anchors[(part_index, uid)] = anchor
             if 2 * cursor != part["token_snapshot"]["bytes"]:
@@ -290,6 +297,10 @@ def convert_job(job, plan, work_root, profile=None):
         if by_number and by_uid:
             raise ValueError("mixed row-number and UID selection requires a separate source job")
         uid_set = set(by_uid); max_row = max(by_number) if by_number else None
+        if disk_selection is not None:
+            disk_selection.ready()
+            by_number = disk_selection.mode == "number"
+            max_row = disk_selection.max_row
         source_path = work / "source.data"
         source_sha = download_source(client, bucket, job, source_path)
         matched_anchors = set(); scanned = 0; processed = 0; encoding_seconds = 0.; comparison_seconds = 0.
@@ -299,7 +310,8 @@ def convert_job(job, plan, work_root, profile=None):
             for number, value in batch:
                 scanned += 1
                 aliases = {str(value[c]) for c in ("uuid", "source_uuid", "doc_id", "document_id", "id") if value.get(c) is not None}
-                if by_number: match = by_number.get(number)
+                if disk_selection is not None: match = disk_selection.find(number, aliases)
+                elif by_number: match = by_number.get(number)
                 else:
                     hits = aliases & uid_set
                     if len(hits) > 1: raise ValueError("source row matches conflicting selected identities")
@@ -307,8 +319,9 @@ def convert_job(job, plan, work_root, profile=None):
                 if match is None: continue
                 pi, uid, r = match
                 unique = number if by_number else uid
-                if unique in seen: raise ValueError("selected UID occurs at multiple raw source coordinates")
-                seen.add(unique)
+                if disk_selection is None:
+                    if unique in seen: raise ValueError("selected UID occurs at multiple raw source coordinates")
+                    seen.add(unique)
                 if by_number and aliases and uid not in aliases and uid not in (r.get("row_key"), job["source_key"] + ":" + str(number)):
                     raise ValueError("source identity differs at indexed coordinate")
                 text = _source_text(value, job); raw = text.encode("utf-8", errors="strict")
@@ -386,6 +399,7 @@ def convert_job(job, plan, work_root, profile=None):
                       elapsed_seconds=time.monotonic() - start)
     finally:
         for handle in handles: handle.close()
+        if disk_selection is not None: disk_selection.close()
     path = work / "result.json"; path.write_text(json.dumps(result, indent=2) + "\n")
     receipt = publish(client, bucket, path, prefix + "/results/" + job_id + "/" + file_sha256(path) + ".json")
     result["receipt"] = receipt

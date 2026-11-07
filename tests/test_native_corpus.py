@@ -71,7 +71,8 @@ class NativeCorpusTests(unittest.TestCase):
             handler.redirect_request(request, None, 302, "Found", {}, "http://cdn.example/file")
 
     def run_case(self, *, duplicate=False, bad_offset=False, bad_reference=False, nul=False,
-                 missing_field=False, uid_only=False, duplicate_raw_uid=False, resume=False, corrupt=False):
+                 missing_field=False, uid_only=False, duplicate_raw_uid=False, resume=False, corrupt=False,
+                 force_disk=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); client = MemoryS3(); base = ROOT / "tokenizer/tokenizer-65k.json"
             payload, _ = build_candidate(base); candidate = root / "candidate.json"; candidate.write_bytes(payload)
@@ -104,6 +105,7 @@ class NativeCorpusTests(unittest.TestCase):
             job = {"job_id": "test", "source_key": "source.parquet", "source_snapshot": snap("source.parquet"), "parts": parts,
                    "text_columns": ["missing" if missing_field else "text"]}
             plan = {"bucket": "test", "output_prefix": "candidate", "tokenizer_path": str(candidate),
+                    "force_disk_selection": force_disk,
                     "tokenizer_sha256": ATOM_CANDIDATE_SHA256,
                     "comparison": {"tokenizer_path": str(base), "tokenizer_sha256": TOKENIZER_SHA256,
                                    "expand_target_ids": {str(i): [288 + b for b in c.encode()] for i, c in ATOM_REPLACEMENTS}}}
@@ -161,3 +163,9 @@ class NativeCorpusTests(unittest.TestCase):
 
     def test_resume_rejects_changed_durable_output(self):
         self.run_case(corrupt=True)
+
+    def test_disk_selection_preserves_numeric_and_uid_semantics(self):
+        for uid in (False, True):
+            self.assertEqual(self.run_case(force_disk=True, uid_only=uid)["status"], "verified")
+        self.assertIn("duplicate selected", self.run_case(force_disk=True, duplicate=True)["error"])
+        self.assertIn("multiple raw source", self.run_case(force_disk=True, uid_only=True, duplicate_raw_uid=True)["error"])
