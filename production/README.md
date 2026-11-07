@@ -1,5 +1,9 @@
 # CI-1 production handoff
 
+**2026-11-07 phase handoff:** the [CPU preparation queue](PREPARATION_QUEUE.md)
+adds hashed allocation-ledger handoff, protected finishing records and bounded
+CPU dispatch. Physical candidate data still requires native loader acceptance.
+
 **2026-11-07 CPU packing implementation:** the [document packer](DOCUMENT_PACKER.md)
 now creates candidate uint16 shards with segment metadata, deterministic
 best-fit packing, contiguous long-document windows, heldout exclusions and

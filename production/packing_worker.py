@@ -20,7 +20,7 @@ from botocore.exceptions import ClientError
 import numpy as np
 
 from production.document_packing import ShardWriter, best_fit, file_sha, fragments
-from production.native_corpus import publish
+from production.native_corpus import publish, _output_matches
 
 
 def fingerprint(value):
@@ -94,14 +94,46 @@ class Worker:
         self.bucket = plan['bucket']
         self.prefix = plan['output_prefix'].rstrip('/')
         self.exclusions = Exclusions(plan['exclusions_path'], plan['exclusions_sha256'])
-        self.db = sqlite3.connect(self.work / 'selected.sqlite')
+        self.reservation_only = bool(plan.get('reservation_only', False))
+        self.allocation = plan.get('allocation_id', 'initial_dense_data')
+        ledger = self.work / 'selected.sqlite'
+        if plan.get('input_ledger'):
+            if ledger.exists():
+                raise ValueError('existing work directory cannot replace the predecessor ledger')
+            self.download(plan['input_ledger'], ledger)
+        self.db = sqlite3.connect(ledger)
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.execute('PRAGMA synchronous=NORMAL')
+        cache_mib = plan.get('sqlite_cache_mib', 512)
+        if type(cache_mib) is not int or not 32 <= cache_mib <= 16384:
+            raise ValueError('invalid SQLite cache budget')
+        self.db.execute('PRAGMA cache_size=-'+str(cache_mib*1024))
         self.db.execute('CREATE TABLE IF NOT EXISTS selected (text_sha TEXT PRIMARY KEY, row_key TEXT, leaf TEXT) WITHOUT ROWID')
         # Never continue a partial local cursor implicitly: restarting an
         # interrupted campaign needs an explicitly bound replay plan.
-        if self.db.execute('SELECT COUNT(*) FROM selected').fetchone()[0]:
+        if not plan.get('input_ledger') and self.db.execute('SELECT COUNT(*) FROM selected').fetchone()[0]:
             raise ValueError('nonempty selection ledger requires an explicit resume plan')
+        if self.db.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
+            raise ValueError('predecessor ledger is not a valid SQLite database')
+        columns = {row[1] for row in self.db.execute('PRAGMA table_info(selected)')}
+        if 'allocation' not in columns:
+            self.db.execute("ALTER TABLE selected ADD COLUMN allocation TEXT NOT NULL DEFAULT 'prior'")
+        self.pending_suffixes = []
+        if plan.get('input_suffixes'):
+            path = self.work/'prior-suffixes.jsonl'
+            self.download(plan['input_suffixes'], path)
+            self.pending_suffixes = [json.loads(line) for line in path.read_text().splitlines()]
+            seen = set()
+            for row in self.pending_suffixes:
+                sha = row['source_text_sha256']
+                selected = self.db.execute('SELECT row_key,leaf,allocation FROM selected WHERE text_sha=?', (sha,)).fetchone()
+                if (sha in seen or not selected or selected[0] != row['row_key']
+                        or selected[1] != row['leaf'] or selected[2].startswith('protected:')
+                        or not 0 < row['next_document_offset'] < row['original_content_tokens']
+                        or row['remaining_content_tokens'] != row['original_content_tokens']-row['next_document_offset']):
+                    raise ValueError('predecessor suffix does not match its allocation ledger')
+                seen.add(sha)
+        (self.work/'source-receipts').mkdir(exist_ok=True)
         self.start = time.monotonic()
         self.events = self.work / 'events.jsonl'
         self.receipts = []
@@ -210,13 +242,50 @@ class Worker:
         self.buffer_number += 1
         self.deadline()
 
+    def consume_suffixes(self, leaf, stratum, target, buffer):
+        if self.reservation_only:
+            return 0
+        selected = 0
+        retained = []
+        for record in self.pending_suffixes:
+            if record['leaf'] != leaf or record['stratum'] != stratum or selected == target:
+                retained.append(record)
+                continue
+            spec = {'uri': record['source_bin_uri'], 'sha256': record['source_bin_sha256']}
+            b, k = spec['uri'][5:].split('/', 1)
+            spec['bytes'] = self.client.head_object(Bucket=b, Key=k)['ContentLength']
+            path = self.work/'suffix.uint16'
+            self.download(spec, path)
+            tokens = np.memmap(path, dtype='<u2', mode='r')
+            offset = record['next_document_offset']
+            take = min(record['remaining_content_tokens'], target-selected)
+            begin = record['source_token_start']+offset
+            if begin+take > len(tokens):
+                raise ValueError('suffix exceeds source payload')
+            document = {k:v for k,v in record.items() if k not in (
+                'next_document_offset','remaining_content_tokens','leaf','stratum')}
+            for part in fragments(tokens[begin:begin+take], document,
+                    length=self.plan['sequence_length'], offset=offset,
+                    document_end=offset+take==record['original_content_tokens']):
+                buffer.append(part)
+                if len(buffer) >= self.plan['packing_buffer_fragments']:
+                    self.flush(buffer)
+            selected += take
+            if take < record['remaining_content_tokens']:
+                retained.append(record | {'next_document_offset':offset+take,
+                    'remaining_content_tokens':record['remaining_content_tokens']-take})
+            del tokens
+            path.unlink()
+        self.pending_suffixes = retained
+        return selected
+
     def process_stratum(self, leaf, stratum, jobs, target):
         self.leaf, self.stratum = leaf, stratum
         self.buffer_number = 0
         buffer = []
-        selected = 0
+        selected = self.consume_suffixes(leaf, stratum, target, buffer)
         rejected = Counter()
-        ordered = sorted(jobs, key=lambda j: fingerprint([self.plan['seed'], j['job_id']]))
+        ordered = [] if selected == target else sorted(jobs, key=lambda j: fingerprint([self.plan['seed'], j['job_id']]))
         self.event('stratum_started', leaf=leaf, stratum=stratum, target=target)
         # Prefetch metadata only. Raw payloads remain bounded to one part.
         with ThreadPoolExecutor(max_workers=8) as pool:
@@ -249,6 +318,9 @@ class Worker:
                             document_count += 1
                             if self.exclusions.excludes(row):
                                 rejected['heldout_documents'] += 1
+                            elif self.db.execute('SELECT 1 FROM selected WHERE text_sha=?',
+                                                 (row['source_text_sha256'],)).fetchone():
+                                rejected['previously_allocated_documents'] += 1
                             else:
                                 rows.append(row)
                     if (cursor != output['tokens'] or cursor*2 != output['bin']['bytes']
@@ -256,16 +328,22 @@ class Worker:
                         raise ValueError('index coverage differs from token payload')
                     if not rows:
                         continue
-                    self.download(output['bin'], bin_path)
-                    tokens = np.memmap(bin_path, dtype='<u2', mode='r')
+                    if self.reservation_only:
+                        b,k = output['bin']['uri'][5:].split('/',1)
+                        if not _output_matches(self.client.head_object(Bucket=b,Key=k,ChecksumMode='ENABLED'), output['bin']):
+                            raise ValueError('reservation token payload identity changed')
+                    else:
+                        self.download(output['bin'], bin_path)
+                        tokens = np.memmap(bin_path, dtype='<u2', mode='r')
                     rows.sort(key=lambda r: fingerprint([self.plan['seed'], r['row_key']]))
                     for row in rows:
                         if selected >= target:
                             break
                         text_sha = row['source_text_sha256']
                         try:
-                            self.db.execute('INSERT INTO selected VALUES(?,?,?)',
-                                            (text_sha, row['row_key'], leaf))
+                            self.db.execute('INSERT INTO selected(text_sha,row_key,leaf,allocation) VALUES(?,?,?,?)',
+                                (text_sha, row['row_key'], leaf,
+                                 ('protected:' if self.reservation_only else 'allocated:')+self.allocation))
                         except sqlite3.IntegrityError:
                             rejected['exact_duplicate_documents'] += 1
                             continue
@@ -277,6 +355,16 @@ class Worker:
                             source_bin_sha256=output['bin']['sha256'],
                             source_index_sha256=output['index']['sha256'],
                             source_token_start=begin, original_content_tokens=row['n_tokens'])
+                        if self.reservation_only:
+                            reservation = document | {'leaf':leaf, 'stratum':stratum,
+                                'allocation':self.allocation, 'allocated_content_tokens':take,
+                                'whole_record_protected':True}
+                            with (self.work/'protected-records.jsonl').open('a') as stream:
+                                stream.write(json.dumps(reservation,separators=(',',':'))+'\n')
+                            self.totals['reserved_content_tokens'] += take
+                            self.totals['protected_whole_record_tokens'] += row['n_tokens']
+                            selected += take
+                            continue
                         for piece in fragments(tokens[begin:begin+take], document,
                                 length=self.plan['sequence_length'], document_end=take==row['n_tokens']):
                             buffer.append(piece)
@@ -287,11 +375,11 @@ class Worker:
                             suffix = document | {'next_document_offset': take,
                                 'remaining_content_tokens': row['n_tokens']-take,
                                 'leaf': leaf, 'stratum': stratum}
-                            with (self.work/'quota-suffix-reservations.jsonl').open('a') as stream:
-                                stream.write(json.dumps(suffix)+'\n')
+                            self.pending_suffixes.append(suffix)
                     self.db.commit()
-                    del tokens
-                    bin_path.unlink()
+                    if not self.reservation_only:
+                        del tokens
+                        bin_path.unlink()
                     index_path.unlink()
                     if time.monotonic()-self.last_heartbeat > 30:
                         self.event('packing', leaf=leaf, stratum=stratum,
@@ -309,44 +397,134 @@ class Worker:
         self.event('stratum_finished', **result)
         return result
 
-    def run(self):
+    def select_sources(self):
         groups = defaultdict(list)
         with Path(self.plan['jobs_path']).open() as stream:
             for line in stream:
                 job = json.loads(line)
                 groups[(job['packing_leaf'], job['packing_stratum'])].append(job)
         all_results = []
+        targets = dict(self.plan['source_targets'])
+        fallbacks = self.plan.get('source_fallbacks', {})
+        if any(a not in targets or b not in targets or b <= a for a,b in fallbacks.items()):
+            raise ValueError('fallback must name a later assigned source in the same phase')
         # Fixed order makes global exact-text duplicate ownership reproducible.
-        for leaf, target in sorted(self.plan['source_targets'].items()):
+        for leaf in sorted(targets):
+            target = targets[leaf]
+            first_result = len(all_results)
             selected_groups = {s: js for (l, s), js in groups.items() if l == leaf}
             if not selected_groups:
                 all_results.append({'leaf': leaf, 'target': target, 'selected': 0,
                     'shortfall': target, 'reason': 'source_conversion_pending'})
                 self.event('source_pending', leaf=leaf, target=target)
-                continue
-            weights = {s: sum(sum(p['token_snapshot']['bytes']//2
-                             for p in j.get('parts', []) if not p['validation'])
-                             if j.get('kind') != 'fresh_native_source' else 1 for j in js)
-                       for s, js in selected_groups.items()}
-            quotas = integer_split(target, weights)
-            for stratum, quota in sorted(quotas.items()):
-                if quota:
-                    all_results.append(self.process_stratum(leaf, stratum,
-                                         selected_groups[stratum], quota))
+            else:
+                weights = {s: sum(sum(p['token_snapshot']['bytes']//2
+                                 for p in j.get('parts', []) if not p['validation'])
+                                 if j.get('kind') != 'fresh_native_source' else 1 for j in js)
+                           for s, js in selected_groups.items()}
+                quotas = integer_split(target, weights)
+                for stratum, quota in sorted(quotas.items()):
+                    if quota:
+                        all_results.append(self.process_stratum(leaf, stratum,
+                                             selected_groups[stratum], quota))
+            deficit = sum(r['shortfall'] for r in all_results[first_result:])
+            if deficit and leaf in fallbacks:
+                replacement = fallbacks[leaf]
+                targets[replacement] += deficit
+                for result in all_results[first_result:]:
+                    result.update(original_target=result['target'],
+                        reallocated_tokens=result['shortfall'], reallocated_to=replacement,
+                        target=result['selected'], shortfall=0)
+                self.event('authorized_source_fallback', source=leaf,
+                           replacement=replacement, content_tokens=deficit)
+        return all_results
+
+    def materialize_fixed(self):
+        spec = self.plan['fixed_selection']
+        path = self.work/'fixed-selection.jsonl'
+        self.download(spec, path)
+        allocation = self.plan['fixed_allocation_id']
+        current_bin = None
+        tokens = None
+        buffer = []
+        counts = Counter()
+        self.buffer_number = 0
+        self.leaf = self.stratum = None
+        try:
+            with path.open() as stream:
+                for line in stream:
+                    self.deadline()
+                    record = json.loads(line)
+                    if record['allocation'] != allocation or not record['whole_record_protected']:
+                        raise ValueError('fixed selection has a different protected allocation')
+                    row = self.db.execute('SELECT leaf,allocation FROM selected WHERE text_sha=?',
+                        (record['source_text_sha256'],)).fetchone()
+                    if row != (record['leaf'], 'protected:'+allocation):
+                        raise ValueError('fixed selection is not protected in its predecessor ledger')
+                    if self.exclusions.excludes(record | {'validation':False}):
+                        raise ValueError('protected record overlaps frozen heldouts')
+                    if (record['leaf'],record['stratum']) != (self.leaf,self.stratum):
+                        self.flush(buffer)
+                        self.finish_shard()
+                        self.leaf,self.stratum = record['leaf'],record['stratum']
+                        self.buffer_number = 0
+                    if record['source_bin_uri'] != current_bin:
+                        if tokens is not None:
+                            del tokens
+                            tokens = None
+                        bin_path = self.work/'fixed.uint16'
+                        b,k = record['source_bin_uri'][5:].split('/',1)
+                        source = {'uri':record['source_bin_uri'],
+                            'sha256':record['source_bin_sha256'],
+                            'bytes':self.client.head_object(Bucket=b,Key=k)['ContentLength']}
+                        self.download(source, bin_path)
+                        tokens = np.memmap(bin_path,dtype='<u2',mode='r')
+                        current_bin = record['source_bin_uri']
+                    n = record['allocated_content_tokens']
+                    start = record['source_token_start']
+                    if not 0 < n <= record['original_content_tokens'] or start+n > len(tokens):
+                        raise ValueError('invalid fixed source span')
+                    document = {k:v for k,v in record.items() if k not in
+                        ('allocation','allocated_content_tokens','whole_record_protected','leaf','stratum')}
+                    for piece in fragments(tokens[start:start+n],document,
+                            length=self.plan['sequence_length'],document_end=n==record['original_content_tokens']):
+                        buffer.append(piece)
+                        if len(buffer) >= self.plan['packing_buffer_fragments']:
+                            self.flush(buffer)
+                    counts[record['leaf']] += n
+                    if counts[record['leaf']] > self.plan['source_targets'][record['leaf']]:
+                        raise ValueError('fixed selection exceeds declared source quota')
+            self.flush(buffer)
+            self.finish_shard()
+        finally:
+            if tokens is not None:
+                del tokens
+        return [{'leaf':leaf,'target':target,'selected':counts[leaf],
+                 'shortfall':target-counts[leaf]} for leaf,target in self.plan['source_targets'].items()]
+
+    def run(self):
+        all_results = self.materialize_fixed() if self.plan.get('fixed_selection') else self.select_sources()
         self.db.commit()
         self.db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
         self.db.close()
+        suffix_path = self.work/'quota-suffix-reservations.jsonl'
+        suffix_path.write_text(''.join(json.dumps(x,separators=(',',':'))+'\n'
+                                      for x in self.pending_suffixes))
+        artifacts = {}
         for path in [self.events, self.work/'selected.sqlite',
-                     self.work/'quota-suffix-reservations.jsonl']:
+                     suffix_path, self.work/'protected-records.jsonl']:
             if path.exists():
-                publish(self.client, self.bucket, path, self.prefix+'/audit/'+path.name)
+                artifacts[path.name] = publish(self.client, self.bucket, path, self.prefix+'/audit/'+path.name)
         archive = shutil.make_archive(str(self.work/'source-receipts'), 'gztar',
                                       self.work/'source-receipts')
         publish(self.client, self.bucket, Path(archive), self.prefix+'/audit/source-receipts.tar.gz')
         report = {'schema': 'terminus_warmup_materialization_v1',
             'plan_sha256': self.plan['plan_sha256'], 'results': all_results,
             'totals': dict(self.totals), 'shards': self.receipts,
-            'physical_creation_finished': True,
+            'physical_creation_finished': not self.reservation_only,
+            'reservation_creation_finished': self.reservation_only,
+            'allocation_id':self.allocation, 'artifacts':artifacts,
+            'input_ledger':self.plan.get('input_ledger'),
             'all_curriculum_quotas_satisfied': all(x['shortfall'] == 0 for x in all_results),
             'cross_document_mask_required': True, 'training_manifest_published': False,
             'native_training_accepted': False}
