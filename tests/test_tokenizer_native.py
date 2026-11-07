@@ -5,6 +5,7 @@ import struct
 import unittest
 from pathlib import Path
 import regex
+from concurrent.futures import ThreadPoolExecutor
 
 from terminus.tokenizer65k import Frozen65kTokenizer, _translate_scissors
 from terminus import unicode_contract as unicodedata
@@ -92,3 +93,25 @@ class NativeTokenizerTests(unittest.TestCase):
         self.assertTrue(identity["roundtrip_checked_per_document"])
         self.assertEqual(identity["unicode_database"], unicodedata.unidata_version)
         self.assertEqual(len(identity["native_binary_sha256"]), 64)
+
+    def test_concurrent_calls_preserve_ids_and_cache_safety(self):
+        texts = [f"def f{i}():\n    return 'नमस्ते café ಕನ್ನಡ'" for i in range(100)]
+        expected = [self.native.encode_bytes(t) for t in texts]
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            calls = []; checks = []
+            for text in texts:
+                calls.append(pool.submit(self.native.encode_bytes, text))
+                checks.append(pool.submit(self.native.statistics))
+            actual = [f.result() for f in calls]
+            stats = [f.result() for f in checks]
+        self.assertEqual(actual, expected)
+        self.assertTrue(all(s["english_cache_bytes"] <= 8192 for s in stats))
+
+    def test_independent_native_lanes_preserve_batch_order(self):
+        from terminus.tokenizer_parallel import NativeBatchPool
+        texts = ["café " * 40, "ನಮಸ್ಕಾರ", "", "தமிழ்" * 800, "नमस्ते", "<eod>"] * 7
+        pool = NativeBatchPool(ROOT / "tokenizer/tokenizer-65k.json", self.native.sha256, 4)
+        try:
+            self.assertEqual(pool.encode_batch_bytes(texts), self.native.encode_batch_bytes(texts))
+            self.assertEqual(pool.encode_batch_bytes([]), [])
+        finally: pool.close()

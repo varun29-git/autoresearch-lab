@@ -50,7 +50,7 @@ class Native65kTokenizer:
                  english_cache_bytes=64 << 20, indic_cache_bytes=16 << 20):
         import _terminus_tokenizer_native as native
 
-        if native.ABI_VERSION != 2:
+        if native.ABI_VERSION != 3:
             raise ValueError("unsupported native tokenizer ABI")
         unicodedata.require_regex_version(regex)
         if any(type(n) is not int or n < 0 for n in (english_cache_bytes, indic_cache_bytes)):
@@ -113,6 +113,7 @@ class Native65kTokenizer:
         root = Path(__file__).resolve().parent
         record = {
             "schema": 1, "encoder": "Native65kTokenizer", "normalization": "NFC",
+            "native_abi": 3,
             "special_policy": "literal_text_no_automatic_special_ids",
             "input_policy": "reject_NUL_and_unpaired_surrogates",
             "tokenizer_sha256": self.sha256,

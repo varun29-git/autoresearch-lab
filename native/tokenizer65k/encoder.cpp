@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <limits>
 #include <list>
+#include <mutex>
 #include <queue>
 #include <stdexcept>
 #include <string>
@@ -340,7 +341,8 @@ public:
             } else decoded[i] = pieces[i];
         }
     }
-    Ids encode(const std::string& text, bool verify) {
+    mutable std::mutex execution_mutex;
+    Ids encode_unlocked(const std::string& text, bool verify) {
         Ids out; out.reserve(text.size() / 2); bool single_space_pending = false;
         for (auto& u : route(text)) {
             if (u.kind == 1) {
@@ -366,6 +368,11 @@ public:
         if (verify && decode_bytes(out, false) != text) throw std::invalid_argument("native tokenizer did not round-trip normalized source text");
         return out;
     }
+    Ids encode(const std::string& text, bool verify) {
+        py::gil_scoped_release release;
+        std::lock_guard<std::mutex> lock(execution_mutex);
+        return encode_unlocked(text, verify);
+    }
     std::string decode_bytes(const Ids& ids, bool render_specials) const {
         std::string text; text.reserve(ids.size() * 3); bool previous_indic = false;
         for (auto id : ids) {
@@ -382,16 +389,30 @@ public:
         return py::bytes(bytes);
     }
     py::list encode_batch_bytes(const std::vector<std::string>& texts, bool verify) {
-        py::list out; for (const auto& text : texts) out.append(encode_bytes(text, verify)); return out;
+        std::vector<std::string> buffers; buffers.reserve(texts.size());
+        {
+            py::gil_scoped_release release;
+            std::lock_guard<std::mutex> lock(execution_mutex);
+            for (const auto& text : texts) {
+                auto ids = encode_unlocked(text, verify);
+                std::string bytes(ids.size() * 2, '\0');
+                for (size_t i = 0; i < ids.size(); ++i) {
+                    bytes[2 * i] = char(ids[i] & 255); bytes[2 * i + 1] = char(ids[i] >> 8);
+                }
+                buffers.push_back(std::move(bytes));
+            }
+        }
+        py::list out; for (const auto& bytes : buffers) out.append(py::bytes(bytes)); return out;
     }
     py::dict statistics() const {
+        std::lock_guard<std::mutex> lock(execution_mutex);
         py::dict d; d["english_pairs"] = english_pairs.size(); d["indic_pairs"] = indic_pairs.size();
         d["english_cache_bytes"] = english_cache.bytes(); d["indic_cache_bytes"] = indic_cache.bytes(); return d;
     }
     std::vector<std::string> scissors_words(const std::string& text) const { return split_english(text); }
 };
 PYBIND11_MODULE(_terminus_tokenizer_native, m) {
-    m.attr("ABI_VERSION") = 2;
+    m.attr("ABI_VERSION") = 3;
     py::class_<NativeEncoder>(m, "NativeEncoder")
         .def(py::init<py::dict, py::object, const std::vector<uint32_t>&, const std::string&, size_t, size_t>())
         .def("encode", &NativeEncoder::encode, py::arg("normalized_text"), py::arg("verify") = true)

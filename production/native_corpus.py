@@ -243,6 +243,14 @@ def convert_job(job, plan, work_root, profile=None):
                 raise ValueError("runtime file changed: " + path)
         tok = _tokenizer(plan["tokenizer_path"], plan["tokenizer_sha256"])
         result["encoder_identity"] = tok.identity()
+        encoding_threads = plan.get("encoding_threads", 1)
+        if type(encoding_threads) is not int or not 1 <= encoding_threads <= 32:
+            raise ValueError("invalid native encoding thread count")
+        encoder = tok
+        if encoding_threads > 1:
+            from terminus.tokenizer_parallel import native_batch_pool
+            encoder = native_batch_pool(plan["tokenizer_path"], plan["tokenizer_sha256"], encoding_threads)
+        result["encoding_threads"] = encoding_threads
         comparison = plan.get("comparison")
         reference = (_tokenizer(comparison["tokenizer_path"], comparison["tokenizer_sha256"]) if comparison else None)
         expansions = ({int(k): v for k, v in comparison.get("expand_target_ids", {}).items()}
@@ -334,7 +342,7 @@ def convert_job(job, plan, work_root, profile=None):
                     matched_anchors.add(anchor_key)
                 family = r.get("split_family_id", r.get("family_id", value.get("source_uuid", uid)))
                 chosen.append((pi, uid, number, digest, family)); texts.append(text)
-            tick = time.monotonic(); buffers = tok.encode_batch_bytes(texts); encoding_seconds += time.monotonic() - tick
+            tick = time.monotonic(); buffers = encoder.encode_batch_bytes(texts); encoding_seconds += time.monotonic() - tick
             old_buffers = None
             if reference:
                 tick = time.monotonic(); old_buffers = reference.encode_batch_bytes(texts); comparison_seconds += time.monotonic() - tick

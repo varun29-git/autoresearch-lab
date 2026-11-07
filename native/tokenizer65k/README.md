@@ -22,9 +22,14 @@ flags or vocabulary retraining are involved.
 
 Use `Native65kTokenizer(path, expected_sha256=reviewed_sha)` from
 `terminus.tokenizer_native`. `encode_batch_bytes(texts)` returns one verified
-buffer per source document. Run one process per physical CPU core initially;
-measure before using SMT siblings. Native caches are bounded, and workers reuse
-the compiled vocabulary. No PyTorch import or GPU is required.
+buffer per source document. For small source files, start with one process per
+physical CPU core and measure before using SMT siblings. For large files, set
+`encoding_threads` in the external conversion plan to use independent native
+caches within each source process. ABI 3 releases the GIL during encoding and
+restores document order after parallel work. Bound source-process concurrency
+by disk and memory capacity; threads multiply cache memory. Threading does not
+guarantee a speedup when the machine is already saturated. No PyTorch import or
+GPU is required.
 
 Run the source conversion tool with an external, pinned plan:
 
@@ -36,6 +41,8 @@ python -m production.native_corpus --plan /external/PLAN.json \
 Each job names one original source object, its ETag and size, explicit text
 columns/rendering rules, and disjoint original selection indices with explicit
 train/validation membership. One source is read once for all its parts. A
+selection index above 32 MiB uses a disk-backed SQLite lookup, preserving the
+same identity and duplicate checks without materializing it in Python RAM. A
 changed source, missing document, ambiguous UUID, malformed text, invalid index,
 or round-trip failure rejects that job. There is no fallback through old decoded
 tokens. `runtime_files` pins implementation files; the compiled binary and
