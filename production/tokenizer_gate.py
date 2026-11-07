@@ -63,7 +63,8 @@ def encoder_identity(tokenizer_path):
                 'tokenizer_sha256': file_sha256(tokenizer_path), 'normalization': 'NFC',
                 'special_policy': 'literal_text_no_automatic_special_ids',
                 'implementation': {name: file_sha256(source / name)
-                                   for name in ('tokenizer.py', 'tokenizer65k.py')}}
+                                   for name in ('tokenizer.py', 'tokenizer65k.py',
+                                                'unicode_contract.py', 'hashing.py')}}
     return identity | {'identity_sha256': fingerprint(identity)}
 
 

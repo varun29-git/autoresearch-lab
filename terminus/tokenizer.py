@@ -4,11 +4,11 @@ import argparse
 import ast
 import json
 import random
-import unicodedata
 from collections import defaultdict
 from pathlib import Path
 
 from .integrity import LANGUAGES, file_sha256, write_json_atomic
+from . import unicode_contract as unicodedata
 
 
 class RWKVWorldTokenizer:

@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from .data import DTYPE_BY_NAME, TokenManifest, TokenShard, TrainingTokenRouter
+from .hashing import file_sha256
 
 
 LANGUAGES = ("en", "hi", "ta", "te", "bn", "mr", "gu", "kn", "ml", "or", "pa")
@@ -42,14 +43,6 @@ def manifest_scope(manifest):
     if set(domains) & set(LANGUAGES):
         raise ValueError("scope domains must not collide with language codes")
     return {"name": scope["name"], "languages": list(languages), "domains": list(domains)}
-
-
-def file_sha256(path, chunk_size=8 * 1024 * 1024):
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(chunk_size), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def fingerprint(payload):

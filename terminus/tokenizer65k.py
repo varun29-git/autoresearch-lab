@@ -91,11 +91,12 @@ from __future__ import annotations
 
 import json
 import re as std_re
-import unicodedata
 from functools import lru_cache
 from pathlib import Path
 
 import regex
+
+from . import unicode_contract as unicodedata
 
 TOKENIZER_SHA256 = "c53e0e95cd19e2954a8c7114c0a580eeb16698b153fdf84c5d80a7187d778d29"
 
@@ -135,8 +136,9 @@ class Frozen65kTokenizer:
     """Encoder/decoder bound to the frozen 65,536-piece JSON artifact."""
 
     def __init__(self, path, *, expected_sha256=TOKENIZER_SHA256):
-        from .integrity import file_sha256
+        from .hashing import file_sha256
 
+        unicodedata.require_regex_version(regex)
         self.path = str(path)
         digest = file_sha256(path)
         if expected_sha256 is not None and digest != expected_sha256:
