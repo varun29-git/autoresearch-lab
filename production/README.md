@@ -1,5 +1,12 @@
 # CI-1 production handoff
 
+**2026-11-07 tokenizer decision:** fresh source conversion can use the qualified
+[65K atom revision and native C++ encoder](TOKENIZER_V2.md), retaining 27 reserved
+IDs and the existing model geometry. Original HF/custom bins cannot be treated
+as compatible based on vocabulary alone. The external conversion campaign must
+finish source/holdout reconciliation and packing before training acceptance.
+Historic checkpoints remain pinned to their original artifacts.
+
 **2026-11-06 whole-program budget:** include posttraining, recovery and
 finalization in the same allocation using the CPU-only
 [program budget and unique-data cap](amd/pretraining_readiness/PROGRAM_BUDGET.md).

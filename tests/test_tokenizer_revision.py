@@ -36,6 +36,16 @@ class AtomRevisionTests(unittest.TestCase):
         self.assertEqual(old["pieces"][:32], new["pieces"][:32])
         self.assertEqual(len(set(new["pieces"])), 65536)
 
+    def test_production_loader_accepts_only_reviewed_artifacts(self):
+        from terminus.tokenizer65k import load_reviewed_tokenizer
+        self.assertEqual(load_reviewed_tokenizer(self.path).sha256, ATOM_CANDIDATE_SHA256)
+        # Artifact identity is checked even when only an irrelevant JSON field changes.
+        with tempfile.TemporaryDirectory() as directory:
+            tampered = Path(directory) / "tokenizer.json"
+            tampered.write_bytes(self.path.read_bytes() + b" ")
+            with self.assertRaisesRegex(ValueError, "reviewed"):
+                load_reviewed_tokenizer(tampered)
+
     def test_contexts_expand_exactly_to_original(self):
         for _, char in ATOM_REPLACEMENTS:
             for context in [char, "नमस्ते " + char, "a " + char + " b", "1 " + char + " 2",

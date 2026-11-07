@@ -108,8 +108,8 @@ def load_tokenizer(path):
     if suffix == ".txt":
         return RWKVWorldTokenizer(path)
     if suffix == ".json":
-        from .tokenizer65k import Frozen65kTokenizer
-        return Frozen65kTokenizer(path)
+        from .tokenizer65k import load_reviewed_tokenizer
+        return load_reviewed_tokenizer(path)
     import sentencepiece as sentencepiece
     from sentencepiece import sentencepiece_model_pb2
 

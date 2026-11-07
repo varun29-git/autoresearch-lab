@@ -99,6 +99,7 @@ import regex
 from . import unicode_contract as unicodedata
 
 TOKENIZER_SHA256 = "c53e0e95cd19e2954a8c7114c0a580eeb16698b153fdf84c5d80a7187d778d29"
+ATOM_REVISION_SHA256 = "dc636d96224d059d03619e61f0ecddc3ac1e5c8c6fb46ee051f66cabc65fb35c"
 
 UNK_ID, BOS_ID, EOS_ID, PAD_ID, EOD_ID = 0, 1, 2, 3, 4
 FIRST_REGULAR_ID = 32
@@ -640,3 +641,16 @@ class Frozen65kTokenizer:
 
 def load_frozen_tokenizer(path, *, expected_sha256=TOKENIZER_SHA256):
     return Frozen65kTokenizer(path, expected_sha256=expected_sha256)
+
+
+def load_reviewed_tokenizer(path):
+    """Explicitly accept the historical artifact or the qualified atom revision.
+
+    This does not migrate a checkpoint or manifest: their separately pinned
+    artifact hashes must still match. Arbitrary same-vocabulary exports fail.
+    """
+    from .hashing import file_sha256
+    digest = file_sha256(path)
+    if digest not in (TOKENIZER_SHA256, ATOM_REVISION_SHA256):
+        raise ValueError("tokenizer is not a reviewed production artifact")
+    return Frozen65kTokenizer(path, expected_sha256=digest)

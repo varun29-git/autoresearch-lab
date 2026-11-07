@@ -12,9 +12,9 @@ from pathlib import Path
 
 from terminus import unicode_contract as unicodedata
 from terminus.hashing import file_sha256
-from terminus.tokenizer65k import Frozen65kTokenizer, TOKENIZER_SHA256
+from terminus.tokenizer65k import Frozen65kTokenizer, TOKENIZER_SHA256, ATOM_REVISION_SHA256
 
-ATOM_CANDIDATE_SHA256 = "dc636d96224d059d03619e61f0ecddc3ac1e5c8c6fb46ee051f66cabc65fb35c"
+ATOM_CANDIDATE_SHA256 = ATOM_REVISION_SHA256
 ATOM_REPLACEMENTS = (
     (545, "\u200c"), (551, "ಠ"), (654, "ಃ"), (1137, "ऋ"),
     (1370, "ॲ"), (1697, "ঐ"), (2777, "ঢ"), (4233, "ઞ"),
@@ -73,7 +73,8 @@ def main():
         handle.write(payload)
     print(json.dumps({"artifact": str(output), "sha256": ATOM_CANDIDATE_SHA256,
                       "changed_ids": [r["id"] for r in changes], "reserved_ids": list(range(5, 32)),
-                      "production_promotion_requires_qualification": True}))
+                      "reviewed_for_fresh_source_retokenization": True,
+                      "corpus_acceptance_requires_completed_conversion_and_holdout_gates": True}))
 
 
 if __name__ == "__main__":

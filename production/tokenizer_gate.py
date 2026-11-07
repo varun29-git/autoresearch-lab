@@ -11,7 +11,7 @@ from pathlib import Path
 from production.artifacts import external_path
 from terminus.integrity import file_sha256, fingerprint, write_json_atomic
 from terminus.tokenizer import encode_text, normalize_text
-from terminus.tokenizer65k import Frozen65kTokenizer
+from terminus.tokenizer65k import Frozen65kTokenizer, load_reviewed_tokenizer
 
 
 REGRESSIONS = (
@@ -37,7 +37,7 @@ class FrozenBatchTokenizer:
     claim of Rust tokenizer performance.
     """
     def __init__(self, path):
-        self.tokenizer = Frozen65kTokenizer(path)
+        self.tokenizer = load_reviewed_tokenizer(path)
 
     @classmethod
     def from_file(cls, path):
@@ -115,7 +115,7 @@ def main():
     p.add_argument('--output', required=True)
     args = p.parse_args()
     output = external_path(args.output, fresh=True)
-    reference = Frozen65kTokenizer(args.tokenizer)
+    reference = load_reviewed_tokenizer(args.tokenizer)
     candidate = FrozenBatchTokenizer(args.tokenizer)
     if args.candidate_hf:
         from tokenizers import Tokenizer
