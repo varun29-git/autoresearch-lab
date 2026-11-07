@@ -24,8 +24,10 @@ Required interfaces before enabling this mode:
   explicit continuation lookahead and final-EOD semantics. All heldout families
   are excluded from training inputs, not just loss-masked.
 - Deterministic sequence descriptors with segment offsets, positions and
-  content/slot/valid-target counts; whole-record and tail receipts. The current
-  `terminus.pack_tokens` command assembles manifests and does not implement this.
+  content/slot/valid-target counts; whole-record and tail receipts. The CPU
+  implementation is now in `production.document_packing` and
+  `production.packing_worker`, described in [DOCUMENT_PACKER.md](DOCUMENT_PACKER.md).
+  The older `terminus.pack_tokens` command only assembles stream manifests.
 - Variable-length AMD causal attention with the original local window and model
   semantics, plus reference and native forward/backward checks. A plain EOD
   token does not block attention to earlier documents.
@@ -45,14 +47,21 @@ from actual cross-document attention. Compare native paths with justified
 tolerances and measure useful scored targets/s, full-update memory and data
 wait. Historical continuous-stream measurements are comparison data only.
 
-Keep a complete question and its answer in one causal segment. Long STEM
-solutions need an explicit fragment/context policy; a fit-by-length report
-does not establish that detached answer fragments retain useful context.
-Retain the original long records in the catalog and report their disposition.
-For the authorized STEM-first source allocation, replace unusable training
-content with the named textbook source through the external quota policy.
-Whole-document packing, attention isolation and source quality are separate
-checks; a dataset's name does not satisfy any of them.
+Keep complete short documents intact. Split documents exceeding context into
+contiguous windows, then best-fit-pack their final fragments with short
+documents without further splitting. All segments retain original document
+identity and offsets; only the real document ending emits EOD. This is the
+selected default for STEM as well as other pretraining documents. Length
+alone does not disqualify a source. No repeated question prefix or overlapping
+scored tokens are introduced. Earlier-window context is unavailable after a
+window boundary, as in ordinary finite-context pretraining.
+
+At an exact source-quota boundary, reserve the unused document suffix for
+later selection, mark the fragment as incomplete, and mask its final label.
+The loss counter must reflect this boundary rather than assuming content
+tokens always equal valid targets. The ordinary full-window continuation
+uses a label-only next token from the same selected span. Source acceptance
+and native attention acceptance remain distinct from CPU format verification.
 
 Packing changes do not authorize tokenizer surgery, a new objective, automatic
 LR scaling, unapproved data reuse or a paid GPU launch.

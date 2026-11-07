@@ -1,5 +1,10 @@
 # CI-1 production handoff
 
+**2026-11-07 CPU packing implementation:** the [document packer](DOCUMENT_PACKER.md)
+now creates candidate uint16 shards with segment metadata, deterministic
+best-fit packing, contiguous long-document windows, heldout exclusions and
+source quotas. Native training-loader integration remains pending.
+
 **2026-11-07 packing preparation:** the [document-packing integration contract](PACKING.md)
 records the loader, AMD attention, target-count and graph changes required by
 the external multilingual data plan. Current continuous streams do not yet
