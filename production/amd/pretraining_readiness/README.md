@@ -1,5 +1,16 @@
 # MI325X pretraining readiness
 
+**Corpus acceptance before materialization:** require the dated external
+source audit and corrected allocation packet. Compare each indexed document's
+stored token IDs against encoding its original text; identical vocabulary IDs alone
+do not establish identical encoding. Check every selected bin's even byte
+length, separate index object, split-local contiguous document offsets and
+index token-count sum against the bin length. Reject historical/orphan outputs
+unless explicitly accepted in the immutable selection manifest. Count training
+tokens separately from validation, and bind source locales explicitly rather
+than inferring language from an `english` storage prefix. Local writer or index
+repairs do not certify existing cloud outputs or authorize paid launches.
+
 **Current complete-program accounting:** the
 [program budget workflow](PROGRAM_BUDGET.md) includes SFT, preference training,
 qualification, recovery and finalization in the original GPU-hour allocation.
