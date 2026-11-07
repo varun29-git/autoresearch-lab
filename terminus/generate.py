@@ -5,11 +5,19 @@ import math
 import torch
 
 
-def sample_next_token(logits, *, temperature=1.0, top_k=0, top_p=1.0, generator=None):
+def sample_next_token(logits, *, temperature=1.0, top_k=0, top_p=1.0, generator=None,
+                      suppress_token_ids=()):
     if logits.ndim != 1 or not torch.isfinite(logits).all():
         raise ValueError("sampling requires finite one-dimensional logits")
     if not math.isfinite(temperature) or temperature < 0 or not 0 < top_p <= 1 or top_k < 0:
         raise ValueError("invalid sampling parameters")
+    if suppress_token_ids:
+        if any(type(i) is not int or not 0 <= i < logits.numel() for i in suppress_token_ids):
+            raise ValueError("suppressed ID is outside the vocabulary")
+        if len(set(suppress_token_ids)) == logits.numel():
+            raise ValueError("cannot suppress the entire vocabulary")
+        logits = logits.clone()
+        logits[list(suppress_token_ids)] = -torch.inf
     if temperature == 0:
         return int(logits.argmax())
     scaled = logits.float()
@@ -27,13 +35,15 @@ def sample_next_token(logits, *, temperature=1.0, top_k=0, top_p=1.0, generator=
 
 
 @torch.inference_mode()
-def generate(model, input_ids, *, max_new_tokens, eos_token_id=None, generator=None, **sampling):
+def generate(model, input_ids, *, max_new_tokens, eos_token_id=None, stop_token_ids=(), generator=None, **sampling):
     if input_ids.ndim != 2 or input_ids.shape[0] != 1 or max_new_tokens < 0:
         raise ValueError("generation requires one prompt and a nonnegative output budget")
     if input_ids.shape[1] + max_new_tokens > model.config.max_seq_len:
         raise ValueError("prompt plus generation exceeds the trained context")
     if eos_token_id is not None and not 0 <= eos_token_id < model.config.vocab_size:
         raise ValueError("EOS is outside the vocabulary")
+    if any(type(i) is not int or not 0 <= i < model.config.vocab_size for i in stop_token_ids):
+        raise ValueError("stop ID is outside the vocabulary")
     if max_new_tokens == 0:
         return input_ids.clone()
     was_training = model.training
@@ -45,7 +55,7 @@ def generate(model, input_ids, *, max_new_tokens, eos_token_id=None, generator=N
             token = sample_next_token(output["logits"][0, -1], generator=generator, **sampling)
             next_input = input_ids.new_tensor([[token]])
             generated.append(next_input)
-            if token == eos_token_id or index + 1 == max_new_tokens:
+            if token == eos_token_id or token in stop_token_ids or index + 1 == max_new_tokens:
                 break
             output, cache = model.forward_cached(next_input, cache=cache, last_logits_only=True)
         return torch.cat(generated, dim=1)
