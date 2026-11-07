@@ -218,7 +218,8 @@ class Dispatcher:
                     'NetworkInterfaces':[{'DeviceIndex':0,'SubnetId':q['subnet'],'Groups':[q['security_group']],
                                           'AssociatePublicIpAddress':True}],
                     'BlockDeviceMappings':[{'DeviceName':'/dev/xvda','Ebs':{'VolumeSize':task['volume_gb'],
-                        'VolumeType':'gp3','Iops':6000,'Throughput':500,'DeleteOnTermination':True,'Encrypted':True}}],
+                        'VolumeType':'gp3','Iops':q.get('volume_iops',6000),'Throughput':500,
+                        'DeleteOnTermination':True,'Encrypted':True}}],
                     'TagSpecifications':[{'ResourceType':r,'Tags':tag} for r in ['instance','volume','network-interface']],
                     'UserData':bootstrap(q,task,record['task_key'],record['task_sha256'])}
                 instance_id=self.ec2.run_instances(**args)['Instances'][0]['InstanceId']
