@@ -1,5 +1,11 @@
 # CI-1 production handoff
 
+**2026-11-07 packing preparation:** the [document-packing integration contract](PACKING.md)
+records the loader, AMD attention, target-count and graph changes required by
+the external multilingual data plan. Current continuous streams do not yet
+implement those document boundaries. The plan preserves the selected tokenizer,
+source mix and optimizer policy; CPU and native acceptance remain separate.
+
 **2026-11-07 tokenizer decision:** fresh source conversion can use the qualified
 [65K atom revision and native C++ encoder](TOKENIZER_V2.md), retaining 27 reserved
 IDs and the existing model geometry. Original HF/custom bins cannot be treated
