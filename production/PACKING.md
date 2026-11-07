@@ -3,14 +3,19 @@
 The selected external data plan uses 4096-token sequences, one primary
 language/script/source leaf per sequence, and multilingual mixing across global
 updates. Its document boundaries, position resets and loss policy must be
-implemented together. This is a candidate relative to the current continuous
-stream trainer; no native acceptance is recorded here.
+implemented together. Cross-document attention masking is a fixed production
+requirement, confirmed by the operator on 7 November 2026. The current
+continuous-stream trainer does not implement that requirement; no native
+acceptance is recorded here. An unmasked path is not a production fallback.
 
 Generated allocations, source catalogs, audit outputs, sequence descriptors and
 shards remain outside this repository. The current planning packet is under
 `/Users/varundaiya/terminus-pretraining-readiness/2026-11-07/packing-readiness/`.
 Its `PLAN.md` records the source acceptance, multilingual policy, packing
 algorithm, target convention, code gaps and CPU/one-GPU/eight-GPU gates.
+The later `../phase1-packing/FIRST_PHASE_EXECUTION.md` and
+`CURRENT_ALLOCATION_OVERRIDE.json` take precedence for the selected replacement
+sources and mandatory masking policy. Neither is a completed shard receipt.
 
 Required interfaces before enabling this mode:
 
@@ -38,7 +43,16 @@ Document isolation must first be tested with a BF16 reference. FP8 activation
 scales can depend on other packed documents; distinguish that numerical effect
 from actual cross-document attention. Compare native paths with justified
 tolerances and measure useful scored targets/s, full-update memory and data
-wait, keeping the continuous-stream path as the measured baseline.
+wait. Historical continuous-stream measurements are comparison data only.
+
+Keep a complete question and its answer in one causal segment. Long STEM
+solutions need an explicit fragment/context policy; a fit-by-length report
+does not establish that detached answer fragments retain useful context.
+Retain the original long records in the catalog and report their disposition.
+For the authorized STEM-first source allocation, replace unusable training
+content with the named textbook source through the external quota policy.
+Whole-document packing, attention isolation and source quality are separate
+checks; a dataset's name does not satisfy any of them.
 
 Packing changes do not authorize tokenizer surgery, a new objective, automatic
 LR scaling, unapproved data reuse or a paid GPU launch.
