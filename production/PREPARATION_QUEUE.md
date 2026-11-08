@@ -26,6 +26,13 @@ before streaming its records; DuckDB paired preparation accepts the same
 compressed file. Existing plain manifests remain supported. Payload, target,
 position and attention-segment semantics are unchanged.
 
+Completed source fallbacks may leave a source with zero selected content.
+Mixture finalization accepts these explicit empty rows without requiring a
+physical shard for them. Every nonzero source allocation still requires exact
+packed-content equality; this does not waive a shortfall or accept omitted
+positive allocations. CPU regression coverage uses a real packed payload and
+descriptor index. Native training-loader acceptance remains separate.
+
 The active external plan is [next-dense-queue/README.md](/Users/varundaiya/terminus-pretraining-readiness/2026-11-07/next-dense-queue/README.md). It covers the full main 1T: 50B warmup, 710B ordinary dense, a protected 40B bridge and 200B QAT physical output. QAT records are reserved before ordinary dense selection. These are data preparation tasks; the queue cannot launch GPU instances or authorize training.
 
 The current CPU cap is five concurrent workers in total. Protected QAT

@@ -195,7 +195,11 @@ def mixture_candidate(report,indexed_reports=()):
         raise ValueError('packed mixture content budget differs')
     expected=defaultdict(int)
     for r in report['results']:expected[r['leaf']]+=r['selected']
-    if dict(source_totals)!=dict(expected):raise ValueError('packed mixture component source quotas differ')
+    # A qualified fallback can leave an explicit zero-content source in the
+    # completed receipt. Such a source has no physical shards; every positive
+    # allocation must still match the actual packed content exactly.
+    expected={leaf:n for leaf,n in expected.items() if n}
+    if dict(source_totals)!=expected:raise ValueError('packed mixture component source quotas differ')
     seed='ci1-packed-mixture-v1/'+report['plan_sha256']
     router=PackedMixture(shards,seed=seed)
     return {'schema':'ci1_packed_mixture_candidate_v1','plan_sha256':report['plan_sha256'],

@@ -9,7 +9,7 @@ import numpy as np
 
 from production.document_packing import ShardWriter, fragments, file_sha
 from production.packed_index import descriptor_offsets
-from production.packed_mixture import PackedMixture, PackedSequenceReader, permute
+from production.packed_mixture import PackedMixture, PackedSequenceReader, mixture_candidate, permute
 
 
 def shards():
@@ -24,6 +24,31 @@ def shards():
 
 
 class PackedMixtureTests(unittest.TestCase):
+    def test_completed_fallback_can_leave_a_zero_source_without_hiding_positive_quotas(self):
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);writer=ShardWriter(root,'fallback',length=8)
+            writer.add(list(fragments(np.asarray([100,200,300]),{'id':'qualified-hq'},length=8)))
+            shard=writer.close();index=Path(shard['index']['path']);offsets=root/'offsets'
+            with offsets.open('wb') as stream:
+                descriptor_offsets([index.read_bytes()],stream,expected_bytes=index.stat().st_size,
+                    expected_sha256=file_sha(index),sequences=1)
+            shard.update(leaf='gu/Nemotron-CC-v2-HQ',stratum='gu/Nemotron-CC-v2-HQ',plan_sha256='a'*64,
+                index_offsets={'uri':str(offsets),'bytes':offsets.stat().st_size,'sha256':file_sha(offsets)},
+                index_offsets_bind_to_sha256=shard['index']['sha256'])
+            for field in ('payload','index'):shard[field]['uri']=shard[field]['path']
+            report={'physical_creation_finished':True,'all_curriculum_quotas_satisfied':True,
+                'plan_sha256':'a'*64,'totals':{'content_tokens':3},'shards':[shard],
+                'results':[{'leaf':shard['leaf'],'selected':3}]}
+            baseline=mixture_candidate(report)
+            exhausted={'leaf':'gu/FineWeb-2-Latin','selected':0}
+            recovered=mixture_candidate(report|{'results':report['results']+[exhausted]})
+            self.assertEqual(recovered,baseline)
+            self.assertEqual(recovered['source_content_tokens'],{shard['leaf']:3})
+            self.assertEqual(recovered['total_sequences'],1)
+            for selected in (1,-1):
+                with self.assertRaisesRegex(ValueError,'source quotas differ'):
+                    mixture_candidate(report|{'results':report['results']+[exhausted|{'selected':selected}]})
+
     def test_shard_order_is_stable_when_payload_hashes_match(self):
         items=shards();extra=items[1]|{'payload':items[1]['payload']|{'uri':'second-code-shard'}}
         items.append(extra)
