@@ -142,10 +142,18 @@ class PackedSequenceReader:
         shard,row=self.mixture.locate(global_index);payload,metadata,offsets=self._load(shard)
         descriptor=json.loads(metadata[int(offsets[row]):int(offsets[row+1])].tobytes())
         inputs=payload[row].copy();targets,positions,segments=decode_pack(inputs,descriptor)
+        sources=defaultdict(int)
+        for segment in descriptor['segments']:
+            if segment['document'].get('kind')=='unlabeled_translation_pair':
+                for component in segment['document']['components']:
+                    sources[(component['leaf'],component['stratum'])]+=component['content_tokens']
+            else:sources[(shard['leaf'],shard['stratum'])]+=segment['content_tokens']
         return {'inputs':inputs,'targets':targets,'positions':positions,'segment_ids':segments,
             'content_tokens':descriptor['content_tokens'],'valid_targets':descriptor['valid_targets'],
             'leaf':shard['leaf'],'stratum':shard['stratum'],
-            'payload_uri':shard['payload']['uri'],'sequence_row':row}
+            'payload_uri':shard['payload']['uri'],'sequence_row':row,
+            'synthetic_tokens':descriptor.get('synthetic_tokens',0),
+            'source_content_tokens':[{'leaf':l,'stratum':s,'tokens':n}for(l,s),n in sorted(sources.items())]}
 
 
 def mixture_candidate(report,indexed_reports=()):
@@ -157,7 +165,7 @@ def mixture_candidate(report,indexed_reports=()):
         if indexed.get('status')!='complete':raise ValueError('incomplete descriptor indexing')
         for shard in indexed['shards']:
             lookup[(shard['payload']['uri'],shard['index']['sha256'])]=shard
-    shards=[];population={}
+    shards=[];population={};source_totals=defaultdict(int)
     for original in report['shards']:
         shard=original.copy()
         if 'index_offsets'not in shard:
@@ -175,14 +183,25 @@ def mixture_candidate(report,indexed_reports=()):
         row=population.setdefault(key,{'leaf':shard['leaf'],'stratum':shard['stratum'],
             'sequences':0,'content_tokens':0,'valid_targets':0,'padding_slots':0})
         for field in ['sequences','content_tokens','valid_targets','padding_slots']:row[field]+=shard[field]
+        components=shard.get('source_content_tokens')
+        if components is not None:
+            if (not components or sum(c['tokens']for c in components)!=shard['content_tokens']
+                    or any(type(c['tokens'])is not int or c['tokens']<=0 for c in components)):
+                raise ValueError('compound shard source accounting differs')
+            for c in components:source_totals[c['leaf']]+=c['tokens']
+        else:source_totals[shard['leaf']]+=shard['content_tokens']
         shards.append(shard)
     if sum(s['content_tokens']for s in shards)!=report['totals']['content_tokens']:
         raise ValueError('packed mixture content budget differs')
+    expected=defaultdict(int)
+    for r in report['results']:expected[r['leaf']]+=r['selected']
+    if dict(source_totals)!=dict(expected):raise ValueError('packed mixture component source quotas differ')
     seed='ci1-packed-mixture-v1/'+report['plan_sha256']
     router=PackedMixture(shards,seed=seed)
     return {'schema':'ci1_packed_mixture_candidate_v1','plan_sha256':report['plan_sha256'],
         'seed':seed,'block_sequences':4096,'hierarchy':['language','source_leaf','dataset_stratum'],
         'total_sequences':router.total_sequences,'content_tokens':report['totals']['content_tokens'],
         'population':population,'shards':shards,'repeats_sequences':False,
+        'source_content_tokens':dict(source_totals),'synthetic_tokens':sum(s.get('synthetic_tokens',0)for s in shards),
         'native_training_accepted':False,'requires_segment_aware_reader':True,
         'legacy_continuous_stream_loader_compatible':False}

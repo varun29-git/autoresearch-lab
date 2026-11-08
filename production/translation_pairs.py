@@ -170,7 +170,7 @@ class PairBudget:
     bind their selections and all protected hashes to one reconciled commit.
     Both sides count toward their existing language/source/child quotas.
     """
-    def __init__(self, remaining, *, ceiling=10_000_000_000, protected_hashes=()):
+    def __init__(self, remaining, *, ceiling=20_000_000_000, protected_hashes=()):
         if type(ceiling) is not int or ceiling < 0:
             raise ValueError("invalid paired-content ceiling")
         self.remaining = dict(remaining)

@@ -299,7 +299,9 @@ class FastWorker(ReferenceWorker):
                 delta=chunk['prefixes'][stop]-chunk['prefixes'][start]
                 counts={'sequences':n}|{name:int(value)for name,value in zip(chunk['names'],delta)}
                 self.current.append_encoded(payload,metadata,counts,
-                    offsets=chunk['offsets'][start+1:stop+1]-chunk['offsets'][start]);start=stop
+                    offsets=chunk['offsets'][start+1:stop+1]-chunk['offsets'][start],
+                    source_counts={key:int(values[stop]-values[start])for key,values in chunk.get('source_prefixes',{}).items()
+                                   if values[stop]>values[start]});start=stop
                 if self.current.counts['sequences']==self.plan['sequences_per_shard']:self.finish_shard()
         if data_hash.hexdigest()!=chunk['payload']['sha256']or meta_hash.hexdigest()!=chunk['index']['sha256']:
             raise ValueError('packing chunk differs from worker checksum')
@@ -325,8 +327,8 @@ class FastWorker(ReferenceWorker):
 
     def drain_upload(self):
         result=self.upload_pending.popleft().result();self.receipts.append(result)
-        for name in ('sequences','content_tokens','valid_targets','used_slots','padding_slots'):
-            self.totals[name]+=result[name]
+        for name in ('sequences','content_tokens','valid_targets','used_slots','padding_slots','synthetic_tokens'):
+            if result.get(name):self.totals[name]+=result[name]
         self.event('shard_published',shard=len(self.receipts),leaf=result['leaf'],stratum=result['stratum'],
             content_tokens=result['content_tokens'],receipt=result['receipt'])
 
@@ -352,6 +354,22 @@ class FastWorker(ReferenceWorker):
     def materialize_fixed(self):
         path=self.work/'fixed-selection.jsonl';self.download(self.plan['fixed_selection'],path)
         owner='protected:'+self.plan['fixed_allocation_id'];counts=Counter();observed=Counter();buffer=[]
+        paired=None
+        if self.plan.get('translation_pairs'):
+            from production.fixed_translation_pairs import FixedPairPreparation
+            paired=FixedPairPreparation(self,path,self.plan['translation_pairs'])
+            self.leaf='paired/translations';self.stratum='verified';self.buffer_number=0
+            self.event('translation_pair_preparation_started',phase_ceiling_content_tokens=paired.policy['phase_ceiling_content_tokens'])
+            for pair in paired.pairs():
+                buffer.append(pair)
+                if len(buffer)>=self.plan['packing_buffer_fragments']:self.flush(buffer)
+                if time.monotonic()-self.last_heartbeat>30:
+                    self.event('translation_pairs',pair_count=paired.pair_count,paired_content_tokens=sum(paired.charges.values()))
+                    self.last_heartbeat=time.monotonic()
+            self.flush(buffer);self.finish_stratum();counts.update(paired.charges)
+            self.pair_report=paired.report()
+            (self.work/'TRANSLATION_PAIRS.json').write_text(json.dumps(self.pair_report,indent=2)+'\n')
+            self.event('translation_pair_preparation_finished',**self.pair_report)
         ranges=self.plan.get('fixed_source_ranges')
         if ranges is not None:
             if set(ranges)!=set(self.plan['source_targets']):raise ValueError('fixed source range keys differ')
@@ -373,6 +391,10 @@ class FastWorker(ReferenceWorker):
                     if not 0<=offset<record['original_content_tokens']or not 0<n<=record['original_content_tokens']-offset:
                         raise ValueError('invalid protected span')
                     base=observed[record['leaf']];observed[record['leaf']]+=n
+                    if paired and record['source_text_sha256'] in paired.accepted:
+                        if offset or n!=record['original_content_tokens']:
+                            raise ValueError('paired whole record differs from its reserved span')
+                        continue
                     if ranges is not None:
                         lo,hi=ranges[record['leaf']];begin,end=max(base,lo),min(base+n,hi)
                         if begin>=end:continue
@@ -438,7 +460,7 @@ class FastWorker(ReferenceWorker):
             suffix=self.work/'quota-suffix-reservations.jsonl'
             suffix.write_text(''.join(json.dumps(r,separators=(',',':'))+'\n'for r in self.pending_suffixes))
             artifacts={}
-            for item in [self.events,checkpoint,suffix,self.work/'protected-records.jsonl']:
+            for item in [self.events,checkpoint,suffix,self.work/'protected-records.jsonl',self.work/'TRANSLATION_PAIRS.json']:
                 if item.exists():artifacts[item.name]=publish(self.client,self.bucket,item,self.prefix+'/audit/'+item.name)
             archive=shutil.make_archive(str(self.work/'source-receipts'),'gztar',self.source_receipts_dir)
             publish(self.client,self.bucket,Path(archive),self.prefix+'/audit/source-receipts.tar.gz')
@@ -452,6 +474,7 @@ class FastWorker(ReferenceWorker):
                     'working_ledger_storage':mode,'ledger_records':count,
                     'metadata_processes':self.plan.get('metadata_workers',4),
                     'packing_processes':self.plan.get('packing_workers',8)}}
+            if hasattr(self,'pair_report'):report['translation_pairs']=self.pair_report
             if not self.reservation_only and report['all_curriculum_quotas_satisfied']:
                 from production.packed_mixture import mixture_candidate
                 mixture=self.work/'MIXTURE_CANDIDATE.json'

@@ -12,6 +12,14 @@ Exact per-source physical token totals remain unchanged. The original running
 warmup must still publish its final allocation ledger before this pipeline
 can select records; increasing the cap does not distribute that existing job.
 
+Future ordinary dense fixed materializers support a shared 20B verified-pair
+ceiling through `fixed_translation_pairs.py`. The policy divides the ceiling
+across jobs and assigns original families to one tranche. Accepted pairs keep
+the same source quotas and ownership; both ordinary occurrences are omitted.
+Metadata failures leave records ordinary. See [translation pairing](TRANSLATION_PAIRS.md)
+for the contract and external enablement receipt. The global partitioned
+allocator is not yet the active selection path.
+
 `packing_worker.py` can inherit a hashed SQLite allocation ledger and quota-suffix manifest. It rejects implicit reuse of a partial work directory. Reservation mode protects whole records and emits a fixed selection manifest without pretending to create physical payloads. Fixed materialization checks that every record belongs to its declared protected allocation. Ordinary materialization resumes unused suffixes before selecting fresh records. Only explicitly configured source fallbacks may change an assigned row; the total budget is preserved and the exact change is reported.
 
 The dispatcher validates predecessor quotas and report identities before binding their durable artifacts into a child plan. It uses a persisted launch request, an idempotent EC2 token, one reserved concurrent Lambda invocation, a CPU instance allowlist, fleet concurrency caps, terminate-on-exit workers and independent AWS termination schedules. Failure does not automatically start another paid attempt. A failed predecessor blocks descendants. The queue definition itself is SHA-pinned in the deployed Lambda.

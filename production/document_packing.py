@@ -8,6 +8,7 @@ This CPU format requires a segment-aware training loader and attention path.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import Counter
 import hashlib
 import json
 from pathlib import Path
@@ -214,6 +215,7 @@ class ShardWriter:
         self.audit_stride = audit_stride
         self.counts = dict(sequences=0, content_tokens=0, valid_targets=0,
                            used_slots=0, padding_slots=0, synthetic_tokens=0)
+        self.source_counts = Counter()
 
     def add(self, items):
         inputs, descriptor = encode_pack(items, length=self.length)
@@ -231,12 +233,16 @@ class ShardWriter:
         self.counts["sequences"] += 1
         for key in self.counts.keys() - {"sequences"}:
             self.counts[key] += descriptor.get(key, 0) if key == 'synthetic_tokens' else descriptor[key]
+        for segment in descriptor['segments']:
+            if segment['document'].get('kind') == 'unlabeled_translation_pair':
+                for component in segment['document']['components']:
+                    self.source_counts[(component['leaf'], component['stratum'])] += component['content_tokens']
 
     def _write_offsets(self,values):
         raw=np.asarray(values,dtype='<u8').tobytes()
         self.offsets.write(raw);self.offset_hash.update(raw)
 
-    def append_encoded(self, payload, metadata, counts, *, offsets=None):
+    def append_encoded(self, payload, metadata, counts, *, offsets=None, source_counts=None):
         if len(payload)!=counts['sequences']*self.length*2:
             raise ValueError('encoded chunk payload size differs')
         if self.offsets:
@@ -249,6 +255,10 @@ class ShardWriter:
         self.meta.write(metadata);self.meta_hash.update(metadata);self.meta_bytes+=len(metadata)
         for name in self.counts:
             self.counts[name] += counts.get(name, 0) if name == 'synthetic_tokens' else counts[name]
+        if source_counts:
+            if sum(source_counts.values()) != counts['content_tokens']:
+                raise ValueError('encoded compound source counters differ')
+            self.source_counts.update(source_counts)
 
     def close(self):
         self.data.close()
@@ -261,6 +271,11 @@ class ShardWriter:
             "cross_document_mask_required": True, "native_training_accepted": False}
         if not result["synthetic_tokens"]:
             del result["synthetic_tokens"]
+        if self.source_counts:
+            if sum(self.source_counts.values()) != result['content_tokens']:
+                raise ValueError('compound shards must account for every source component')
+            result['source_content_tokens'] = [{'leaf':leaf,'stratum':stratum,'tokens':n}
+                for (leaf,stratum),n in sorted(self.source_counts.items())]
         if self.offsets:
             self.offsets.close()
             result['index_offsets']={'path':str(self.offset_file),'bytes':self.offset_file.stat().st_size,

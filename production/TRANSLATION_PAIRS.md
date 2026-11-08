@@ -30,12 +30,12 @@ but are not additional unique corpus content. Ordinary descriptors retain their
 existing bytes when no synthetic tokens are present. Compound descriptors
 also bind component offsets, source identities and quota counters.
 
-The current proposal caps paired **source content** at 10B tokens within ordinary
+The selected policy caps paired **source content** at 20B tokens within ordinary
 dense stable data, including both sides. It excludes the completed warmup,
 protected 40B bridge and both QAT allocations. One counterpart is allowed per
 translation family; the pair's records replace their ordinary occurrences.
 Different families can alternate direction without replaying the same pair.
-Fewer than 10B qualified tokens is acceptable: keep the remainder ordinary with
+Fewer than 20B qualified tokens is acceptable: keep the remainder ordinary with
 the same source quotas. Benefit and unwanted language switching need evaluation.
 
 ## Parallel reservation engine
@@ -76,22 +76,44 @@ are explicitly skipped when DuckDB is absent.
 
 ## Deployment status and remaining integration
 
-Both modules are **local CPU candidates, not active dispatcher features**.
-The running queue continues its pinned ordinary reservation/packing path.
-Neither feature changes completed warmup or already-started reservations.
-The external source probe and CPU results are in the dated
-[implementation packet](/Users/varundaiya/terminus-pretraining-readiness/2026-11-08/parallel-allocation-and-pairs/README.md).
+`fixed_translation_pairs.py` connects pairing to future ordinary dense fixed
+materializers using the **existing authoritative reservation ledger**. The
+shared 20B ceiling is divided across the 14 selected 50B materializers, about
+1.4286B per job. Program validation rejects multiplied caps, repeated family
+partitions and QAT/bridge assignment. The final 10B ordinary selector is not
+paired because it has no immutable fixed selection. A family hash assigns each
+original source UUID to one eligible tranche, preventing repeated pairing across
+phases. Source IDs are only discovery hints; raw metadata and content qualify
+the actual pair. Up to four language candidates per family can be checked.
 
-Before deployment, compile the full verified index catalogue against the
+Discovery uses bounded native SQL, original Parquet range reads and a 2-GiB
+Arrow row-group cache. It has a 30-minute per-job preparation limit. Qualified
+pairs replace both owned whole-record occurrences; rejected or unavailable
+metadata leaves the records ordinary. A missing source-token identity still
+fails mandatory ordinary payload verification. Pair receipts record actual
+content, inserted tokens, both source/child charges and rejection reasons.
+The accepted volume can be below the ceiling.
+
+Compound shards use a dedicated finite stream. `PackedSequenceReader` reports
+both component sources and inserted-token counts, and `mixture_candidate`
+reconciles component source totals against the phase quotas. Position IDs,
+labels and masks follow the existing segment contract. No model geometry,
+optimizer settings or tokenizer IDs change. This is a data-pipeline integration;
+native segment-aware training acceptance remains pending.
+
+The general partitioned allocator remains a **local CPU candidate**. Pairing
+does not wait for its full catalogue because existing reservations already
+provide global ownership. Completed warmup and started tasks are unchanged.
+Deployment and source evidence are in the dated
+[20B enablement packet](/Users/varundaiya/terminus-pretraining-readiness/2026-11-08/pairing-20B-enablement/README.md).
+
+Before deploying the general allocator, compile the full verified index catalogue against the
 actual inherited ledger and exclusions; freeze duplicate source priority;
 measure eligible capacity for every child and compare all approved quotas;
 bind new partition receipts and compact phase ledgers into the dispatcher;
-and preserve existing shutdown/fleet controls. Pair matching runs on selected
-whole records and original metadata, followed by one reconciled ownership
-commit. Its two ordinary occurrences must be removed before physical packing.
-Cross-partition pairing is a coordinator operation, not an independent worker
-decision. Compound shard receipts and the mixture reader must account for both
-source components rather than assigning the whole pair to one language.
+and preserve existing shutdown/fleet controls. Existing fixed pairing is local
+to one completed dense selection. A future cross-partition implementation must
+bind both selections to one reconciled commit before removing ordinary records.
 
 Actual eight-MI325X segment masking, positions, valid-target normalization,
 graph replay and resume acceptance remain separate requirements. CPU creation

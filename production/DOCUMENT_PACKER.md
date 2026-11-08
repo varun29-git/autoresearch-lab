@@ -28,8 +28,10 @@ passages using exact source lineage, frozen token spans and quality metadata.
 Any eligible language pair can share one unlabeled causal segment. Inserted
 blank-line tokens are counted separately from the two existing source quotas;
 compound span/counter corruption is rejected by the CPU decoder. Ordinary
-descriptor bytes retain the existing contract. This constructor is not yet
-connected to the active preparation queue or native training loader.
+descriptor bytes retain the existing contract. Future dense fixed materializers
+can construct these pairs under the bounded 20B program policy. Compound shard
+receipts and the CPU reader account for both source components. Native training
+loader acceptance remains pending.
 
 The descriptor sidecar defines segment boundaries, document offsets, final
 labels, end-of-document state and original source identity. Position IDs

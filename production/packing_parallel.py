@@ -65,12 +65,16 @@ def pack_chunk(items, length, seed, directory):
     names=['content_tokens','valid_targets','used_slots','padding_slots','synthetic_tokens']
     prefixes=np.zeros((len(packs)+1,len(names)),dtype=np.int64)
     offsets=np.zeros(len(packs)+1,dtype=np.int64)
+    source_prefixes={}
     for i,pack in enumerate(packs):
         writer.add(pack)
         prefixes[i+1]=[writer.counts[n]for n in names]
         offsets[i+1]=writer.meta_bytes
+        for key,n in writer.source_counts.items():
+            if key not in source_prefixes:source_prefixes[key]=np.zeros(len(packs)+1,dtype=np.int64)
+            source_prefixes[key][i+1]=n
     result=writer.close()
-    result.update(prefixes=prefixes,offsets=offsets,names=names)
+    result.update(prefixes=prefixes,offsets=offsets,names=names,source_prefixes=source_prefixes)
     return result
 
 

@@ -1,11 +1,14 @@
 # CI-1 production handoff
 
-**2026-11-08 translation and allocation candidates:** the
+**2026-11-08 capped translation pairing:** the
 [verified-pair and partitioned-allocation tools](TRANSLATION_PAIRS.md) add
 CPU source qualification, one-segment unlabeled pairs, separate inserted-token
 accounting and native capacity-aware reservation across hash partitions.
-They are local candidates; the active dispatcher and native trainer do not
-yet use them. Eligible language pairs are unrestricted by the earlier examples.
+Future ordinary dense fixed materializers now support verified pairing under
+one shared 20B source-content ceiling. The existing reservation ledger remains
+authoritative; the general partitioned allocator remains staged. Eligible
+language pairs are unrestricted by the earlier examples. Native trainer
+segment-aware acceptance remains pending.
 
 **2026-11-08 QAT finishing schedule:** the selected main QAT allocation has
 100B recovery/stable content tokens followed by 100B finishing content tokens.
