@@ -100,6 +100,30 @@ def fixture(root):
 
 
 class FixedPairTests(unittest.TestCase):
+    def test_exhausted_zero_quota_keeps_identical_paired_materialization(self):
+        with tempfile.TemporaryDirectory()as tmp:
+            root=Path(tmp);client,plan,records=fixture(root)
+            with patch('production.fast_packing_worker.boto3.Session')as session,\
+                 patch('production.fast_packing_worker.publish',side_effect=publish),\
+                 patch('terminus.tokenizer_native.Native65kTokenizer',return_value=Encoder()):
+                session.return_value.client.return_value=client
+                baseline=FastWorker(plan,root/'baseline').run()
+                exhausted='gu/exhausted'
+                revised=plan|{'source_targets':plan['source_targets']|{exhausted:0},
+                    'fixed_total_source_targets':plan['fixed_total_source_targets']|{exhausted:0}}
+                actual=FastWorker(revised,root/'with-zero').run()
+                self.assertTrue(actual['all_curriculum_quotas_satisfied'])
+                self.assertEqual(actual['totals'],baseline['totals'])
+                self.assertEqual(actual['translation_pairs'],baseline['translation_pairs'])
+                for name in ('payload','index','index_offsets'):
+                    self.assertEqual([s[name]['sha256']for s in actual['shards']],
+                        [s[name]['sha256']for s in baseline['shards']])
+                for count in (-1,1):
+                    with self.subTest(invalid_quota=count):
+                        invalid=plan|{'source_targets':plan['source_targets']|{exhausted:count}}
+                        with self.assertRaisesRegex(ValueError,'source quotas differ'):
+                            FastWorker(invalid,root/('invalid-'+str(count))).run()
+
     def test_unavailable_optional_metadata_keeps_all_owned_records_ordinary(self):
         with tempfile.TemporaryDirectory()as tmp:
             root=Path(tmp);client,plan,records=fixture(root)

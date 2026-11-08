@@ -146,7 +146,9 @@ class FixedPairPreparation:
         interrupted=threading.Event()
         def interrupt():interrupted.set();conn.interrupt()
         timer=threading.Timer(max(0.01,self.stop-time.monotonic()),interrupt);timer.daemon=True;timer.start()
-        remaining=self.worker.plan['source_targets']
+        # Exhausted donors have no reservation rows. Preserve strict matching
+        # for every nonzero quota, including invalid negative allocations.
+        remaining={leaf:n for leaf,n in self.worker.plan['source_targets'].items() if n!=0}
         try:
             self.budget=PairBudget({(l,s):n for l,s,n in conn.execute("""SELECT leaf,stratum,SUM(allocated_content_tokens)
                 FROM read_json(?,format='newline_delimited',columns=?) GROUP BY leaf,stratum""",

@@ -411,7 +411,8 @@ class FastWorker(ReferenceWorker):
                         yield identity,group;group=[]
                     identity=new;group.append((record,offset,n))
             if group:yield identity,group
-            if self.plan.get('fixed_total_source_targets')is not None and dict(observed)!=self.plan['fixed_total_source_targets']:
+            expected=self.plan.get('fixed_total_source_targets')
+            if expected is not None and dict(observed)!={leaf:n for leaf,n in expected.items() if n!=0}:
                 raise ValueError('fixed total differs from reserved selection')
         pending=deque();self.leaf=self.stratum=None;self.buffer_number=0
         def submit(identity,records):

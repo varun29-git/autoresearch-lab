@@ -115,6 +115,12 @@ and rejection of corrupted prefetched payloads:
 python3 -m unittest tests.test_fast_packing_worker tests.test_document_packing tests.test_packing_worker tests.test_preparation_queue tests.test_native_corpus.MultipartPublicationTests
 ```
 
+Fixed materializers and translation-pair discovery accept exhausted sources
+with exact zero quotas, since those sources have no reserved records. Every
+positive quota still matches exactly; negative quotas remain invalid. CPU
+regression coverage compares payload, segment and descriptor-offset hashes
+with the same allocation before adding the zero row.
+
 The fast runtime requires `orjson==3.11.4`. Performance measurements, queue
 definitions and benchmark source subsets remain outside Git. A small benchmark
 does not establish the finish time of the complete corpus, especially when the
