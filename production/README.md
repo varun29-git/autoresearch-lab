@@ -1,5 +1,12 @@
 # CI-1 production handoff
 
+**2026-11-08 translation and allocation candidates:** the
+[verified-pair and partitioned-allocation tools](TRANSLATION_PAIRS.md) add
+CPU source qualification, one-segment unlabeled pairs, separate inserted-token
+accounting and native capacity-aware reservation across hash partitions.
+They are local candidates; the active dispatcher and native trainer do not
+yet use them. Eligible language pairs are unrestricted by the earlier examples.
+
 **2026-11-08 QAT finishing schedule:** the selected main QAT allocation has
 100B recovery/stable content tokens followed by 100B finishing content tokens.
 Cosine LR decay covers the full finishing window, ending at 0.1 of QAT peak;
