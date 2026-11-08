@@ -96,3 +96,46 @@ def verify_training_continuation(parent, child, tokens_seen, *, policy):
             raise ValueError("data continuation lacks the required shard prefix")
     return {"policy": policy, "verified_prefix_tokens": compared * length,
             "consumed_tokens": tokens_seen, "required_sources": sorted(required)}
+
+
+def verify_packed_continuation(parent, child, state, *, policy):
+    """Packed token counts do not define sequence cursors; preserve both clocks.
+
+    Appending phases leaves each prior finite permutation unchanged. Editing a
+    consumed phase (even just appending a shard to its permutation) is rejected.
+    A separate next phase can rebase its local cursor while retaining the actual
+    lifetime label counter, including a partially filled final dense update.
+    """
+    if (not parent or not child or parent.get("schema") != "packed_documents_v1" or
+            child.get("schema") != "packed_documents_v1" or parent["seq_len"] != child["seq_len"]):
+        raise ValueError("packed continuation requires verified matching packed streams")
+    slots, seen = state.get("input_slots_seen", -1), state["tokens_seen"]
+    length = parent["seq_len"]
+    if not 0 <= slots <= parent["total_examples"]*length or slots % length:
+        raise ValueError("invalid packed input-slot cursor")
+    if policy == "packed_phase":
+        if (slots != parent["total_examples"]*length or
+                seen != parent.get("tokens_before", 0)+sum(p["scored_targets"] for p in parent["phases"]) or
+                child.get("tokens_before", 0) != seen):
+            raise ValueError("next packed phase needs a completed parent and matching lifetime label offset")
+        old_payloads = {s["payload"] for p in parent["phases"] for s in p["shards"]}
+        new_payloads = {s["payload"] for p in child["phases"] for s in p["shards"]}
+        if old_payloads & new_payloads:
+            raise ValueError("next packed phase repeats a parent payload")
+        return dict(policy=policy, consumed_tokens=seen, local_input_cursor_reset=True,
+                    completed_parent_input_slots=slots)
+    if policy not in {"continue", "phase_mix"} or parent.get("tokens_before", 0) != child.get("tokens_before", 0):
+        raise ValueError("incompatible packed continuation policy or lifetime offset")
+    compared = parent["total_examples"] if policy == "continue" else slots//length
+    end = 0
+    for index, phase in enumerate(parent["phases"]):
+        if end >= compared:
+            break
+        if index >= len(child["phases"]) or phase != child["phases"][index]:
+            raise ValueError("packed continuation changed a consumed finite phase/permutation")
+        end += phase["sequences"]
+    if policy == "phase_mix" and slots//length != end:
+        raise ValueError("packed phase_mix needs an exact phase boundary")
+    if slots >= child["total_examples"]*length:
+        raise ValueError("packed child does not extend the sequence cursor")
+    return dict(policy=policy, verified_prefix_input_slots=end*length, consumed_tokens=seen)

@@ -4,9 +4,10 @@ The selected external data plan uses 4096-token sequences, one primary
 language/script/source leaf per sequence, and multilingual mixing across global
 updates. Its document boundaries, position resets and loss policy must be
 implemented together. Cross-document attention masking is a fixed production
-requirement, confirmed by the operator on 7 November 2026. The current
-continuous-stream trainer does not implement that requirement; no native
-acceptance is recorded here. An unmasked path is not a production fallback.
+requirement, confirmed by the operator on 7 November 2026. The
+[packed training implementation](PACKED_TRAINING.md) now connects the reader,
+attention, loss and resume interfaces. Native acceptance remains unrun here.
+The legacy continuous-stream path cannot consume this format.
 
 **2026-11-08 read-order correction:** physical creation remains grouped by
 source and dataset stratum. `packed_mixture.py` now provides a CPU reader that
@@ -15,7 +16,8 @@ exact finite sequence counts and deterministic bounded permutations. This
 prevents a Hindi Specialized aggregate from being read as one Code-Concepts
 block followed by one STEM-SFT block. The legacy router remains sequential
 within a source and is incompatible with this packed-format candidate.
-Native trainer, attention and graph integration are still required below.
+The reader is now connected to native variable-length attention and the
+trainer; native execution checks and graph replay qualification remain separate.
 
 `packed_index.py` builds descriptor byte offsets directly from already published
 sidecars, independently of the allocation ledger. The first four-worker

@@ -19,11 +19,11 @@ def build_config(*, manifest, world_size, global_batch_tokens, warmup_tokens, de
         if type(global_batch_tokens) is not int or global_batch_tokens <= 0:
             raise ValueError("global_batch_tokens must be a positive integer")
         if (type(phase_start_tokens) is not int or phase_start_tokens <= 0
-                or phase_start_tokens >= manifest.config.usable_train_tokens):
+                or phase_start_tokens >= manifest.scored_train_tokens):
             raise ValueError("QAT needs the dense checkpoint's positive phase_start_tokens")
-        if phase_start_tokens % global_batch_tokens:
+        if not manifest.is_packed and phase_start_tokens % global_batch_tokens:
             raise ValueError("QAT phase_start_tokens must align with the unchanged global batch")
-        if warmup_tokens + decay_tokens > manifest.config.usable_train_tokens - phase_start_tokens:
+        if warmup_tokens + decay_tokens > manifest.scored_train_tokens - phase_start_tokens:
             raise ValueError("QAT warmup and decay must fit the remaining phase budget")
     elif phase_start_tokens is not None:
         raise ValueError("phase_start_tokens is only for AMD QAT")

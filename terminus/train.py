@@ -196,7 +196,9 @@ def make_resume_contract(model_config, training, optimizer_config, manifest_repo
     for name in OPERATIONAL_TRAINING_FIELDS:
         training_values.pop(name)
     return {"model": asdict(model_config), "training": training_values,
-            "optimizer": json.loads(json.dumps(asdict(optimizer_config))), "data": manifest_report,
+            "optimizer": json.loads(json.dumps(asdict(optimizer_config))),
+            # Node-local staging stats certify reads, not portable checkpoint identity.
+            "data": {k: v for k, v in manifest_report.items() if k != "packed_files"},
             "world_size": world_size, "source": source_hashes(), "runtime": runtime_contract(device)}
 
 
@@ -217,7 +219,7 @@ def append_record(path, payload):
 
 
 @torch.no_grad()
-def evaluate(model, manifest, root, device, amp_dtype, max_batches, rank, world_size, *, sequences_per_language=None):
+def evaluate(model, manifest, root, device, amp_dtype, max_batches, rank, world_size, *, sequences_per_language=None, verified_files=None):
     was_training = model.training
     state = rng_state()
     model.eval()
@@ -226,6 +228,11 @@ def evaluate(model, manifest, root, device, amp_dtype, max_batches, rank, world_
         from .integrity import manifest_scope
 
         domains = set(manifest_scope(manifest)["domains"])
+        if manifest.is_packed:
+            from .packed_data import evaluate_packed
+
+            return evaluate_packed(model, manifest, root, device, amp_dtype, max_batches,
+                                   rank, world_size, sequences_per_language=sequences_per_language, verified_files=verified_files)
         val_shards = manifest.shards_for(split=manifest.config.val_split)
         key_of = lambda spec: spec.source if spec.source in domains else spec.language
         languages = sorted({key_of(spec) for spec in val_shards})
@@ -309,8 +316,8 @@ class PreparedTraining:
     batches with H2D transfer and all accumulation microsteps; forward, full
     loss, backward and gradient synchronization; nonfinite detection, global
     clipping and all optimizer group updates; FP8 cache invalidation and
-    committed data/update counters. It returns the nominal update token count
-    derived from manifest arithmetic; the measured valid (-100-excluded)
+    committed data/update counters. It returns the scored update token count
+    (planned from descriptors for packed data); the measured valid (-100-excluded)
     target count and the data-wait time for the update are exposed as
     valid_targets and data_wait_seconds. cadence() performs the post-update
     logging/checkpoint/validation/stop work, which is production cadence
@@ -333,7 +340,18 @@ class PreparedTraining:
         if sampled:
             self.monitor.active = True
         micro_steps = min(training.gradient_accumulation_steps, self.total_micro_steps - state["next_micro_step"])
-        update_tokens = min(micro_steps * self.micro_tokens, self.total_tokens - state["tokens_seen"])
+        packed_plan = None
+        if self.manifest.is_packed:
+            packed_plan = torch.tensor(self.packed_batcher.plan_update(state["next_micro_step"], micro_steps),
+                                       dtype=torch.int64, device=self.device)
+            if self.world_size > 1:
+                distributed.all_reduce(packed_plan)
+            planned_targets, planned_content, planned_slots = packed_plan.tolist()
+            update_tokens = planned_targets
+            if update_tokens <= 0 or state["tokens_seen"] + update_tokens > self.total_tokens:
+                raise ValueError("packed update has no labels or exceeds the sealed scored horizon")
+        else:
+            update_tokens = min(micro_steps * self.micro_tokens, self.total_tokens - state["tokens_seen"])
         scale = schedule_scale(state["tokens_seen"] + update_tokens - self.phase_offset,
                                self.total_tokens - self.phase_offset, training.warmup_tokens,
                                training.final_lr_fraction, schedule=training.schedule,
@@ -351,7 +369,9 @@ class PreparedTraining:
         data_wait = 0.0
         for micro_index in range(micro_steps):
             wait_started = time.monotonic()
-            batch_index, inputs, targets = next(self.iterator)
+            batch = next(self.iterator)
+            batch_index, inputs, targets = batch[:3]
+            document_layout = batch[3] if len(batch) == 4 else None
             data_wait += time.monotonic() - wait_started
             local_valid += targets.ne(-100).sum()
             if batch_index != state["next_micro_step"] + micro_index:
@@ -366,7 +386,7 @@ class PreparedTraining:
             sync_context = self.forward_model.no_sync() if self.world_size > 1 and micro_index + 1 < micro_steps else contextlib.nullcontext()
             with sync_context:
                 with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype, enabled=self.amp_dtype != torch.float32):
-                    output = self.forward_model(inputs, targets, return_logits=False)
+                    output = self.forward_model(inputs, targets, return_logits=False, **(dict(document_layout=document_layout) if document_layout is not None else {}))
                     loss = output["loss_sum"] * (self.world_size / update_tokens)
                 local_loss_sum += output["loss_sum"].detach().double()
                 loss.backward()
@@ -394,6 +414,9 @@ class PreparedTraining:
             raise ValueError(
                 f"valid targets {valid_targets:g} differ from nominal update tokens "
                 f"{update_tokens}; optimizer update was not applied")
+        if (state["next_micro_step"] + micro_steps == self.total_micro_steps and
+                state["tokens_seen"] + update_tokens != self.total_tokens):
+            raise ValueError("final scored-target total differs from sealed manifest; optimizer update was not applied")
         if sampled:
             self.monitor.gradients_before_clip()
         try:
@@ -411,6 +434,9 @@ class PreparedTraining:
         self.model.clear_fp8_weight_cache()
         self.state = {"next_micro_step": state["next_micro_step"] + micro_steps,
                       "tokens_seen": state["tokens_seen"] + update_tokens, "updates": state["updates"] + 1}
+        if packed_plan is not None:
+            self.state.update(input_slots_seen=state.get("input_slots_seen", 0)+planned_slots,
+                              content_tokens_seen=state.get("content_tokens_seen", 0)+planned_content)
         self.sampled = sampled
         self.update_tokens = update_tokens
         self.valid_targets = int(valid_targets)
@@ -450,7 +476,8 @@ class PreparedTraining:
         if state["updates"] % training.validation_interval == 0 or stopped or complete:
             results = evaluate(self.model, self.manifest, self.data_root, self.device, self.amp_dtype,
                                training.validation_batches_per_language, self.rank, self.world_size,
-                               sequences_per_language=training.validation_sequences_per_language)
+                               sequences_per_language=training.validation_sequences_per_language,
+                               verified_files=self.verified_files)
             if self.rank == 0:
                 append_event(self.output_dir / "events.jsonl", {"event": "validation", **state, "languages": results})
         if stopped or complete:
@@ -508,7 +535,7 @@ def prepare_training(config_path, manifest_path, data_root, output_dir, *, resum
 
             manifest_report = verify_staging(json.loads(Path(staging_receipt).read_text()), manifest,
                                              data_root, model_config, development_mode=training.development_mode)
-        total_tokens = manifest.config.usable_train_tokens
+        total_tokens = manifest.scored_train_tokens
         if training.warmup_tokens >= total_tokens:
             raise ValueError("warmup token budget must be shorter than the total budget")
         if training.quantization_warmup_tokens > total_tokens:
@@ -577,7 +604,26 @@ def prepare_training(config_path, manifest_path, data_root, output_dir, *, resum
             torch.manual_seed(training.seed + rank)
         micro_tokens = manifest.config.tokens_per_step * world_size
         total_micro_steps = math.ceil(manifest.config.total_examples / (manifest.config.batch_size * world_size))
-        if state["tokens_seen"] != min(state["next_micro_step"] * micro_tokens, total_tokens):
+        packed_batcher = None
+        if manifest.is_packed:
+            from .packed_data import PackedTokenBatcher
+
+            if training.cuda_graphs or training.compile:
+                raise ValueError("packed document metadata requires eager training; graph/compile qualification is separate")
+            packed_batcher = PackedTokenBatcher(manifest, root=data_root, rank=rank, world_size=world_size,
+                                               verified_files=manifest_report["packed_files"])
+            tokens_before = packed_batcher.spec.get("tokens_before", 0)
+            if tokens_before and (not resume or training.phase_start_tokens != tokens_before):
+                raise ValueError("packed lifetime offset requires the matching transition checkpoint/schedule")
+            expected_slots = min(state["next_micro_step"]*micro_tokens, manifest.config.usable_train_tokens)
+            if state["next_micro_step"] == 0:
+                state.setdefault("input_slots_seen", 0)
+                state.setdefault("content_tokens_seen", 0)
+            if (state.get("input_slots_seen") != expected_slots or
+                    not 0 <= state["tokens_seen"] - tokens_before <= expected_slots or
+                    not 0 <= state.get("content_tokens_seen", -1) <= expected_slots):
+                raise ValueError("packed checkpoint slot/label/content counters disagree")
+        elif state["tokens_seen"] != min(state["next_micro_step"] * micro_tokens, total_tokens):
             raise ValueError("checkpoint token and data-cursor counters disagree")
         if state["next_micro_step"] != min(state["updates"] * training.gradient_accumulation_steps, total_micro_steps):
             raise ValueError("checkpoint update and accumulation counters disagree")
@@ -592,7 +638,7 @@ def prepare_training(config_path, manifest_path, data_root, output_dir, *, resum
             raise ValueError("training budget is already complete")
         iterator = iter(PrefetchingTokenLoader(manifest, root=data_root, rank=rank, world_size=world_size,
                         start_step=state["next_micro_step"], max_steps=total_micro_steps - state["next_micro_step"],
-                        prefetch_batches=training.prefetch_batches, device=device, return_step=True))
+                        prefetch_batches=training.prefetch_batches, device=device, return_step=True, batcher=packed_batcher))
         should_stop = [False]
 
         def request_stop(signum, frame):
@@ -604,7 +650,8 @@ def prepare_training(config_path, manifest_path, data_root, output_dir, *, resum
         tokens_at_start = last_log_tokens = state["tokens_seen"]
         if rank == 0:
             append_event(output_dir / "events.jsonl", {"event": "startup", "counts": model.count_parameters(),
-                         "world_size": world_size, "state": state, "unused_tail_tokens": manifest.config.total_train_tokens - total_tokens})
+                         "world_size": world_size, "state": state, "unused_tail_tokens": manifest.config.total_train_tokens - manifest.config.usable_train_tokens,
+                         "token_clock": "scored_targets", "input_slot_horizon": manifest.config.usable_train_tokens})
         model.train()
         workload.model_config = model_config
         workload.training = training
@@ -627,6 +674,8 @@ def prepare_training(config_path, manifest_path, data_root, output_dir, *, resum
         workload.total_micro_steps = total_micro_steps
         workload.phase_offset = phase_offset
         workload.iterator = iterator
+        workload.packed_batcher = packed_batcher
+        workload.verified_files = manifest_report.get("packed_files")
         workload.should_stop = should_stop
         workload.started = started
         workload.last_log = last_log

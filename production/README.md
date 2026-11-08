@@ -1,5 +1,14 @@
 # CI-1 production handoff
 
+**2026-11-09 packed training integration:** the
+[packed training path](PACKED_TRAINING.md) connects finite dataset-child mixing,
+document masks, reset RoPE, actual-label DDP normalization, heldout evaluation
+and checkpoint/QAT cursor handling to the trainer. Full CPU artifact acceptance
+is parallel and immutable staging avoids per-rank rehashing. Native segmented
+attention and batched learned-Q/K checks are now required by AMD preflight;
+their execution and full-size/eight-rank qualification remain unrun here.
+The earlier entries describing missing software integration are historical.
+
 **2026-11-08 reservation recovery:** a reviewed CPU recovery carries 45,401
 missing tokens from the saved first QAT selection into the following QAT
 window, preserving exactly 200B QAT and 1T main content tokens. Future

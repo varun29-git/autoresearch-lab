@@ -46,7 +46,7 @@ from .model import BitNetLlama
 from .optim import build_optimizer
 from .train import load_config, make_resume_contract
 
-POLICIES = ("continue", "phase_mix", "restart")
+POLICIES = ("continue", "phase_mix", "restart", "packed_phase")
 RESETTABLE = {"optimizer", "data_cursor", "rng"}
 
 
@@ -128,11 +128,14 @@ def convert_checkpoint(parent_run_dir, qat_config_path, qat_manifest_path, qat_d
         raise ValueError("parent and child manifests use different tokenizers")
     stream_proof = None
     if data_policy != "restart":
-        from .stream_contract import verify_training_continuation
+        from .stream_contract import verify_training_continuation, verify_packed_continuation
 
-        stream_proof = verify_training_continuation(
-            parent_contract["data"].get("training_stream"), manifest_report.get("training_stream"),
-            parent_seen, policy=data_policy)
+        parent_stream = parent_contract["data"].get("training_stream")
+        child_stream = manifest_report.get("training_stream")
+        if manifest.is_packed:
+            stream_proof = verify_packed_continuation(parent_stream, child_stream, parent_state, policy=data_policy)
+        else:
+            stream_proof = verify_training_continuation(parent_stream, child_stream, parent_seen, policy=data_policy)
     device = torch.device(device_name)
     contract = make_resume_contract(model_config, training, optimizer_config, manifest_report,
                                     world_size, device)
@@ -153,7 +156,7 @@ def convert_checkpoint(parent_run_dir, qat_config_path, qat_manifest_path, qat_d
         for group, child_lr in zip(optimizer.param_groups, child_base_lrs):
             group["base_lr"] = child_lr
             group["lr"] = child_lr
-    total_tokens = manifest.config.usable_train_tokens
+    total_tokens = manifest.scored_train_tokens
     from .train import schedule_scale
     schedule_scale(0, total_tokens - expected_offset, training.warmup_tokens,
                    training.final_lr_fraction, schedule=training.schedule,
@@ -166,7 +169,11 @@ def convert_checkpoint(parent_run_dir, qat_config_path, qat_manifest_path, qat_d
     micro_tokens = manifest.config.tokens_per_step * world_size
     total_micro_steps = -(-manifest.config.total_examples //
                           (manifest.config.batch_size * world_size))
-    if "data_cursor" in resets:
+    if data_policy == "packed_phase":
+        state = dict(next_micro_step=0, tokens_seen=parent_seen, updates=0,
+                     input_slots_seen=0, content_tokens_seen=0)
+        resets_done.extend(("phase_local_data_cursor", "phase_local_update_counter"))
+    elif "data_cursor" in resets:
         state = {"next_micro_step": 0, "tokens_seen": 0, "updates": 0}
         resets_done.extend(("data_cursor", "update_counter"))
     else:
@@ -174,10 +181,11 @@ def convert_checkpoint(parent_run_dir, qat_config_path, qat_manifest_path, qat_d
         parent_accumulation = parent_contract["training"]["gradient_accumulation_steps"]
         if state["next_micro_step"] != state["updates"] * parent_accumulation:
             raise ValueError("parent checkpoint is not at a complete global update boundary")
-        if state["tokens_seen"] % micro_tokens:
+        cursor_tokens = state["input_slots_seen"] if manifest.is_packed else state["tokens_seen"]
+        if cursor_tokens % micro_tokens:
             raise ValueError("carried token cursor is not divisible by the child microbatch tokens; "
                              "choose an aligned child microbatch or request data_policy='restart'")
-        child_step = state["tokens_seen"] // micro_tokens
+        child_step = cursor_tokens // micro_tokens
         if child_step != state["updates"] * training.gradient_accumulation_steps:
             raise ValueError("carried updates do not align with the child global batch; "
                              "keep tokens per update fixed or request data_policy='restart'")
@@ -188,7 +196,7 @@ def convert_checkpoint(parent_run_dir, qat_config_path, qat_manifest_path, qat_d
             raise ValueError("child budget must extend beyond the parent's consumed tokens")
         if data_policy == "phase_mix":
             boundaries = _cumulative_phase_boundaries(manifest.config)
-            if state["tokens_seen"] not in boundaries:
+            if not manifest.is_packed and state["tokens_seen"] not in boundaries:
                 raise ValueError("phase_mix requires a phase boundary exactly at the parent's "
                                  f"consumed tokens ({state['tokens_seen']}); boundaries: {boundaries}")
     if len(parent_payload["rank_rng"]) != world_size and "rng" not in resets:

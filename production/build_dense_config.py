@@ -30,7 +30,7 @@ def build_config(*, manifest: TokenManifest, world_size: int,
     if (type(global_batch_tokens) is not int or global_batch_tokens < microstep_tokens
             or global_batch_tokens % microstep_tokens):
         raise ValueError("global_batch_tokens must be a positive multiple of all-rank microstep tokens")
-    total_tokens = manifest.config.usable_train_tokens
+    total_tokens = manifest.scored_train_tokens
     if (type(warmup_tokens) is not int or warmup_tokens < 0
             or type(decay_tokens) is not int or decay_tokens <= 0
             or warmup_tokens + decay_tokens > total_tokens):
@@ -72,7 +72,7 @@ def main() -> None:
     print(json.dumps({"output": str(output),
                       "global_batch_tokens": args.global_batch_tokens,
                       "gradient_accumulation_steps": config["training"]["gradient_accumulation_steps"],
-                      "usable_train_tokens": manifest.config.usable_train_tokens}, sort_keys=True))
+                      "usable_train_tokens": manifest.scored_train_tokens}, sort_keys=True))
 
 
 if __name__ == "__main__":
