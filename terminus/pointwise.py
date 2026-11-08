@@ -204,7 +204,7 @@ def packed_qkv_rope(packed, cos, sin, query_heads, kv_heads, eps, *, normalize_q
     dim = packed.shape[-1] // (query_heads + 2 * kv_heads)
     if dim not in {64, 128, 256} or packed.dtype not in {torch.bfloat16, torch.float32}:
         raise ValueError("packed QKV requires BF16/FP32 and head width 64, 128 or 256")
-    if any(t.device != packed.device or t.shape != (1, 1, packed.shape[1], dim // 2) or not t.is_contiguous() for t in (cos, sin)):
+    if cos.shape != sin.shape or any(t.device != packed.device or t.shape not in {(1, 1, packed.shape[1], dim // 2), (packed.shape[0], 1, packed.shape[1], dim // 2)} or not t.is_contiguous() for t in (cos, sin)):
         raise ValueError("RoPE tables must be contiguous and match sequence/head dimensions")
     if q_gain is not None:
         if any(g.shape != (dim,) or not g.is_cuda or g.device != packed.device for g in (q_gain, k_gain)):

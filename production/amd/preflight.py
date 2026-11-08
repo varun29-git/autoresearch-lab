@@ -29,7 +29,7 @@ def validate_report(path, config, device):
     if (report.get("kind") != "ci1_amd_preflight" or report.get("schema") != 1
             or report.get("status") != "passed" or report.get("identity") != identity(config, device)):
         raise ValueError("AMD preflight is stale, incompatible or did not pass")
-    required = ("attention", "model_numerics", "optimized_kernels", "packed_learned_qkv", "optimizer")
+    required = ("attention", "document_attention", "model_numerics", "optimized_kernels", "packed_learned_qkv", "optimizer")
     if config.fused_fp8_producers:
         required += ("fp8_producers",)
     if config.linear_backend.startswith("rocm_fp8"):
@@ -95,6 +95,46 @@ def attention_gate(config, device):
                     results.append({"backend": selected, "length": length, "query_length": qlen,
                                     "window": window, "errors": errors})
     return results
+
+
+def document_attention_gate(config, device):
+    """Native varlen forward/backward, local boundaries, GQA and pad isolation."""
+    from terminus.document_attention import DocumentLayout
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    length = config.max_seq_len
+    cut = min(length-1, config.local_attention_window+1)
+    positions = torch.zeros(2, length, dtype=torch.long)
+    segments = torch.full_like(positions, -1)
+    for row, lengths in enumerate(((cut, length-cut), (1, max(1, min(cut, length-2))))):
+        start = 0
+        for segment, size in enumerate(lengths):
+            positions[row, start:start+size] = torch.arange(size)
+            segments[row, start:start+size] = segment
+            start += size
+    layout = DocumentLayout.from_cpu(positions, segments).to(device)
+    cases = []
+    for selected in sorted({config.attention_backend, config.local_attention_backend or config.attention_backend}):
+        for window in (None, config.local_attention_window):
+            shapes = [(2, config.n_heads, length, config.head_dim),
+                      (2, config.n_kv_heads, length, config.head_dim)]
+            xs = [torch.randn(shape, device=device, dtype=torch.bfloat16, requires_grad=True)
+                  for shape in (shapes[0], shapes[1], shapes[1])]
+            refs = [x.detach().clone().requires_grad_() for x in xs]
+            actual = attention(*xs, backend=selected, local_window=window, document_layout=layout)
+            with sdpa_kernel(SDPBackend.MATH):
+                expected = attention(*refs, backend="sdpa_reference", local_window=window, document_layout=layout)
+            gradient = torch.randn_like(actual)
+            errors = _errors([actual, *torch.autograd.grad(actual, xs, gradient)],
+                             [expected, *torch.autograd.grad(expected, refs, gradient)])
+            perturbed = [x.detach().clone() for x in xs]
+            for x in perturbed:
+                x[0, :, :cut] = torch.randn_like(x[0, :, :cut])*3
+            isolated = attention(*perturbed, backend=selected, local_window=window, document_layout=layout)
+            if not torch.equal(isolated[0, :, cut:], actual.detach()[0, :, cut:]):
+                raise AssertionError("native packed attention leaked between documents")
+            cases.append(dict(backend=selected, window=window, errors=errors, isolation=True))
+    return {"cases": cases, "reset_positions": True, "gqa": True, "padding_excluded": True}
 
 
 def fp8_gate(config, device):
@@ -183,12 +223,12 @@ def fp8_gate(config, device):
             "format": "FNUZ E4M3, max 240"}
 
 
-def packed_gate(config, device):
+def _packed_gate(config, device, *, batched_rope):
     from terminus.pointwise import packed_qkv_rope
 
     q, kv, d = config.n_heads, config.n_kv_heads, config.head_dim
     x = torch.randn(2, 17, (q + 2 * kv) * d, dtype=torch.bfloat16, device=device, requires_grad=True)
-    cos, sin = [torch.randn(1, 1, 17, d // 2, device=device) for _ in range(2)]
+    cos, sin = [torch.randn(2 if batched_rope else 1, 1, 17, d // 2, device=device) for _ in range(2)]
     qnorm, knorm = [RMSNorm(d, gain="channel").to(device) for _ in range(2)]
     with torch.no_grad():
         qnorm.weight.copy_(torch.linspace(.5, 1.5, d, device=device))
@@ -203,6 +243,11 @@ def packed_gate(config, device):
     operands = (x, qnorm.weight, knorm.weight)
     return _errors([*actual, *torch.autograd.grad(actual, operands, grads, retain_graph=True)],
                    [*expected, *torch.autograd.grad(expected, operands, grads)], limit=.012)
+
+
+def packed_gate(config, device):
+    return {"shared_rope": _packed_gate(config, device, batched_rope=False),
+            "per_batch_reset_rope": _packed_gate(config, device, batched_rope=True)}
 
 
 def producer_gate(config, device):
@@ -270,6 +315,7 @@ def run(config, device):
         report = {"schema": 1, "kind": "ci1_amd_preflight", "status": "passed",
                   "counts": count_model(config), "changes_from_h100": changes(config),
                   "attention": attention_gate(config, device),
+                  "document_attention": document_attention_gate(config, device),
                   "fp8": fp8_gate(config, device) if config.linear_backend.startswith("rocm_fp8") else None,
                   "packed_learned_qkv": packed_gate(config, device),
                   "optimized_kernels": optimized_kernel_preflight(config, device),

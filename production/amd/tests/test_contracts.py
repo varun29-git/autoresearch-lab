@@ -184,7 +184,7 @@ def test_amd_receipt_cannot_use_h100_or_incomplete_evidence(tmp_path, monkeypatc
     path.write_text(json.dumps(report))
     with pytest.raises(ValueError, match="evidence"):
         validate_report(path, model_for(), torch.device("cpu"))
-    report.update({k: [True] for k in ("attention", "model_numerics", "optimized_kernels", "packed_learned_qkv", "optimizer", "fp8")})
+    report.update({k: [True] for k in ("attention", "document_attention", "model_numerics", "optimized_kernels", "packed_learned_qkv", "optimizer", "fp8")})
     report["report_sha256"] = fingerprint(report)
     path.write_text(json.dumps(report))
     validate_report(path, model_for(), torch.device("cpu"))
@@ -201,7 +201,7 @@ def test_amd_qat_receipt_requires_mode_specific_native_evidence(tmp_path, monkey
     model = model_for(weight_mode="ternary")
     report = {"kind": "ci1_amd_preflight", "schema": 1, "status": "passed",
               "identity": {"test": "identity"},
-              **{k: [True] for k in ("attention", "model_numerics", "optimized_kernels",
+              **{k: [True] for k in ("attention", "document_attention", "model_numerics", "optimized_kernels",
                                       "packed_learned_qkv", "optimizer")},
               "fp8": {"weight_mode": "ternary", "fp32_wgrad": True,
                       "weight_cache_refresh": True},

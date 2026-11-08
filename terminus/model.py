@@ -409,7 +409,7 @@ class BitNetAttention(nn.Module):
         self.k_norm = RMSNorm(config.head_dim, config.rms_norm_eps, gain=norm_gain, fused=config.fused_pointwise) if config.qk_norm_mode != "none" else nn.Identity()
         self.attn_sub_norm = RMSNorm(config.dim, config.rms_norm_eps, gain="scalar", fused=config.fused_pointwise) if config.attention_subln_enabled else nn.Identity()
 
-    def forward(self, hidden, cos, sin, attention_mask=None, cache=None, *, value_source=None, hidden_fp8=None):
+    def forward(self, hidden, cos, sin, attention_mask=None, cache=None, *, value_source=None, hidden_fp8=None, document_layout=None):
         batch, length, _ = hidden.shape
         if self.config.fused_qkv:
             from .pointwise import packed_qkv_rope
@@ -429,7 +429,7 @@ class BitNetAttention(nn.Module):
             query = query.view(batch, length, self.config.n_heads, self.config.head_dim).transpose(1, 2)
             key = key.view(batch, length, self.config.n_kv_heads, self.config.head_dim).transpose(1, 2)
             value = value.view(batch, length, self.config.n_kv_heads, self.config.head_dim).transpose(1, 2)
-            if self.config.fused_pointwise and self.config.qk_norm_mode == "unit_rms":
+            if self.config.fused_pointwise and self.config.qk_norm_mode == "unit_rms" and document_layout is None:
                 from .pointwise import qk_rope
 
                 query, key = (qk_rope(values, cos, sin, self.config.rms_norm_eps) for values in (query, key))
@@ -453,14 +453,15 @@ class BitNetAttention(nn.Module):
             key, value, offset = cache.attention_inputs(key, value)
         probe = getattr(self, "stability_probe", None)
         if probe is not None and probe.active and cache is None:
-            probe.record_attention(self.stability_layer, query, key, self.is_global_layer)
+            probe.record_attention(self.stability_layer, query, key, self.is_global_layer,
+                                   document_layout=document_layout)
         backend = self.config.attention_backend
         if not self.is_global_layer and self.config.local_attention_backend:
             backend = self.config.local_attention_backend
         output = attention(query, key, value, backend=backend,
                            local_window=None if self.is_global_layer else self.config.local_attention_window,
                            query_position_offset=offset, attention_mask=attention_mask,
-                           dropout_p=self.config.dropout if self.training else 0.0)
+                           dropout_p=self.config.dropout if self.training else 0.0, document_layout=document_layout)
         if cache is not None:
             cache.commit(key, value)
         output = output.transpose(1, 2).reshape(batch, length, self.config.dim)
@@ -529,7 +530,7 @@ class BitNetBlock(nn.Module):
         self.attn = BitNetAttention(config, layer_index=layer_index)
         self.ffn = BitNetFeedForward(config)
 
-    def forward(self, hidden, cos, sin, attention_mask=None, cache=None, *, value_source=None):
+    def forward(self, hidden, cos, sin, attention_mask=None, cache=None, *, value_source=None, document_layout=None):
         fuse_fp8 = (self.config.fused_fp8_producers and hidden.is_cuda and cache is None
                     and (self.attn.qkv_proj.linear_backend == "deepgemm"
                          or self.attn.qkv_proj.linear_backend.startswith("rocm_fp8")))
@@ -541,11 +542,11 @@ class BitNetBlock(nn.Module):
 
             normed, codes, scales = rms_norm_fp8(hidden, self.attn_norm.weight, self.attn_norm.eps)
             hidden = hidden + self.attn_out_norm(self.attn(normed, cos, sin, attention_mask, cache,
-                                                           value_source=value_source, hidden_fp8=(codes, scales)))
+                                                           value_source=value_source, hidden_fp8=(codes, scales), document_layout=document_layout))
             normed, codes, scales = rms_norm_fp8(hidden, self.ffn_norm.weight, self.ffn_norm.eps)
             return hidden + self.ffn_out_norm(self.ffn(normed, hidden_fp8=(codes, scales)))
         hidden = hidden + self.attn_out_norm(self.attn(self.attn_norm(hidden), cos, sin, attention_mask, cache,
-                                                       value_source=value_source))
+                                                       value_source=value_source, document_layout=document_layout))
         return hidden + self.ffn_out_norm(self.ffn(self.ffn_norm(hidden)))
 
 
@@ -590,11 +591,15 @@ class BitNetLlama(nn.Module):
             with torch.no_grad():
                 self.tok_embeddings.weight[config.pad_token_id].zero_()
 
-    def forward(self, input_ids, targets=None, attention_mask=None, *, return_logits=True):
+    def forward(self, input_ids, targets=None, attention_mask=None, *, return_logits=True, document_layout=None):
         if input_ids.ndim != 2 or min(input_ids.shape) <= 0 or input_ids.dtype != torch.long:
             raise ValueError("input_ids must be nonempty int64 [batch, sequence]")
         if targets is not None and (targets.shape != input_ids.shape or targets.dtype != torch.long):
             raise ValueError("targets must be pre-shifted int64 with input shape; use -100 to ignore")
+        if document_layout is not None:
+            document_layout.validate_for(input_ids.shape, input_ids.device)
+            if attention_mask is not None:
+                raise ValueError("document layout already defines the attention mask")
         if attention_mask is not None:
             if attention_mask.shape != input_ids.shape or attention_mask.dtype != torch.bool:
                 raise ValueError("attention_mask must be boolean [batch, sequence]")
@@ -603,6 +608,10 @@ class BitNetLlama(nn.Module):
         hidden = self.embed_rot_in(self.dropout(self.tok_embeddings(input_ids)))
         hidden = hidden.to(torch.bfloat16 if self.config.residual_dtype == "bf16" else torch.float32)
         cos, sin = self.rotary(input_ids.shape[1], device=hidden.device, dtype=hidden.dtype)
+        if document_layout is not None:
+            positions = document_layout.positions
+            cos = cos[0, 0][positions].unsqueeze(1).contiguous()
+            sin = sin[0, 0][positions].unsqueeze(1).contiguous()
         value_source = None
         for index, layer in enumerate(self.layers):
             # With value_residual, layer 0 stays uncheckpointed so its stashed V1
@@ -614,15 +623,15 @@ class BitNetLlama(nn.Module):
                               and not (self.config.value_residual != "none" and index == 0))
             if use_checkpoint and self.config.value_residual != "none":
                 hidden = checkpoint(layer, hidden, cos, sin, attention_mask,
-                                    use_reentrant=False, value_source=value_source)
+                                    use_reentrant=False, value_source=value_source, document_layout=document_layout)
             elif use_checkpoint:
-                hidden = checkpoint(layer, hidden, cos, sin, attention_mask, use_reentrant=False)
+                hidden = checkpoint(layer, hidden, cos, sin, attention_mask, use_reentrant=False, document_layout=document_layout)
             elif self.config.value_residual != "none":
-                hidden = layer(hidden, cos, sin, attention_mask, value_source=value_source)
+                hidden = layer(hidden, cos, sin, attention_mask, value_source=value_source, document_layout=document_layout)
                 if value_source is None:
                     value_source = layer.attn.values_used
             else:
-                hidden = layer(hidden, cos, sin, attention_mask)
+                hidden = layer(hidden, cos, sin, attention_mask, document_layout=document_layout)
         hidden = self.embed_rot_out(self.norm(hidden))
         logits = functional.linear(hidden, self.tok_embeddings.weight) if return_logits else None
         loss = loss_sum = loss_tokens = None
