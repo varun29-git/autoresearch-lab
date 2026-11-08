@@ -24,10 +24,12 @@ from botocore.config import Config
 import numpy as np
 
 from production.compact_ledger import CompactLedger, key, row_key_hash
+from production.readonly_ledger import ReadOnlyLedger
+from production.parallel_gzip import ParallelGzipWriter
 from production.document_packing import ShardWriter, file_sha, fragments
 from production.native_corpus import publish, _output_matches
 from production.packing_parallel import (download_verified, initialize,
-    pack_chunk, prepare_index, prepare_records)
+    pack_chunk, prepare_index, prepare_records, FragmentReference)
 from production.packing_worker import Worker as ReferenceWorker, Exclusions, fingerprint, bounded_map
 from production.preparation_queue import object_spec
 
@@ -48,15 +50,26 @@ class FastWorker(ReferenceWorker):
         self.scratch.mkdir(parents=True)
         self.ram_limit=plan.get('input_ram_mib',8192)<<20;self.ram_used=0
         self.paths={};self.path_lock=threading.Lock()
+        self.path_holds=Counter();self.pending_release=set();self.buffer_paths=set()
         predecessor=None
         if plan.get('input_ledger'):
             predecessor=self.work/'input-ledger.sqlite'
             download_verified(self.client,plan['input_ledger'],predecessor)
-        self.ledger=CompactLedger(self.work,predecessor,
-            memory_mib=plan.get('ledger_memory_mib',65536),
-            seen_mib=plan.get('ledger_seen_mib',8192),
-            cache_mib=plan.get('ledger_fallback_cache_mib',24576),
-            use_seen=not bool(plan.get('fixed_selection')))
+        self.readonly_ledger=bool(plan.get('read_only_fixed_ledger',False))
+        if self.readonly_ledger:
+            if not plan.get('fixed_selection') or self.reservation_only or predecessor is None:
+                raise ValueError('immutable ledger is only valid for fixed materialization')
+            self.ledger=ReadOnlyLedger(predecessor,
+                cache_mib=plan.get('readonly_ledger_cache_mib',512),
+                mmap_mib=plan.get('readonly_ledger_mmap_mib',2048))
+        else:
+            self.ledger=CompactLedger(self.work,predecessor,
+                memory_mib=plan.get('ledger_memory_mib',65536),
+                seen_mib=plan.get('ledger_seen_mib',8192),
+                cache_mib=plan.get('ledger_fallback_cache_mib',24576),
+                use_seen=not bool(plan.get('fixed_selection')),
+                commit_rows=plan.get('ledger_commit_rows',0),
+                bulk_insert_rows=plan.get('ledger_bulk_insert_rows',0))
         self.pending_suffixes=[]
         if plan.get('input_suffixes'):
             path=self.work/'prior-suffixes.jsonl';self.download(plan['input_suffixes'],path)
@@ -85,7 +98,8 @@ class FastWorker(ReferenceWorker):
         self.source_receipts_dir=self.work/'source-receipts';self.source_receipts_dir.mkdir(exist_ok=True)
         self.provenance=(self.source_receipts_dir/'verified.jsonl').open('wb',buffering=64<<20)
         self.reserved_path=self.work/('protected-records.jsonl.gz' if plan.get('compress_reservations') else 'protected-records.jsonl')
-        self.reserved=(gzip.open(self.reserved_path,'wb',compresslevel=1) if plan.get('compress_reservations')
+        self.reserved=((ParallelGzipWriter(self.reserved_path,workers=plan.get('compression_workers',4))
+                       if plan.get('parallel_reservation_compression')else gzip.open(self.reserved_path,'wb',compresslevel=1)) if plan.get('compress_reservations')
                        else self.reserved_path.open('wb',buffering=64<<20)) if self.reservation_only else None
 
     def download(self, spec, path):
@@ -102,8 +116,27 @@ class FastWorker(ReferenceWorker):
         return path
 
     def release(self, path):
-        path=Path(path);path.unlink(missing_ok=True)
-        with self.path_lock:self.ram_used-=self.paths.pop(str(path),0)
+        path=Path(path)
+        with self.path_lock:
+            if self.path_holds[str(path)]:
+                self.pending_release.add(str(path));return
+            path.unlink(missing_ok=True)
+            self.ram_used-=self.paths.pop(str(path),0)
+            self.pending_release.discard(str(path));self.path_holds.pop(str(path),None)
+
+    def retain_buffer_input(self,path):
+        path=str(path)
+        if path not in self.buffer_paths:
+            self.buffer_paths.add(path)
+            with self.path_lock:self.path_holds[path]+=1
+
+    def release_chunk_inputs(self,paths):
+        for path in paths:
+            with self.path_lock:
+                self.path_holds[path]-=1
+                if self.path_holds[path]<0:raise ValueError('invalid packing input lifetime')
+                remove=not self.path_holds[path]and path in self.pending_release
+            if remove:self.release(path)
 
     def provenance_receipt(self, job, result):
         if job['job_id']not in self.source_receipt_ids:
@@ -278,12 +311,18 @@ class FastWorker(ReferenceWorker):
         if not buffer:return
         seed=fingerprint([self.plan['seed'],self.stratum,self.buffer_number])
         future=self.packing_pool.submit(pack_chunk,tuple(buffer),self.plan['sequence_length'],seed,str(self.scratch))
-        self.pack_pending.append((future,self.leaf,self.stratum));buffer.clear();self.buffer_number+=1
+        self.pack_pending.append((future,self.leaf,self.stratum,self.buffer_paths))
+        self.buffer_paths=set();buffer.clear();self.buffer_number+=1
         if len(self.pack_pending)>=self.plan.get('packing_prefetch',6):self.drain_pack()
         self.deadline()
 
     def drain_pack(self):
-        future,leaf,stratum=self.pack_pending.popleft();chunk=future.result();start=0
+        future,leaf,stratum,paths=self.pack_pending.popleft()
+        try:chunk=future.result()
+        finally:self.release_chunk_inputs(paths)
+        start=0
+        if self.current is not None and (leaf,stratum)!=(self.current_leaf,self.current_stratum):
+            self.finish_shard()
         data_hash=hashlib.sha256();meta_hash=hashlib.sha256()
         with Path(chunk['payload']['path']).open('rb')as data,Path(chunk['index']['path']).open('rb')as meta:
             while start<chunk['sequences']:
@@ -335,7 +374,8 @@ class FastWorker(ReferenceWorker):
         self.event('shard_published',shard=len(self.receipts),leaf=result['leaf'],stratum=result['stratum'],
             content_tokens=result['content_tokens'],receipt=result['receipt'])
 
-    def finish_stratum(self):
+    def finish_stratum(self,force=False):
+        if self.plan.get('overlap_fixed_strata')and self.plan.get('fixed_selection')and not force:return
         while self.pack_pending:self.drain_pack()
         self.finish_shard()
         while self.upload_pending:self.drain_upload()
@@ -425,16 +465,22 @@ class FastWorker(ReferenceWorker):
             identity,records,future=item;target=future.result()
             if identity[:2]!=(self.leaf,self.stratum):
                 self.flush(buffer);self.finish_stratum();self.leaf,self.stratum=identity[:2];self.buffer_number=0
-            tokens=np.memmap(target,dtype='<u2',mode='r')
+            references=bool(self.plan.get('parallel_fragment_preparation'))
+            tokens=None if references else np.memmap(target,dtype='<u2',mode='r')
+            token_count=Path(target).stat().st_size//2 if references else len(tokens)
             try:
                 for record,offset,n in records:
                     begin=record['source_token_start']+offset
-                    if begin<0 or begin+n>len(tokens):raise ValueError('fixed span exceeds source payload')
+                    if begin<0 or begin+n>token_count:raise ValueError('fixed span exceeds source payload')
                     document={k:v for k,v in record.items()if k not in
                         ('allocation','allocated_content_tokens','allocated_document_offset','whole_record_protected',
                          'leaf','stratum','_sha','_row_sha')}
-                    for part in fragments(tokens[begin:begin+n],document,length=self.plan['sequence_length'],
-                        offset=offset,document_end=offset+n==record['original_content_tokens']):
+                    complete=offset+n==record['original_content_tokens']
+                    parts=(FragmentReference(str(target),begin,n,document,offset,complete,i)
+                        for i in range((n+self.plan['sequence_length']-1)//self.plan['sequence_length']))if references else fragments(
+                            tokens[begin:begin+n],document,length=self.plan['sequence_length'],offset=offset,document_end=complete)
+                    for part in parts:
+                        if references:self.retain_buffer_input(target)
                         buffer.append(part)
                         if len(buffer)>=self.plan['packing_buffer_fragments']:self.flush(buffer)
                     counts[record['leaf']]+=n
@@ -459,17 +505,18 @@ class FastWorker(ReferenceWorker):
                     self.work/'predecessor-mixture')
                 self.event('predecessor_mixture_ready',**prepared)
             results=self.materialize_fixed()if self.plan.get('fixed_selection')else self.select_sources()
-            self.finish_stratum();self.provenance.close()
+            self.finish_stratum(force=True);self.provenance.close()
             if self.reserved:self.reserved.close()
-            checkpoint=self.ledger.snapshot(self.work/'selected.sqlite')
-            mode='ram'if self.ledger.memory else 'bounded-file-fallback';count=self.ledger.count
+            checkpoint=None if self.readonly_ledger else self.ledger.snapshot(self.work/'selected.sqlite')
+            mode='immutable-predecessor'if self.readonly_ledger else 'ram'if self.ledger.memory else 'bounded-file-fallback'
+            count=self.ledger.count
             self.ledger.close()
             self.ledger=None
             suffix=self.work/'quota-suffix-reservations.jsonl'
             suffix.write_text(''.join(json.dumps(r,separators=(',',':'))+'\n'for r in self.pending_suffixes))
-            artifacts={}
+            artifacts={'selected.sqlite':dict(self.plan['input_ledger'])}if self.readonly_ledger else {}
             for item in [self.events,checkpoint,suffix,self.reserved_path,self.work/'TRANSLATION_PAIRS.json']:
-                if item.exists():
+                if item is not None and item.exists():
                     artifact=publish(self.client,self.bucket,item,self.prefix+'/audit/'+item.name)
                     name=item.name
                     if name=='protected-records.jsonl.gz':

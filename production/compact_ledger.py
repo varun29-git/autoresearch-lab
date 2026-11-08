@@ -8,6 +8,7 @@ by SHA-256, rather than repeating long source paths in every database record.
 from __future__ import annotations
 
 import hashlib
+from itertools import chain
 from pathlib import Path
 import sqlite3
 import sys
@@ -31,10 +32,13 @@ def row_key_hash(value):
 
 class CompactLedger:
     def __init__(self, work, predecessor=None, *, memory_mib=73728,
-                 seen_mib=12288, cache_mib=24576, use_seen=True):
+                 seen_mib=12288, cache_mib=24576, use_seen=True,
+                 commit_rows=0, bulk_insert_rows=0):
         self.work=Path(work);self.work.mkdir(parents=True,exist_ok=True)
         self.memory_limit=memory_mib<<20;self.seen_limit=seen_mib<<20
         self.cache_mib=cache_mib;self.memory=True;self.seen=None
+        if commit_rows<0 or not 0<=bulk_insert_rows<=200:raise ValueError('invalid ledger batching')
+        self.commit_rows=commit_rows;self.bulk_insert_rows=bulk_insert_rows;self.uncommitted_rows=0
         source=None
         if predecessor:
             source=sqlite3.connect('file:'+str(Path(predecessor).resolve())+'?mode=ro',uri=True)
@@ -132,10 +136,16 @@ class CompactLedger:
             group=rows[start:start+100000]
             batch=sorted((r.get('_sha') or key(r['source_text_sha256']),
                 r.get('_row_sha') or row_key_hash(r['row_key']),l,o)for r in group)
-            self.conn.executemany('INSERT INTO allocations VALUES(?,?,?,?)',batch)
+            if self.bulk_insert_rows:
+                for i in range(0,len(batch),self.bulk_insert_rows):
+                    values=batch[i:i+self.bulk_insert_rows]
+                    self.conn.execute('INSERT INTO allocations VALUES '+','.join('(?,?,?,?)'for _ in values),
+                        tuple(chain.from_iterable(values)))
+            else:self.conn.executemany('INSERT INTO allocations VALUES(?,?,?,?)',batch)
             self.count+=len(batch)
             if self.seen is not None:self.seen.update(r[0]for r in batch)
-            self.commit()
+            self.uncommitted_rows+=len(batch)
+            if not self.commit_rows or self.uncommitted_rows>=self.commit_rows:self.commit()
         self.bound_seen()
 
     def change_owner(self, sha, owner):
@@ -153,6 +163,7 @@ class CompactLedger:
         self.conn.execute("INSERT OR REPLACE INTO metadata VALUES('schema','ci1_compact_ledger_v2')")
         self.conn.execute("INSERT OR REPLACE INTO metadata VALUES('count',?)",(str(self.count),))
         self.conn.commit()
+        self.uncommitted_rows=0
         pages=self.conn.execute('PRAGMA page_count').fetchone()[0]
         size=pages*self.conn.execute('PRAGMA page_size').fetchone()[0]
         if self.memory and size>self.memory_limit:

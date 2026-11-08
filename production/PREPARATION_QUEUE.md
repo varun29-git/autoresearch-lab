@@ -115,6 +115,26 @@ and rejection of corrupted prefetched payloads:
 python3 -m unittest tests.test_fast_packing_worker tests.test_document_packing tests.test_packing_worker tests.test_preparation_queue tests.test_native_corpus.MultipartPublicationTests
 ```
 
+The optional pipeline settings `read_only_fixed_ledger`,
+`parallel_fragment_preparation` and `overlap_fixed_strata` remove the writable
+ledger clone from fixed materializers, move source-token validation and fragment
+copying into the packing processes, and overlap adjacent source strata. Input
+files stay pinned until every child using them has finished. The SHA-verified
+predecessor still passes SQLite integrity checks and every reserved record still
+matches its ownership entry. The completion report retains the original ledger
+artifact instead of publishing another identical ownership snapshot.
+
+Reservation workers can use `parallel_reservation_compression` with bounded
+native gzip threads, `ledger_commit_rows` for larger transactions, and
+`ledger_bulk_insert_rows` (at most 200) for multi-row SQLite inserts. Independent
+gzip members preserve the exact decompressed record stream and are checked
+against both Python and DuckDB readers. Snapshot publication still commits and
+validates the complete ledger. Enable these settings only after a matched
+real-source benchmark; the benchmark reports and deployment receipts stay
+outside Git. `tests.test_packing_pipeline` covers byte-identical packed outputs,
+source ownership, quota-cut offsets, paired segments, input lifetimes and
+failure on illegal source token IDs. Native trainer acceptance remains separate.
+
 Fixed materializers and translation-pair discovery accept exhausted sources
 with exact zero quotas, since those sources have no reserved records. Every
 positive quota still matches exactly; negative quotas remain invalid. CPU

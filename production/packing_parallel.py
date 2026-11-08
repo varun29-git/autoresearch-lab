@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from pathlib import Path
 import uuid
 
@@ -9,9 +10,49 @@ import numpy as np
 
 from production.compact_ledger import key, row_key_hash
 from production.document_packing import ShardWriter, best_fit
+from production.document_packing import fragments
 from production.packing_worker import Exclusions, fingerprint
 
 EXCLUSIONS=None
+
+
+@dataclass
+class FragmentReference:
+    path: str
+    start: int
+    count: int
+    document: dict
+    offset: int
+    document_end: bool
+    number: int
+
+
+def expand_references(items,length):
+    """Read verified local inputs in packing children, avoiding token IPC."""
+    maps={};result=[];identity=None;iterator=None;number=-1
+    try:
+        for item in items:
+            if not isinstance(item,FragmentReference):
+                result.append(item);continue
+            current=(item.path,item.start,item.count,id(item.document),item.offset,item.document_end)
+            if current!=identity:
+                if item.path not in maps:maps[item.path]=np.memmap(item.path,dtype='<u2',mode='r')
+                values=maps[item.path]
+                if item.start<0 or item.count<=0 or item.start+item.count>len(values):
+                    raise ValueError('referenced fragment exceeds verified source payload')
+                iterator=iter(fragments(values[item.start:item.start+item.count],item.document,
+                    length=length,offset=item.offset,document_end=item.document_end))
+                identity=current;number=-1
+            if item.number<=number:raise ValueError('referenced fragments are out of order')
+            try:
+                while number<item.number:fragment=next(iterator);number+=1
+            except StopIteration as exc:raise ValueError('referenced fragment exceeds selected span')from exc
+            result.append(fragment)
+        return result
+    finally:
+        # Fragment payloads are owned copies; input maps need not survive packing.
+        iterator=None
+        for value in maps.values():value._mmap.close()
 
 
 def initialize(exclusions_path, exclusions_sha256):
@@ -59,6 +100,8 @@ def prepare_records(raw):
 
 
 def pack_chunk(items, length, seed, directory):
+    if any(isinstance(item,FragmentReference)for item in items):
+        items=expand_references(items,length)
     packs=best_fit(items,length=length,seed=seed)
     writer=ShardWriter(directory,'chunk-'+uuid.uuid4().hex,length=length,
         buffer_bytes=64<<20,fast_json=True)
