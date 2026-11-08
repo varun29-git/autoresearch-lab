@@ -152,10 +152,39 @@ class FastPackingTests(unittest.TestCase):
             with patch('production.packed_mixture_finalize.publish',side_effect=publish):
                 prepared=prepare_phase(client,{'bucket':'bucket','output_prefix':'phase-mixture',
                     'source_plan_sha256':'plan','expected_content_tokens':440,
+                    'expected_input_ledger':fast['artifacts']['selected.sqlite'],
                     'source_report':{'uri':'s3://bucket/fast/MATERIALIZATION.json'}},root/'phase-mixture')
             self.assertEqual(prepared['content_tokens'],440)
             self.assertEqual(prepared['cached_shards_reused'],len(fast['shards']))
             self.assertEqual(prepared['newly_indexed_shards'],0)
+            # Completed warmup reports predate both the artifacts map and
+            # descriptor offsets. Reuse separately indexed shards while still
+            # binding the canonical audit ledger to the inherited allocation.
+            legacy=json.loads((root/'fast/MATERIALIZATION.json').read_text())
+            legacy.pop('artifacts')
+            for shard in legacy['shards']:
+                shard.pop('index_offsets');shard.pop('index_offsets_bind_to_sha256')
+            client.put_object(Bucket='bucket',Key='fast/legacy-MATERIALIZATION.json',
+                Body=json.dumps(legacy).encode())
+            client.put_object(Bucket='bucket',Key='cached-index.json',
+                Body=json.dumps({'status':'complete','shards':fast['shards']}).encode())
+            legacy_plan={'bucket':'bucket','output_prefix':'legacy-mixture',
+                'source_plan_sha256':'plan','expected_content_tokens':440,
+                'expected_input_ledger':fast['artifacts']['selected.sqlite'],
+                'source_report':{'uri':'s3://bucket/fast/legacy-MATERIALIZATION.json'},
+                'cached_index_reports':[{'uri':'s3://bucket/cached-index.json'}]}
+            with patch('production.packed_mixture_finalize.publish',side_effect=publish):
+                prepared=prepare_phase(client,legacy_plan,root/'legacy-mixture')
+            self.assertEqual(prepared['content_tokens'],440)
+            self.assertEqual(prepared['cached_shards_reused'],len(fast['shards']))
+            self.assertEqual(prepared['newly_indexed_shards'],0)
+            for field,value in [('sha256','0'*64),('bytes',0),('uri','s3://bucket/other-ledger')]:
+                with self.subTest(inherited_ledger_field=field):
+                    changed=legacy_plan|{'output_prefix':'rejected-mixture',
+                        'expected_input_ledger':legacy_plan['expected_input_ledger']|{field:value}}
+                    with self.assertRaisesRegex(ValueError,'inherited allocation ledger'):
+                        prepare_phase(client,changed,root/'rejected-mixture')
+            self.assertNotIn(('bucket','rejected-mixture/FINALIZED.json'),client.objects)
 
     def test_compact_ledger_suffix_reservation_and_fixed_partition_keep_original_offsets(self):
         with tempfile.TemporaryDirectory()as t:

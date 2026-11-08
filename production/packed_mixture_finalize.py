@@ -6,7 +6,7 @@ from pathlib import Path
 
 from production.packed_index import index_shard, publish
 from production.packed_mixture import mixture_candidate
-from production.preparation_queue import verify_artifact
+from production.preparation_queue import object_spec, verify_artifact
 
 
 def get_json(client,spec):
@@ -22,15 +22,23 @@ def get_json(client,spec):
 def prepare_phase(client,plan,work):
     work=Path(work);work.mkdir(parents=True,exist_ok=True)
     report,source_sha=get_json(client,plan['source_report'])
-    if plan.get('expected_input_ledger'):
-        actual=report['artifacts']['selected.sqlite'];expected=plan['expected_input_ledger']
-        if any(actual[field]!=expected[field]for field in ['uri','bytes','sha256']):
-            raise ValueError('mixing phase differs from the inherited allocation ledger')
     if (report['plan_sha256']!=plan['source_plan_sha256']
             or report['totals']['content_tokens']!=plan['expected_content_tokens']
             or not report.get('all_curriculum_quotas_satisfied')
             or not report.get('physical_creation_finished')):
         raise ValueError('predecessor is not the completed physical phase')
+    if plan.get('expected_input_ledger'):
+        artifacts=report.get('artifacts')
+        if artifacts is None:
+            # Earlier completed packers published audit objects separately.
+            bucket,key=plan['source_report']['uri'][5:].split('/',1)
+            actual=object_spec(client,bucket,key.rsplit('/',1)[0]+'/audit/selected.sqlite')
+        else:
+            actual=artifacts['selected.sqlite']
+        expected=plan['expected_input_ledger']
+        if any(actual[field]!=expected[field]for field in ['uri','bytes','sha256']):
+            raise ValueError('mixing phase differs from the inherited allocation ledger')
+        verify_artifact(client,actual)
     cached={}
     for spec in plan.get('cached_index_reports',[]):
         indexed,_=get_json(client,spec)
