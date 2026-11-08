@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 import uuid
@@ -87,10 +88,12 @@ def prepare_index(path, seed):
     return {'rows':rows,'tokens':cursor,'documents':documents,'heldout':heldout}
 
 
-def prepare_records(raw):
+def prepare_records(raw, source_scope=None, skipped_shas=None):
     rows=[]
     for line in raw.splitlines():
         row=loads(line)
+        if source_scope is not None and row['leaf']not in source_scope:continue
+        if skipped_shas and row['source_text_sha256']in skipped_shas:continue
         row['_sha']=key(row['source_text_sha256'])
         row['_row_sha']=row_key_hash(row['row_key'])
         if EXCLUSIONS.excludes(row|{'validation':False}):
@@ -121,9 +124,17 @@ def pack_chunk(items, length, seed, directory):
     return result
 
 
-def download_verified(client, spec, path):
+def download_verified(client, spec, path, local_cache=None):
     """Hash while receiving large blocks; avoid a second complete file read."""
     path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
+    if local_cache and spec['uri']in local_cache:
+        cached=local_cache[spec['uri']];source=Path(cached['path'])
+        from production.document_packing import file_sha
+        if (cached['sha256']!=spec['sha256']or cached['bytes']!=spec['bytes']
+                or source.stat().st_size!=spec['bytes']or file_sha(source)!=spec['sha256']):
+            raise ValueError('shared immutable input differs from its pinned identity')
+        os.link(source,path)
+        return path
     bucket,name=spec['uri'][5:].split('/',1)
     body=client.get_object(Bucket=bucket,Key=name)['Body']
     digest=hashlib.sha256();size=0

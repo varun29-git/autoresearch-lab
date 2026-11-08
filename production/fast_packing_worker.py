@@ -54,7 +54,7 @@ class FastWorker(ReferenceWorker):
         predecessor=None
         if plan.get('input_ledger'):
             predecessor=self.work/'input-ledger.sqlite'
-            download_verified(self.client,plan['input_ledger'],predecessor)
+            self.download(plan['input_ledger'],predecessor)
         self.readonly_ledger=bool(plan.get('read_only_fixed_ledger',False))
         if self.readonly_ledger:
             if not plan.get('fixed_selection') or self.reservation_only or predecessor is None:
@@ -103,7 +103,7 @@ class FastWorker(ReferenceWorker):
                        else self.reserved_path.open('wb',buffering=64<<20)) if self.reservation_only else None
 
     def download(self, spec, path):
-        return download_verified(self.client,spec,path)
+        return download_verified(self.client,spec,path,self.plan.get('local_verified_inputs'))
 
     def input_path(self, spec, suffix):
         with self.path_lock:
@@ -391,7 +391,8 @@ class FastWorker(ReferenceWorker):
                     if not line:break
                     lines.append(line);size+=len(line)
                 if not lines:break
-                pending.append(self.metadata_pool.submit(prepare_records,b''.join(lines)))
+                pending.append(self.metadata_pool.submit(prepare_records,b''.join(lines),
+                    self.plan.get('fixed_source_scope'),set(self.plan.get('fixed_skip_source_shas',[]))))
                 if len(pending)>=2:yield pending.popleft().result()
         while pending:yield pending.popleft().result()
 
@@ -417,6 +418,10 @@ class FastWorker(ReferenceWorker):
             self.pair_report=paired.report()
             (self.work/'TRANSLATION_PAIRS.json').write_text(json.dumps(self.pair_report,indent=2)+'\n')
             self.event('translation_pair_preparation_finished',**self.pair_report)
+        if self.plan.get('materializer_processes',1)>1:
+            from production.packing_coordinators import run_pool
+            pooled=run_pool(self,path,paired)
+            if pooled is not None:return pooled
         ranges=self.plan.get('fixed_source_ranges')
         if ranges is not None:
             if set(ranges)!=set(self.plan['source_targets']):raise ValueError('fixed source range keys differ')
@@ -535,6 +540,7 @@ class FastWorker(ReferenceWorker):
                     'metadata_processes':self.plan.get('metadata_workers',4),
                     'packing_processes':self.plan.get('packing_workers',8)}}
             if hasattr(self,'pair_report'):report['translation_pairs']=self.pair_report
+            if hasattr(self,'coordinator_report'):report['coordinators']=self.coordinator_report
             if not self.reservation_only and report['all_curriculum_quotas_satisfied']:
                 from production.packed_mixture import mixture_candidate
                 mixture=self.work/'MIXTURE_CANDIDATE.json'

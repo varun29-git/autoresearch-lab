@@ -135,6 +135,25 @@ outside Git. `tests.test_packing_pipeline` covers byte-identical packed outputs,
 source ownership, quota-cut offsets, paired segments, input lifetimes and
 failure on illegal source token IDs. Native trainer acceptance remains separate.
 
+Fixed materializers may additionally set `materializer_processes` to 2–4.
+An exact source census assigns complete source groups to independent local
+coordinators, balancing token and record counts. Children reuse the verified
+immutable inputs through hard links, recheck their digests and ledger integrity,
+and publish into separate prefixes. The parent validates every child quota and
+receipt before adopting the shards under the original phase plan. Payloads,
+document boundaries and descriptor offsets retain their original hashes.
+Qualified translation pairs are prepared once and removed exactly once from
+ordinary source groups. Child receipts remain available as provenance.
+
+This option preserves the original path for partial fixed ranges and source
+streams that revisit a finished leaf. It does not parallelize global ownership
+allocation. Repeated metadata scans and ledger checks can offset the added CPU
+parallelism, so compare measured end-to-end time before enabling it. Parent
+progress aggregates published child tokens; an exception cancels the child
+process groups and prevents phase completion. CPU coverage is in
+`tests.test_packing_coordinators`, including paired source accounting and
+byte-identical materialization.
+
 Fixed materializers and translation-pair discovery accept exhausted sources
 with exact zero quotas, since those sources have no reserved records. Every
 positive quota still matches exactly; negative quotas remain invalid. CPU
