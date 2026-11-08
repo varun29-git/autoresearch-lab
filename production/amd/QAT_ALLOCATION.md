@@ -1,5 +1,19 @@
 # Dense and ternary allocation for the MI325X month
 
+**2026-11-08 selected finishing schedule:** the user selected cosine LR decay
+through the complete nominal **100B QAT finishing-data window**, after the
+nominal **100B QAT recovery/stable-data window**. This supersedes the historical
+20%-of-QAT cooldown candidate below for the main 200B QAT allocation. Retain
+the brief QAT re-warmup and the existing **0.1 peak-LR terminal fraction**.
+Additional admitted pretraining data extends dense before QAT; it does not
+stretch either QAT window. Compile the decay length and phase boundary from
+the finishing and stable shards' actual scored-target counts after packing,
+rather than substituting 100B nominal slots/content for optimizer targets.
+Bind the absolute QAT start to the mature dense checkpoint's consumed target
+counter. This schedule choice changes no packing quotas or quantizer/optimizer
+semantics. Native QAT and packed-loader qualification remain pending. The
+external decision receipt is in the dated pretraining readiness folder.
+
 **2026-11-02 update:** the current policy keeps a qualified absolute QAT token
 budget fixed and assigns extra affordable tokens to dense. Use the new
 [remaining-budget forecast and WSD fork protocol](HORIZON.md). The percentages
@@ -165,7 +179,8 @@ Suggested QAT starting candidate, now available in the AMD configuration builder
   validation remains required.
 - Switch effective projection weights to full ternary immediately. Use LR
   re-warmup, not an unvalidated gradual weight/activation interpolation.
-- Re-warm over `min(1,006,632,960 tokens, 5% of Tq)`, rounded to full updates;
+- Historical cooldown candidate, superseded by the 8 November selection:
+  re-warm over `min(1,006,632,960 tokens, 5% of Tq)`, rounded to full updates;
   plateau, then cosine decay over the final **20% of the QAT phase** to 0.1×
   its peak. The extra decay share is a QAT candidate informed by the local
   recovery curves, not a change to the selected dense schedule.

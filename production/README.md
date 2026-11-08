@@ -1,5 +1,13 @@
 # CI-1 production handoff
 
+**2026-11-08 QAT finishing schedule:** the selected main QAT allocation has
+100B recovery/stable content tokens followed by 100B finishing content tokens.
+Cosine LR decay covers the full finishing window, ending at 0.1 of QAT peak;
+this supersedes the older 20%-cooldown candidate. Resolve actual scored-target
+boundaries from the packed receipts before generating the training config.
+See [QAT allocation](amd/QAT_ALLOCATION.md). Packing quotas are unchanged and
+native QAT/packed-loader acceptance remains pending.
+
 **2026-11-08 dataset-child mixing:** the [packed-data contract](PACKING.md)
 now includes a CPU reader that interleaves individual dataset children inside
 each language/source, rather than consuming their physical creation order.
