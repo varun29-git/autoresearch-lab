@@ -26,10 +26,11 @@ class Fragment:
     document_end: bool
     lookahead: int | None
     eod_input: bool
+    synthetic_tokens: int = 0
 
     @property
     def content_tokens(self):
-        return len(self.tokens) - int(self.eod_input)
+        return len(self.tokens) - int(self.eod_input) - self.synthetic_tokens
 
 
 def fragments(tokens, document, *, length=4096, eod=4, document_end=True,
@@ -99,6 +100,9 @@ def encode_pack(items, *, length=4096, pad=3):
     segments = []
     cursor = 0
     for item in items:
+        if (type(item.synthetic_tokens) is not int or item.synthetic_tokens < 0
+                or item.content_tokens <= 0):
+            raise ValueError("invalid inserted-token accounting")
         end = cursor + len(item.tokens)
         if end > length:
             raise ValueError("overfull sequence")
@@ -108,12 +112,17 @@ def encode_pack(items, *, length=4096, pad=3):
             "document_offset": item.offset, "document_end": item.document_end,
             "eod_input": item.eod_input, "last_label": item.lookahead,
             "document": item.document})
+        if item.synthetic_tokens:
+            segments[-1]["synthetic_tokens"] = item.synthetic_tokens
         cursor = end
     valid = sum(s["end"] - s["start"] - 1 + (s["last_label"] is not None)
                 for s in segments)
     descriptor = {"segments": segments, "used_slots": cursor,
         "content_tokens": sum(x.content_tokens for x in items),
         "valid_targets": valid, "padding_slots": length - cursor}
+    synthetic = sum(x.synthetic_tokens for x in items)
+    if synthetic:
+        descriptor["synthetic_tokens"] = synthetic
     return inputs, descriptor
 
 
@@ -125,6 +134,7 @@ def decode_pack(inputs, descriptor, *, pad=3, eod=4):
     segments = np.full(len(inputs), -1, dtype=np.int32)
     cursor = 0
     content = 0
+    synthetic = 0
     for segment_id, item in enumerate(descriptor["segments"]):
         start, end = item["start"], item["end"]
         if start != cursor or not start < end <= len(inputs):
@@ -133,6 +143,16 @@ def decode_pack(inputs, descriptor, *, pad=3, eod=4):
             raise ValueError("EOD differs from document boundary")
         if item["eod_input"] and item["last_label"] is not None:
             raise ValueError("terminal EOD must not predict another document")
+        inserted = item.get("synthetic_tokens", 0)
+        if (type(inserted) is not int or inserted < 0
+                or item["content_tokens"] != end-start-int(item["eod_input"])-inserted):
+            raise ValueError("segment content and inserted-token counts differ")
+        synthetic += inserted
+        if item['document'].get('kind') == 'unlabeled_translation_pair':
+            from production.translation_pairs import validate_components
+            validate_components(inputs[start:end], item['document'],
+                eod_input=item['eod_input'], content_tokens=item['content_tokens'],
+                synthetic_tokens=inserted)
         targets[start:end-1] = inputs[start+1:end]
         if item["last_label"] is not None:
             targets[end-1] = item["last_label"]
@@ -143,6 +163,7 @@ def decode_pack(inputs, descriptor, *, pad=3, eod=4):
     if (cursor != descriptor["used_slots"] or np.any(inputs[cursor:] != pad)
             or len(inputs)-cursor != descriptor["padding_slots"]
             or content != descriptor["content_tokens"]
+            or synthetic != descriptor.get("synthetic_tokens", 0)
             or int(np.count_nonzero(targets != -100)) != descriptor["valid_targets"]):
         raise ValueError("descriptor counters or padding differ from payload")
     return targets, positions, segments
@@ -192,7 +213,7 @@ class ShardWriter:
         self.length = length
         self.audit_stride = audit_stride
         self.counts = dict(sequences=0, content_tokens=0, valid_targets=0,
-                           used_slots=0, padding_slots=0)
+                           used_slots=0, padding_slots=0, synthetic_tokens=0)
 
     def add(self, items):
         inputs, descriptor = encode_pack(items, length=self.length)
@@ -209,7 +230,7 @@ class ShardWriter:
         if self.offsets:self._write_offsets(np.asarray([self.meta_bytes],dtype='<u8'))
         self.counts["sequences"] += 1
         for key in self.counts.keys() - {"sequences"}:
-            self.counts[key] += descriptor[key]
+            self.counts[key] += descriptor.get(key, 0) if key == 'synthetic_tokens' else descriptor[key]
 
     def _write_offsets(self,values):
         raw=np.asarray(values,dtype='<u8').tobytes()
@@ -226,7 +247,8 @@ class ShardWriter:
             self._write_offsets(values+self.meta_bytes)
         self.data.write(payload);self.data_hash.update(payload)
         self.meta.write(metadata);self.meta_hash.update(metadata);self.meta_bytes+=len(metadata)
-        for name in self.counts:self.counts[name]+=counts[name]
+        for name in self.counts:
+            self.counts[name] += counts.get(name, 0) if name == 'synthetic_tokens' else counts[name]
 
     def close(self):
         self.data.close()
@@ -237,6 +259,8 @@ class ShardWriter:
             "index": {"path": str(self.index), "bytes": self.index.stat().st_size,
                       "sha256": self.meta_hash.hexdigest()},
             "cross_document_mask_required": True, "native_training_accepted": False}
+        if not result["synthetic_tokens"]:
+            del result["synthetic_tokens"]
         if self.offsets:
             self.offsets.close()
             result['index_offsets']={'path':str(self.offset_file),'bytes':self.offset_file.stat().st_size,

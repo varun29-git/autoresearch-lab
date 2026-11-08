@@ -23,6 +23,14 @@ masked; a full-length document ending uses EOD as the label-only lookahead.
 Every intended next-token target is scored once. Content inputs, valid
 targets, padding, occupied slots and EOD inputs are distinct counters.
 
+The CPU `translation_pairs` constructor can qualify whole original/translated
+passages using exact source lineage, frozen token spans and quality metadata.
+Any eligible language pair can share one unlabeled causal segment. Inserted
+blank-line tokens are counted separately from the two existing source quotas;
+compound span/counter corruption is rejected by the CPU decoder. Ordinary
+descriptor bytes retain the existing contract. This constructor is not yet
+connected to the active preparation queue or native training loader.
+
 The descriptor sidecar defines segment boundaries, document offsets, final
 labels, end-of-document state and original source identity. Position IDs
 reset per segment. The local attention window is 512 positions including

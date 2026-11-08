@@ -62,8 +62,8 @@ def pack_chunk(items, length, seed, directory):
     packs=best_fit(items,length=length,seed=seed)
     writer=ShardWriter(directory,'chunk-'+uuid.uuid4().hex,length=length,
         buffer_bytes=64<<20,fast_json=True)
-    names=['content_tokens','valid_targets','used_slots','padding_slots']
-    prefixes=np.zeros((len(packs)+1,4),dtype=np.int64)
+    names=['content_tokens','valid_targets','used_slots','padding_slots','synthetic_tokens']
+    prefixes=np.zeros((len(packs)+1,len(names)),dtype=np.int64)
     offsets=np.zeros(len(packs)+1,dtype=np.int64)
     for i,pack in enumerate(packs):
         writer.add(pack)
