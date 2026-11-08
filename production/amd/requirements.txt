@@ -1,5 +1,6 @@
 # Preserve ROCm torch/Triton from the digest-pinned image. Never install CUDA wheels.
 numpy==2.2.6
+orjson==3.11.4
 sentencepiece==0.2.1
 protobuf==6.32.0
 regex==2026.7.19

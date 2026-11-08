@@ -20,6 +20,11 @@ from terminus.train import load_config
 def snapshot(manifest, root):
     root = Path(root).resolve()
     names = [s.path for s in manifest.shards]
+    if manifest.is_packed:
+        from terminus.packed_data import stream_spec
+
+        names += list(stream_spec(manifest)["paths"].values())
+        names = sorted(set(names))
     if manifest.tokenizer:
         names.append(manifest.tokenizer["path"])
     result = {}

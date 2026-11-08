@@ -177,6 +177,17 @@ class TokenManifest:
     tokenizer: Dict[str, object] = field(default_factory=dict)
     provenance: Dict[str, object] = field(default_factory=dict)
 
+    @property
+    def is_packed(self):
+        return self.provenance.get("packing") == "document_segments_v1"
+
+    @property
+    def scored_train_tokens(self):
+        if not self.is_packed:
+            return self.config.usable_train_tokens
+        stream = self.provenance["packed_stream"]
+        return stream.get("tokens_before", 0) + sum(s["valid_targets"] for phase in stream["train"] for s in phase["shards"])
+
     @classmethod
     def load(cls, path: str | Path) -> "TokenManifest":
         payload = json.loads(Path(path).read_text())
@@ -650,8 +661,7 @@ def _maybe_pin_batch(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     if not pin_memory or not torch.cuda.is_available():
         return batch
-    inputs, targets = batch
-    return inputs.pin_memory(), targets.pin_memory()
+    return tuple(item.pin_memory() for item in batch)
 
 
 class PrefetchingTokenLoader:
@@ -676,6 +686,7 @@ class PrefetchingTokenLoader:
         pin_memory: bool = True,
         device: Optional[torch.device | str] = None,
         return_step: bool = False,
+        batcher=None,
     ) -> None:
         if start_step < 0:
             raise ValueError("start_step must be non-negative")
@@ -694,6 +705,7 @@ class PrefetchingTokenLoader:
         self.pin_memory = pin_memory
         self.device = torch.device(device) if device is not None else None
         self.return_step = return_step
+        self.batcher = batcher
 
     def __iter__(self) -> "_PrefetchingTokenIterator":
         return _PrefetchingTokenIterator(self)
@@ -722,7 +734,12 @@ class _PrefetchingTokenIterator:
         try:
             if self.use_cuda:
                 torch.cuda.set_device(self.loader.device)
-            batcher = TokenBatcher(
+            batcher_type = TokenBatcher
+            if self.loader.manifest.is_packed:
+                from .packed_data import PackedTokenBatcher
+
+                batcher_type = PackedTokenBatcher
+            batcher = self.loader.batcher or batcher_type(
                 self.loader.manifest,
                 root=self.loader.root,
                 rank=self.loader.rank,
@@ -773,15 +790,14 @@ class _PrefetchingTokenIterator:
     def _schedule_next_cuda_batch(self, *, block=True) -> None:
         assert self.copy_stream is not None
         try:
-            step, (x_cpu, y_cpu) = self._get(block=block)
+            step, batch = self._get(block=block)
         except (StopIteration, queue.Empty):
             self.scheduled = None
             return
 
         with torch.cuda.stream(self.copy_stream):
-            x_gpu = x_cpu.to(self.loader.device, non_blocking=True)
-            y_gpu = y_cpu.to(self.loader.device, non_blocking=True)
-        self.scheduled = (step, (x_gpu, y_gpu))
+            batch_gpu = tuple(item.to(self.loader.device, non_blocking=True) for item in batch)
+        self.scheduled = (step, batch_gpu)
 
     def __iter__(self) -> "_PrefetchingTokenIterator":
         return self

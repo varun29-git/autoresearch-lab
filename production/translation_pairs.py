@@ -17,7 +17,7 @@ import unicodedata
 import numpy as np
 
 from production.document_packing import Fragment
-from production.packing_worker import fingerprint
+from terminus.integrity import fingerprint
 from terminus.tokenizer65k import ATOM_REVISION_SHA256
 
 

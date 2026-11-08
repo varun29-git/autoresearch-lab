@@ -57,6 +57,8 @@ def source_hashes():
     amd = root.parent / "production" / "amd"
     result.update({"production/amd/" + path.name: file_sha256(path)
                    for path in sorted(amd.glob("*.py"))})
+    for name in ("packed_mixture.py", "document_packing.py", "translation_pairs.py"):
+        result["production/" + name] = file_sha256(root.parent / "production" / name)
     return result
 
 
@@ -85,6 +87,10 @@ def write_json_atomic(path, payload):
 
 
 def validate_manifest(manifest: TokenManifest, root, model_config, *, development_mode=False):
+    if manifest.is_packed:
+        from .packed_data import validate_packed_manifest
+
+        return validate_packed_manifest(manifest, root, model_config, development_mode=development_mode)
     root = Path(root)
     if manifest.config.seq_len != model_config.max_seq_len:
         raise ValueError("manifest sequence length must equal model context")
