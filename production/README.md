@@ -1,5 +1,12 @@
 # CI-1 production handoff
 
+**2026-11-08 reservation recovery:** a reviewed CPU recovery carries 45,401
+missing tokens from the saved first QAT selection into the following QAT
+window, preserving exactly 200B QAT and 1T main content tokens. Future
+reservations support compressed metadata and explicitly bounded fallback
+within each language/source family. See [CPU preparation](PREPARATION_QUEUE.md).
+Native training acceptance remains separate.
+
 **2026-11-08 capped translation pairing:** the
 [verified-pair and partitioned-allocation tools](TRANSLATION_PAIRS.md) add
 CPU source qualification, one-segment unlabeled pairs, separate inserted-token

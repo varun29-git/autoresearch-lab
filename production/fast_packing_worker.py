@@ -10,6 +10,7 @@ import argparse
 from collections import Counter, deque
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 import hashlib
+import gzip
 import json
 import multiprocessing
 from pathlib import Path
@@ -83,7 +84,9 @@ class FastWorker(ReferenceWorker):
         self.last_heartbeat=0;self.source_receipt_ids=set()
         self.source_receipts_dir=self.work/'source-receipts';self.source_receipts_dir.mkdir(exist_ok=True)
         self.provenance=(self.source_receipts_dir/'verified.jsonl').open('wb',buffering=64<<20)
-        self.reserved=(self.work/'protected-records.jsonl').open('wb',buffering=64<<20) if self.reservation_only else None
+        self.reserved_path=self.work/('protected-records.jsonl.gz' if plan.get('compress_reservations') else 'protected-records.jsonl')
+        self.reserved=(gzip.open(self.reserved_path,'wb',compresslevel=1) if plan.get('compress_reservations')
+                       else self.reserved_path.open('wb',buffering=64<<20)) if self.reservation_only else None
 
     def download(self, spec, path):
         return download_verified(self.client,spec,path)
@@ -339,7 +342,8 @@ class FastWorker(ReferenceWorker):
 
     def prepared_record_batches(self, path):
         pending=deque()
-        with Path(path).open('rb',buffering=8<<20)as stream:
+        opener=gzip.open(path,'rb') if str(path).endswith('.gz') else Path(path).open('rb',buffering=8<<20)
+        with opener as stream:
             while True:
                 lines=[];size=0
                 while len(lines)<100000 and size<64<<20:
@@ -352,7 +356,10 @@ class FastWorker(ReferenceWorker):
         while pending:yield pending.popleft().result()
 
     def materialize_fixed(self):
-        path=self.work/'fixed-selection.jsonl';self.download(self.plan['fixed_selection'],path)
+        spec=self.plan['fixed_selection']
+        if spec.get('compression') not in (None,'gzip'):raise ValueError('unsupported reservation compression')
+        path=self.work/('fixed-selection.jsonl.gz' if spec.get('compression')=='gzip' else 'fixed-selection.jsonl')
+        self.download(spec,path)
         owner='protected:'+self.plan['fixed_allocation_id'];counts=Counter();observed=Counter();buffer=[]
         paired=None
         if self.plan.get('translation_pairs'):
@@ -460,8 +467,13 @@ class FastWorker(ReferenceWorker):
             suffix=self.work/'quota-suffix-reservations.jsonl'
             suffix.write_text(''.join(json.dumps(r,separators=(',',':'))+'\n'for r in self.pending_suffixes))
             artifacts={}
-            for item in [self.events,checkpoint,suffix,self.work/'protected-records.jsonl',self.work/'TRANSLATION_PAIRS.json']:
-                if item.exists():artifacts[item.name]=publish(self.client,self.bucket,item,self.prefix+'/audit/'+item.name)
+            for item in [self.events,checkpoint,suffix,self.reserved_path,self.work/'TRANSLATION_PAIRS.json']:
+                if item.exists():
+                    artifact=publish(self.client,self.bucket,item,self.prefix+'/audit/'+item.name)
+                    name=item.name
+                    if name=='protected-records.jsonl.gz':
+                        name='protected-records.jsonl';artifact['compression']='gzip'
+                    artifacts[name]=artifact
             archive=shutil.make_archive(str(self.work/'source-receipts'),'gztar',self.source_receipts_dir)
             publish(self.client,self.bucket,Path(archive),self.prefix+'/audit/source-receipts.tar.gz')
             report={'schema':'terminus_warmup_materialization_v1','plan_sha256':self.plan['plan_sha256'],

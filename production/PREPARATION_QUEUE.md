@@ -2,6 +2,30 @@
 
 `preparation_queue.py` implements exact token tranches, dependency accounting and a single-task runner. `preparation_dispatcher.py` provides a serverless S3-backed dependency dispatcher. Run configurations, source manifests, state and outputs belong outside this repository.
 
+The 8 November reservation recovery preserves the saved first-QAT selections
+under an explicitly revised 99,999,954,599-token quota. Its 45,401-token
+shortfall is carried into the 100,000,045,401-token finishing reservation in
+the same Tamil and Telugu source rows. Combined QAT remains exactly 200B and
+the main corpus remains exactly 1T. Original failed receipts stay immutable;
+the reviewed recovery has a new plan/report identity and reuses verified
+ledger and record artifacts. Recovery records live in the external
+[recovery packet](/Users/varundaiya/terminus-pretraining-readiness/2026-11-08/reservation-recovery/).
+
+Future tasks can explicitly configure same-source child fallback receivers
+and a token ceiling. Exhaustion of a rare child may draw fresh eligible
+records from a qualified child within that language/source family, preferring
+the same named domain. The deployed ceiling is 1% of its assigned source
+quota. All transferred counts are recorded; holdout exclusion, deduplication,
+exact source totals and hard failure on an unresolved deficit still apply.
+
+Future fast reservations can set `compress_reservations`. Their record
+manifest uses streaming gzip at level 1, with the logical artifact name
+`protected-records.jsonl`, a `.jsonl.gz` object URI, and an explicit `gzip`
+compression marker. Fixed materializers verify the compressed object hash
+before streaming its records; DuckDB paired preparation accepts the same
+compressed file. Existing plain manifests remain supported. Payload, target,
+position and attention-segment semantics are unchanged.
+
 The active external plan is [next-dense-queue/README.md](/Users/varundaiya/terminus-pretraining-readiness/2026-11-07/next-dense-queue/README.md). It covers the full main 1T: 50B warmup, 710B ordinary dense, a protected 40B bridge and 200B QAT physical output. QAT records are reserved before ordinary dense selection. These are data preparation tasks; the queue cannot launch GPU instances or authorize training.
 
 The current CPU cap is five concurrent workers in total. Protected QAT

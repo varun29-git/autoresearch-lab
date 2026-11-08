@@ -41,6 +41,36 @@ def fake_publish(client, bucket, path, key):
 
 
 class PackingWorkerTests(unittest.TestCase):
+    def test_authorized_child_fallback_keeps_source_budget_and_unfilled_deficits(self):
+        from production.preparation_queue import validate_completion
+        with tempfile.TemporaryDirectory() as t:
+            jobs = Path(t)/'jobs.jsonl'
+            jobs.write_text(''.join(json.dumps({'packing_leaf':'ta/source','packing_stratum':s,
+                'kind':'fresh_native_source'})+'\n' for s in ['rare','native']))
+            worker = object.__new__(Worker)
+            worker.plan = {'jobs_path':str(jobs),'source_targets':{'ta/source':10},
+                'source_stratum_fallbacks':{'ta/source':['native']},
+                'stratum_fallback_max_tokens':{'ta/source':3}}
+            available = {'rare':2,'native':9}
+            worker.event = lambda *args,**kw:None
+            def process(leaf,stratum,js,target):
+                selected = min(available[stratum],target);available[stratum]-=selected
+                return {'leaf':leaf,'stratum':stratum,'target':target,
+                        'selected':selected,'shortfall':target-selected}
+            worker.process_stratum = process
+            results = worker.select_sources()
+            self.assertEqual(sum(r['selected'] for r in results),10)
+            self.assertEqual(available['native'],1)
+            self.assertTrue(validate_completion(worker.plan,{'physical_creation_finished':True,
+                'all_curriculum_quotas_satisfied':True,'totals':{'content_tokens':10},'results':results}))
+            available.update(rare=2,native=6)
+            results = worker.select_sources()
+            self.assertEqual(sum(r['selected'] for r in results),8)
+            self.assertEqual(sum(r['shortfall'] for r in results),2)
+            with self.assertRaises(ValueError):
+                validate_completion(worker.plan,{'physical_creation_finished':True,
+                    'all_curriculum_quotas_satisfied':False,'totals':{'content_tokens':8},'results':results})
+
     def test_integer_quotas_conserve_rare_sources(self):
         out = integer_split(101, {'major': 99, 'rare': 1})
         self.assertEqual(out, {'major': 100, 'rare': 1})

@@ -96,6 +96,47 @@ def validate_completion(task, report, expected_plan_sha=None):
     return True
 
 
+def recover_reserved_selection(task, report, approved_deficits, new_plan_sha):
+    """Adopt saved selections under explicitly reduced, audited phase quotas.
+
+    The caller must carry the returned deficits into a later phase. No tokens
+    or artifacts are added, and the original failed receipt stays immutable.
+    """
+    import copy
+    if (not task.get('reservation_only') or not report.get('reservation_creation_finished')
+            or report.get('physical_creation_finished') or report.get('shards')):
+        raise ValueError('recovery requires a completed reservation, not payloads')
+    actual_deficits = {}
+    actual = defaultdict(int)
+    for row in report['results']:
+        if not 0 <= row['selected'] <= row['target'] or row['shortfall'] != row['target']-row['selected']:
+            raise ValueError('reservation accounting is inconsistent')
+        identity = (row['leaf'], row.get('stratum'))
+        if row['shortfall']:
+            if identity in actual_deficits:
+                raise ValueError('duplicate deficit identity')
+            actual_deficits[identity] = row['shortfall']
+        actual[row['leaf']] += row['selected']
+    if actual_deficits != approved_deficits or sum(actual.values()) != report['totals']['reserved_content_tokens']:
+        raise ValueError('saved reservation differs from approved recovery')
+    for leaf, target in task['source_targets'].items():
+        if target-actual[leaf] != sum(n for (l, _), n in approved_deficits.items() if l == leaf):
+            raise ValueError('recovery changes an unapproved source quota')
+    recovered = copy.deepcopy(report)
+    for row in recovered['results']:
+        if row['shortfall']:
+            row.update(original_target=row['target'], deferred_content_tokens=row['shortfall'],
+                       target=row['selected'], shortfall=0)
+    recovered.update(plan_sha256=new_plan_sha, all_curriculum_quotas_satisfied=True,
+                     recovery={'original_plan_sha256':report['plan_sha256'],
+                               'deferred_content_tokens':sum(approved_deficits.values()),
+                               'payloads_created':False})
+    revised_task = copy.deepcopy(task)
+    revised_task['source_targets'] = dict(actual)
+    validate_completion(revised_task, recovered, new_plan_sha)
+    return revised_task, recovered
+
+
 def ready_tasks(tasks, state):
     complete = {k for k,v in state.items() if v.get('status')=='complete'}
     return [t for t in tasks if state.get(t['id'],{}).get('status','pending')=='pending'

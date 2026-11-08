@@ -56,6 +56,30 @@ def fixture(root):
 
 
 class FastPackingTests(unittest.TestCase):
+    def test_compressed_reservation_preserves_records_and_materialized_payloads(self):
+        import gzip
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);client,plan=fixture(root)
+            plan|={'source_targets':{'en/source':100,'hi/source':100},'allocation_id':'gzip-test'}
+            with patch('production.fast_packing_worker.boto3.Session') as session, \
+                 patch('production.fast_packing_worker.publish',side_effect=publish):
+                session.return_value.client.return_value=client
+                plain=FastWorker(plan|{'output_prefix':'plain','reservation_only':True},root/'plain').run()
+                packed=FastWorker(plan|{'output_prefix':'gzip','reservation_only':True,
+                    'compress_reservations':True},root/'gzip').run()
+                with gzip.open(root/'gzip/protected-records.jsonl.gz','rb') as stream:
+                    self.assertEqual(stream.read(),(root/'plain/protected-records.jsonl').read_bytes())
+                self.assertEqual(packed['artifacts']['protected-records.jsonl']['compression'],'gzip')
+                outputs=[]
+                for name,reservation in [('plain-fixed',plain),('gzip-fixed',packed)]:
+                    fixed=plan|{'output_prefix':name,'input_ledger':reservation['artifacts']['selected.sqlite'],
+                        'fixed_selection':reservation['artifacts']['protected-records.jsonl'],
+                        'fixed_allocation_id':'gzip-test'}
+                    report=FastWorker(fixed,root/name).run()
+                    self.assertEqual(report['totals']['content_tokens'],200)
+                    outputs.append([(s['payload']['sha256'],s['index']['sha256']) for s in report['shards']])
+                self.assertEqual(*outputs)
+
     def test_corrupt_prefetched_payload_cannot_publish_completion(self):
         with tempfile.TemporaryDirectory()as t:
             root=Path(t);client,plan=fixture(root)

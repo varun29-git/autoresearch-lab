@@ -2,11 +2,33 @@ import base64
 import unittest
 from unittest.mock import Mock, patch
 
-from production.preparation_queue import object_spec, ready_tasks, tranches, validate_completion, verify_artifact
+from production.preparation_queue import object_spec, ready_tasks, tranches, validate_completion, verify_artifact, recover_reserved_selection
 from production.preparation_dispatcher import Dispatcher, resolved_task
 
 
 class QueueTests(unittest.TestCase):
+    def test_saved_reservation_recovery_never_invents_tokens(self):
+        task = {'source_targets':{'ta/source':10,'te/source':20},'reservation_only':True}
+        report = {'plan_sha256':'old','reservation_creation_finished':True,
+                  'physical_creation_finished':False,'shards':[],
+                  'all_curriculum_quotas_satisfied':False,'totals':{'reserved_content_tokens':27},
+                  'artifacts':{'ledger':'unchanged'},
+                  'results':[{'leaf':'ta/source','stratum':'rare','target':10,'selected':9,'shortfall':1},
+                             {'leaf':'te/source','stratum':'rare','target':20,'selected':18,'shortfall':2}]}
+        approved = {('ta/source','rare'):1,('te/source','rare'):2}
+        revised, receipt = recover_reserved_selection(task,report,approved,'reviewed')
+        self.assertEqual(revised['source_targets'],{'ta/source':9,'te/source':18})
+        self.assertEqual(receipt['totals'],report['totals'])
+        self.assertEqual(receipt['artifacts'],report['artifacts'])
+        self.assertEqual(receipt['recovery']['deferred_content_tokens'],3)
+        self.assertTrue(validate_completion(revised,receipt,'reviewed'))
+        self.assertFalse(report['all_curriculum_quotas_satisfied'])
+        self.assertEqual(task['source_targets']['ta/source'],10)
+        with self.assertRaises(ValueError):
+            recover_reserved_selection(task,report,{('ta/source','rare'):3},'reviewed')
+        with self.assertRaises(ValueError):
+            recover_reserved_selection(task,report|{'totals':{'reserved_content_tokens':30}},approved,'reviewed')
+
     def test_launch_failure_terminates_cpu_and_cannot_retry(self):
         dispatcher=object.__new__(Dispatcher)
         dispatcher.q={'run':'test','fleet_tag':'test-fleet','allowed_instance_types':['c7a.4xlarge'],

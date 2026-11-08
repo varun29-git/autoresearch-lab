@@ -471,6 +471,38 @@ class Worker:
                     if quota:
                         all_results.append(self.process_stratum(leaf, stratum,
                                              selected_groups[stratum], quota))
+                # Explicit same-source receivers can absorb rare child-pool
+                # exhaustion while retaining exact language/source budgets.
+                receivers = self.plan.get('source_stratum_fallbacks', {}).get(leaf, [])
+                if len(set(receivers)) != len(receivers) or any(s not in selected_groups for s in receivers):
+                    raise ValueError('stratum fallback must name distinct children of the same source')
+                donors = [r for r in all_results[first_result:] if r['shortfall']]
+                deficit = sum(r['shortfall'] for r in donors)
+                limit = self.plan.get('stratum_fallback_max_tokens', {}).get(leaf, 0)
+                if receivers and 0 < deficit <= limit:
+                    donor_domains = {r.get('stratum','').split('/')[-1] for r in donors}
+                    ordered_receivers = sorted(receivers, key=lambda s:s.split('/')[-1] not in donor_domains)
+                    for stratum in ordered_receivers:
+                        if not deficit:
+                            break
+                        extra = self.process_stratum(leaf, stratum, selected_groups[stratum], deficit)
+                        absorbed = extra['selected']
+                        if absorbed:
+                            extra.update(original_target=extra['target'], target=absorbed, shortfall=0,
+                                         stratum_fallback_received_tokens=absorbed)
+                            all_results.append(extra)
+                            remaining = absorbed
+                            for donor in donors:
+                                shift = min(remaining, donor['shortfall'])
+                                if shift:
+                                    donor.setdefault('original_target', donor['target'])
+                                    donor['target'] -= shift
+                                    donor['shortfall'] -= shift
+                                    donor['stratum_fallback_deferred_tokens'] = donor.get('stratum_fallback_deferred_tokens', 0)+shift
+                                    remaining -= shift
+                            deficit -= absorbed
+                            self.event('authorized_stratum_fallback', leaf=leaf,
+                                       receiver=stratum, content_tokens=absorbed)
             deficit = sum(r['shortfall'] for r in all_results[first_result:])
             if deficit and leaf in fallbacks:
                 replacement = fallbacks[leaf]
