@@ -30,12 +30,14 @@ from production.document_packing import ShardWriter, file_sha, fragments
 from production.native_corpus import publish, _output_matches
 from production.packing_parallel import (download_verified, initialize,
     pack_chunk, prepare_index, prepare_records, FragmentReference)
-from production.packing_worker import Worker as ReferenceWorker, Exclusions, fingerprint, bounded_map
+from production.packing_worker import (Worker as ReferenceWorker, Exclusions, fingerprint,
+    bounded_map, validate_source_fallbacks)
 from production.preparation_queue import object_spec
 
 
 class FastWorker(ReferenceWorker):
     def __init__(self, plan, work, profile=None):
+        validate_source_fallbacks(plan)
         self.plan=plan;self.work=Path(work);self.work.mkdir(parents=True,exist_ok=True)
         if any(self.work.iterdir()):raise ValueError('nonempty working directory requires an explicit recovery plan')
         self.client=boto3.Session(profile_name=profile,region_name='us-east-1').client(

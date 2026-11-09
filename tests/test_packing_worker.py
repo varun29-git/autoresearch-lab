@@ -41,6 +41,49 @@ def fake_publish(client, bucket, path, key):
 
 
 class PackingWorkerTests(unittest.TestCase):
+    def test_invalid_fallback_is_rejected_before_any_io(self):
+        from production.fast_packing_worker import FastWorker
+        from production.packing_worker import validate_source_fallbacks
+        for fallbacks in [{'en/z': 'hi/a'}, {'en/z': 'en/missing'},
+                          {'en/z': 'en/z'}, {'en/z': 'en/a', 'en/a': 'en/b'}]:
+            plan = {'source_targets': {'en/a': 1, 'en/b': 1, 'en/z': 1, 'hi/a': 1},
+                    'source_fallbacks': fallbacks}
+            for worker in [Worker, FastWorker]:
+                with patch('production.packing_worker.boto3.Session') as session:
+                    with self.assertRaises(ValueError):
+                        worker(plan, '/unused')
+                    session.assert_not_called()
+        validate_source_fallbacks({'source_targets': {'en/a': 1, 'en/z': 1},
+                                  'source_fallbacks': {'en/z': 'en/a'}})
+
+    def test_backward_source_fallback_uses_fresh_receiver_capacity_and_preserves_language(self):
+        from production.preparation_queue import validate_completion
+        with tempfile.TemporaryDirectory() as t:
+            jobs=Path(t)/'jobs'
+            jobs.write_text(''.join(json.dumps({'packing_leaf':leaf,'packing_stratum':leaf,
+                'kind':'fresh_native_source'})+'\n' for leaf in ['te/Nemotron-HQ','te/Sangraha']))
+            worker=object.__new__(Worker)
+            worker.plan={'jobs_path':str(jobs),'source_targets':{'te/Nemotron-HQ':10,'te/Sangraha':10},
+                         'source_fallbacks':{'te/Sangraha':'te/Nemotron-HQ'}}
+            worker.event=lambda *a,**kw:None
+            available={'te/Nemotron-HQ':18,'te/Sangraha':2}
+            def process(leaf,stratum,js,target):
+                selected=min(target,available[leaf]);available[leaf]-=selected
+                return {'leaf':leaf,'stratum':stratum,'target':target,
+                        'selected':selected,'shortfall':target-selected}
+            worker.process_stratum=process
+            results=worker.select_sources()
+            self.assertEqual(available,{'te/Nemotron-HQ':0,'te/Sangraha':0})
+            self.assertEqual(sum(r['selected'] for r in results),20)
+            self.assertTrue(validate_completion(worker.plan,{'physical_creation_finished':True,
+                'all_curriculum_quotas_satisfied':True,'totals':{'content_tokens':20},'results':results}))
+            available.update({'te/Nemotron-HQ':14,'te/Sangraha':2})
+            results=worker.select_sources()
+            self.assertEqual(sum(r['selected'] for r in results),16)
+            self.assertEqual(sum(r['shortfall'] for r in results),4)
+            worker.plan['source_fallbacks']={'te/Sangraha':'te/Nemotron-HQ','te/Nemotron-HQ':'te/Sangraha'}
+            with self.assertRaisesRegex(ValueError,'cycle'):worker.select_sources()
+
     def test_authorized_child_fallback_keeps_source_budget_and_unfilled_deficits(self):
         from production.preparation_queue import validate_completion
         with tempfile.TemporaryDirectory() as t:

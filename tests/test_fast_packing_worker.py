@@ -56,6 +56,23 @@ def fixture(root):
 
 
 class FastPackingTests(unittest.TestCase):
+    def test_backward_fallback_on_real_indexes_preserves_deduplication_and_exact_budget(self):
+        from production.preparation_queue import validate_completion
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t);client,plan=fixture(root)
+            jobs=[json.loads(line) for line in Path(plan['jobs_path']).read_text().splitlines()]
+            jobs[1]['packing_leaf']='en/z-source';jobs[1]['packing_stratum']='en/z-source'
+            Path(plan['jobs_path']).write_text(''.join(json.dumps(j)+'\n' for j in jobs))
+            plan|={'output_prefix':'fallback','source_targets':{'en/source':100,'en/z-source':700},
+                   'source_fallbacks':{'en/z-source':'en/source'}}
+            with patch('production.fast_packing_worker.boto3.Session') as session, \
+                 patch('production.fast_packing_worker.publish',side_effect=publish):
+                session.return_value.client.return_value=client
+                report=FastWorker(plan,root/'fallback').run()
+            self.assertEqual(report['totals']['content_tokens'],800)
+            self.assertTrue(validate_completion(plan,report,'plan'))
+            self.assertTrue(any(r.get('source_fallback_received_tokens',0)>0 for r in report['results']))
+
     def test_compressed_reservation_preserves_records_and_materialized_payloads(self):
         import gzip
         with tempfile.TemporaryDirectory() as t:

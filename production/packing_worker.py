@@ -29,6 +29,25 @@ def fingerprint(value):
         separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 
+def validate_source_fallbacks(plan):
+    """Reject invalid replacement graphs before downloading the allocation ledger."""
+    targets = plan['source_targets']
+    fallbacks = plan.get('source_fallbacks', {})
+    if any(a not in targets or b not in targets or a == b
+           or a.split('/')[0] != b.split('/')[0] for a, b in fallbacks.items()):
+        raise ValueError('fallback must name another assigned source in the same language/phase')
+    for source in fallbacks:
+        visited = set()
+        cursor = source
+        while cursor in fallbacks:
+            if cursor in visited:
+                raise ValueError('source fallback cycle')
+            visited.add(cursor)
+            cursor = fallbacks[cursor]
+    if any(b < a and b in fallbacks for a, b in fallbacks.items()):
+        raise ValueError('backward fallback receiver must be terminal')
+
+
 def integer_split(total, weights):
     if total < 0 or not weights or any(x <= 0 for x in weights.values()):
         raise ValueError("invalid integer quota weights")
@@ -88,6 +107,7 @@ class Exclusions:
 
 class Worker:
     def __init__(self, plan, work, profile=None):
+        validate_source_fallbacks(plan)
         self.plan = plan
         self.work = Path(work)
         self.work.mkdir(parents=True, exist_ok=True)
@@ -450,8 +470,8 @@ class Worker:
         all_results = []
         targets = dict(self.plan['source_targets'])
         fallbacks = self.plan.get('source_fallbacks', {})
-        if any(a not in targets or b not in targets or b <= a for a,b in fallbacks.items()):
-            raise ValueError('fallback must name a later assigned source in the same phase')
+        validate_source_fallbacks(self.plan)
+        backward_fallbacks=[]
         # Fixed order makes global exact-text duplicate ownership reproducible.
         for leaf in sorted(targets):
             target = targets[leaf]
@@ -506,6 +526,9 @@ class Worker:
             deficit = sum(r['shortfall'] for r in all_results[first_result:])
             if deficit and leaf in fallbacks:
                 replacement = fallbacks[leaf]
+                if replacement < leaf:
+                    backward_fallbacks.append((leaf,replacement,all_results[first_result:]))
+                    continue
                 targets[replacement] += deficit
                 for result in all_results[first_result:]:
                     result.update(original_target=result['target'],
@@ -513,6 +536,34 @@ class Worker:
                         target=result['selected'], shortfall=0)
                 self.event('authorized_source_fallback', source=leaf,
                            replacement=replacement, content_tokens=deficit)
+        # A receiver already visited in lexical source order must select new
+        # eligible records against the live ledger, rather than relabeling or
+        # replaying its original allocation. Normalize only counts actually
+        # received; any remaining donor deficit still fails completion.
+        for leaf,replacement,donors in backward_fallbacks:
+            deficit=sum(r['shortfall'] for r in donors)
+            receiver_groups={s:js for (l,s),js in groups.items() if l==replacement}
+            if not receiver_groups:continue
+            weights={s:sum(sum(p['token_snapshot']['bytes']//2 for p in j.get('parts',[])
+                              if not p['validation']) if j.get('kind')!='fresh_native_source' else 1
+                           for j in js) for s,js in receiver_groups.items()}
+            for stratum,quota in sorted(integer_split(deficit,weights).items()):
+                if not quota:continue
+                extra=self.process_stratum(replacement,stratum,receiver_groups[stratum],quota)
+                received=extra['selected']
+                if not received:continue
+                extra.update(original_target=extra['target'],target=received,shortfall=0,
+                             source_fallback_received_tokens=received)
+                all_results.append(extra);remaining=received
+                for donor in donors:
+                    shift=min(remaining,donor['shortfall'])
+                    if shift:
+                        donor.setdefault('original_target',donor['target'])
+                        donor['target']-=shift;donor['shortfall']-=shift
+                        donor['reallocated_tokens']=donor.get('reallocated_tokens',0)+shift
+                        donor['reallocated_to']=replacement;remaining-=shift
+                self.event('authorized_source_fallback',source=leaf,
+                           replacement=replacement,content_tokens=received)
         return all_results
 
     def materialize_fixed(self):
