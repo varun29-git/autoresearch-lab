@@ -27,7 +27,7 @@ def count_model(config):
 
 
 
-def model_numerical_preflight(config, device):
+def model_numerical_preflight(config, device, *, packed=False):
     reduced = replace(config, vocab_size=257, dim=4 * config.head_dim, n_heads=4, n_kv_heads=2,
                       n_layers=config.global_attention_every, ffn_dim=((32 * config.head_dim // 3 + 127) // 128) * 128,
                       max_seq_len=min(35, config.max_seq_len), local_attention_window=min(11, config.local_attention_window),
@@ -36,17 +36,37 @@ def model_numerical_preflight(config, device):
     optimized = BitNetLlama(reduced).to(device)
     reference = BitNetLlama(replace(reduced, gradient_checkpointing=False)).to(device)
     reference.load_state_dict(optimized.state_dict())
-    inputs = torch.randint(1, reduced.vocab_size, (1, reduced.max_seq_len), device=device)
+    inputs = torch.randint(1, reduced.vocab_size, (2 if packed else 1, reduced.max_seq_len), device=device)
     targets = torch.randint(1, reduced.vocab_size, inputs.shape, device=device)
     targets[:, 0] = -100
+    kwargs = {}
+    layout = None
+    if packed:
+        from .document_attention import DocumentLayout
+
+        length = reduced.max_seq_len
+        if length < 4:
+            raise ValueError("packed model preflight needs at least four positions")
+        cut = min(length - 2, reduced.local_attention_window + 1)
+        positions = torch.zeros(2, length, dtype=torch.long)
+        segments = torch.full_like(positions, -1)
+        for row, sizes in enumerate(((cut, length-cut), (1, length-2))):
+            start = 0
+            for segment, size in enumerate(sizes):
+                positions[row, start:start+size] = torch.arange(size)
+                segments[row, start:start+size] = segment
+                start += size
+        layout = DocumentLayout.from_cpu(positions, segments).to(device)
+        targets.masked_fill_(layout.segment_ids < 0, -100)
+        kwargs["document_layout"] = layout
     with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
-        actual = optimized(inputs, targets, return_logits=False)["loss"]
+        actual = optimized(inputs, targets, return_logits=False, **kwargs)["loss"]
         # Compare checkpointed and retained executions of the SAME arithmetic.
         # Changing the head GEMM's chunk shape/rounding then sending the small
         # gradient difference through many FP8 requantizers measures a different
         # surrogate gradient, not checkpoint correctness. The head and pointwise
         # kernels have separate independent forward/backward gates below.
-        expected = reference(inputs, targets, return_logits=False)["loss"]
+        expected = reference(inputs, targets, return_logits=False, **kwargs)["loss"]
     actual.backward()
     expected.backward()
     gradient_errors = [relative_error(parameter.grad, reference_parameter.grad)
@@ -55,15 +75,25 @@ def model_numerical_preflight(config, device):
     del reference
     optimized.eval()
     with torch.inference_mode(), torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
-        full = optimized(inputs)["logits"]
-        cache, chunks = None, []
-        for start in range(0, inputs.shape[1], 3):
-            output, cache = optimized.forward_cached(inputs[:, start:start + 3], cache=cache)
-            chunks.append(output["logits"])
-        errors["cached_logits_relative_error"] = relative_error(torch.cat(chunks, dim=1), full)
+        full = optimized(inputs, **kwargs)["logits"]
+        if packed:
+            # A changed earlier document must not change a later document,
+            # including through V1 residuals, normalized projections or RoPE.
+            changed = inputs.clone()
+            changed[0, :cut] = (changed[0, :cut] % (reduced.vocab_size-1)) + 1
+            isolated = optimized(changed, **kwargs)["logits"]
+            if not torch.equal(isolated[0, cut:], full[0, cut:]):
+                raise AssertionError("reduced packed model leaked between documents")
+            errors["document_isolation_max_absolute_error"] = 0.
+        else:
+            cache, chunks = None, []
+            for start in range(0, inputs.shape[1], 3):
+                output, cache = optimized.forward_cached(inputs[:, start:start + 3], cache=cache)
+                chunks.append(output["logits"])
+            errors["cached_logits_relative_error"] = relative_error(torch.cat(chunks, dim=1), full)
     if not all(error < 0.03 for error in errors.values()):
         raise AssertionError(f"reduced full-model loss/gradient/cache mismatch: {errors}")
-    return {"model": asdict(reduced), "errors": errors,
+    return {"model": asdict(reduced), "errors": errors, "packed_documents": packed,
             "scope": "Reduced full-model composition on the selected backend, not a 1.5B allocation or optimizer soak."}
 
 

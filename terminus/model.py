@@ -443,10 +443,13 @@ class BitNetAttention(nn.Module):
                 value = value_mix(value_source, value, self.value_lambda)
             else:
                 value = self.value_lambda[0] * value_source + self.value_lambda[1] * value
-        if self.value_residual:
+        if self.value_residual and value_source is None:
             # Exposed for BitNetLlama's cross-layer V1 plumbing; forward must keep
             # returning a plain tensor because the protected stability monitor
             # hooks module outputs.
+            # Only V1 is handed to the model. Retaining every later layer's
+            # mixed values here keeps large activation storage alive between
+            # optimizer updates, including under activation checkpointing.
             self.values_used = value
         offset = 0
         if cache is not None:
@@ -630,6 +633,7 @@ class BitNetLlama(nn.Module):
                 hidden = layer(hidden, cos, sin, attention_mask, value_source=value_source, document_layout=document_layout)
                 if value_source is None:
                     value_source = layer.attn.values_used
+                    layer.attn.values_used = None
             else:
                 hidden = layer(hidden, cos, sin, attention_mask, document_layout=document_layout)
         hidden = self.embed_rot_out(self.norm(hidden))
@@ -670,6 +674,7 @@ class BitNetLlama(nn.Module):
                 if index == 0:
                     hidden = layer(hidden, cos, sin, cache=layer_cache, value_source=None)
                     values = layer.attn.values_used
+                    layer.attn.values_used = None
                     buffer = values if cache.value_residual_buffer is None else torch.cat(
                         (cache.value_residual_buffer, values), dim=2)
                     cache.value_residual_buffer = buffer[:, :, -self.config.max_seq_len:]
@@ -705,7 +710,8 @@ class BitNetLlama(nn.Module):
 
     @torch.no_grad()
     def set_quantization_strength_(self, strength):
-        if not 0 <= strength <= 1 or (self.config.linear_backend == "deepgemm" and strength != 1):
+        native_fp8 = self.config.linear_backend == "deepgemm" or self.config.linear_backend.startswith("rocm_fp8")
+        if not 0 <= strength <= 1 or (native_fp8 and strength != 1):
             raise ValueError("invalid quantization strength for the selected backend")
         for _, module in self.bitlinear_named_modules():
             module.quantization_strength.fill_(strength)

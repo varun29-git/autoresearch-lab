@@ -29,7 +29,8 @@ def validate_report(path, config, device):
     if (report.get("kind") != "ci1_amd_preflight" or report.get("schema") != 1
             or report.get("status") != "passed" or report.get("identity") != identity(config, device)):
         raise ValueError("AMD preflight is stale, incompatible or did not pass")
-    required = ("attention", "document_attention", "model_numerics", "optimized_kernels", "packed_learned_qkv", "optimizer")
+    required = ("attention", "document_attention", "model_numerics", "packed_model_numerics",
+                "optimized_kernels", "packed_learned_qkv", "optimizer")
     if config.fused_fp8_producers:
         required += ("fp8_producers",)
     if config.linear_backend.startswith("rocm_fp8"):
@@ -320,6 +321,7 @@ def run(config, device):
                   "packed_learned_qkv": packed_gate(config, device),
                   "optimized_kernels": optimized_kernel_preflight(config, device),
                   "model_numerics": model_numerical_preflight(config, device),
+                  "packed_model_numerics": model_numerical_preflight(config, device, packed=True),
                   "optimizer": optimizer_gate(config, device),
                   "fp8_producers": producer_gate(config, device) if config.fused_fp8_producers else None,
                   "scope": "Kernel and reduced-model gate only. Full-size training, quality, DDP and recovery remain unmeasured."}

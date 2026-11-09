@@ -68,6 +68,15 @@ def test_no_silent_amd_precision_fallback():
 
 
 @pytest.mark.parametrize("candidate", CANDIDATES[:-1])
+def test_native_amd_qat_rejects_ignored_gradual_strength(candidate):
+    with torch.device("meta"):
+        model = BitNetLlama(model_for(candidate, weight_mode="ternary"))
+    with pytest.raises(ValueError, match="quantization strength"):
+        model.set_quantization_strength_(0.5)
+    model.set_quantization_strength_(1.0)
+
+
+@pytest.mark.parametrize("candidate", CANDIDATES[:-1])
 def test_amd_qat_config_preserves_fp8_geometry_and_phase_schedule(candidate):
     manifest = TokenManifest(TokenDataConfig(batch_size=16, seq_len=4096, total_train_tokens=10**9), [])
     config = build_config(manifest=manifest, world_size=8, global_batch_tokens=2_097_152,
@@ -184,10 +193,16 @@ def test_amd_receipt_cannot_use_h100_or_incomplete_evidence(tmp_path, monkeypatc
     path.write_text(json.dumps(report))
     with pytest.raises(ValueError, match="evidence"):
         validate_report(path, model_for(), torch.device("cpu"))
-    report.update({k: [True] for k in ("attention", "document_attention", "model_numerics", "optimized_kernels", "packed_learned_qkv", "optimizer", "fp8")})
+    report.update({k: [True] for k in ("attention", "document_attention", "model_numerics", "packed_model_numerics", "optimized_kernels", "packed_learned_qkv", "optimizer", "fp8")})
     report["report_sha256"] = fingerprint(report)
     path.write_text(json.dumps(report))
     validate_report(path, model_for(), torch.device("cpu"))
+    missing = copy.deepcopy(report)
+    missing.pop("packed_model_numerics")
+    missing["report_sha256"] = fingerprint({k: v for k, v in missing.items() if k != "report_sha256"})
+    path.write_text(json.dumps(missing))
+    with pytest.raises(ValueError, match="evidence"):
+        validate_report(path, model_for(), torch.device("cpu"))
     report["fp8"] = []
     path.write_text(json.dumps(report))
     with pytest.raises(ValueError):
@@ -201,7 +216,7 @@ def test_amd_qat_receipt_requires_mode_specific_native_evidence(tmp_path, monkey
     model = model_for(weight_mode="ternary")
     report = {"kind": "ci1_amd_preflight", "schema": 1, "status": "passed",
               "identity": {"test": "identity"},
-              **{k: [True] for k in ("attention", "document_attention", "model_numerics", "optimized_kernels",
+              **{k: [True] for k in ("attention", "document_attention", "model_numerics", "packed_model_numerics", "optimized_kernels",
                                       "packed_learned_qkv", "optimizer")},
               "fp8": {"weight_mode": "ternary", "fp32_wgrad": True,
                       "weight_cache_refresh": True},
