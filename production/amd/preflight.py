@@ -39,6 +39,10 @@ def validate_report(path, config, device):
             required += ("ternary",)
     if any(not report.get(key) for key in required):
         raise ValueError("AMD preflight lacks required native evidence")
+    if config.linear_backend.startswith("rocm_fp8"):
+        fp8 = report["fp8"]
+        if not isinstance(fp8, dict) or not fp8.get("surrogate_gradients"):
+            raise ValueError("AMD preflight lacks FP8 surrogate-gradient evidence")
     if config.weight_mode == "ternary":
         ternary = report["ternary"]
         if (not isinstance(ternary, dict) or ternary.get("weight_mode") != "ternary"
@@ -221,7 +225,49 @@ def fp8_gate(config, device):
         raise AssertionError("weight cache did not observe the master weight version")
     return {"cases": cases, "quantizers": quantizers, "fp32_wgrad": True,
             "weight_cache_refresh": True, "weight_mode": config.weight_mode,
+            "surrogate_gradients": surrogate_gradient_gate(config, device),
             "format": "FNUZ E4M3, max 240"}
+
+
+def surrogate_gradient_gate(config, device):
+    """Distinguish correct FP8 GEMMs from an acceptable STE approximation.
+
+    Match the existing Hopper limits, including the per-token check that a
+    whole-matrix norm can miss when one token has a very small gradient.
+    """
+    from terminus.fp8_validation import gradient_metrics
+
+    results = []
+    for stress in ("normal", "zero_gradient", "tiny_gradient", "token_outliers"):
+        x = torch.randn(257, 256, device=device, dtype=torch.bfloat16, requires_grad=True)
+        w = (torch.randn(256, 256, device=device) * .02).requires_grad_()
+        g = torch.randn(257, 256, device=device, dtype=torch.bfloat16)
+        if stress == "zero_gradient":
+            g.zero_()
+        elif stress == "tiny_gradient":
+            g *= 1e-12
+        elif stress == "token_outliers":
+            g *= torch.logspace(-6, 6, 257, device=device)[:, None]
+        actual = backend.linear(x, w, backend=config.linear_backend,
+                                splits=config.fp8_wgrad_splits or 1, weight_mode=config.weight_mode)
+        dx, dw = torch.autograd.grad(actual, (x, w), g)
+        wr = (reference.quantize_ternary(w.detach()) if config.weight_mode == "ternary"
+              else reference.quantize(w.detach(), group_rows=128))
+        xr = reference.directional(x.detach())[0]
+        with torch.autocast(device_type=device.type, enabled=False):
+            expected_dx = g.float() @ reference.dequantize(wr, 128)
+            expected_dw = g.float().T @ reference.dequantize(xr)
+        errors = {"input_gradient": gradient_metrics(dx, expected_dx),
+                  "weight_gradient": gradient_metrics(dw, expected_dw)}
+        if not all(e["relative_error"] < .08 and e["cosine"] > .995 for e in errors.values()):
+            raise AssertionError(f"AMD FP8 surrogate gradient exceeded the Hopper gate: {errors}")
+        token_errors = ((dx.double()-expected_dx.double()).norm(dim=1) /
+                        expected_dx.double().norm(dim=1).clamp_min(1e-100))
+        if not float(token_errors.max()) < .15:
+            raise AssertionError("AMD FP8 dgrad erased or corrupted a low-magnitude token gradient")
+        results.append({"stress": stress, "errors": errors,
+                        "max_token_dgrad_relative_error": float(token_errors.max())})
+    return {"cases": results, "scope": "Small independent STE products; not model quality certification."}
 
 
 def _packed_gate(config, device, *, batched_rope):

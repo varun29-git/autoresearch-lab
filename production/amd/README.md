@@ -1,7 +1,8 @@
 # CI-1 on MI325X: native test handoff
 
 **2026-11-09:** architecture hardening adds a complete packed-model
-loss/gradient/document-isolation preflight gate and binds CK/Triton/BLAS
+loss/gradient/document-isolation preflight gate, restores Hopper's independent
+STE approximation and per-token gradient checks, and binds CK/Triton/BLAS
 dispatch switches to runtime identity. V1 is shared in contiguous storage and
 released from module attributes after handoff. Native FP8 requires immediate
 quantization; fused producers require packed projections. Regenerate native

@@ -194,6 +194,7 @@ def test_amd_receipt_cannot_use_h100_or_incomplete_evidence(tmp_path, monkeypatc
     with pytest.raises(ValueError, match="evidence"):
         validate_report(path, model_for(), torch.device("cpu"))
     report.update({k: [True] for k in ("attention", "document_attention", "model_numerics", "packed_model_numerics", "optimized_kernels", "packed_learned_qkv", "optimizer", "fp8")})
+    report["fp8"] = {"surrogate_gradients": {"cases": [True]}}
     report["report_sha256"] = fingerprint(report)
     path.write_text(json.dumps(report))
     validate_report(path, model_for(), torch.device("cpu"))
@@ -219,7 +220,7 @@ def test_amd_qat_receipt_requires_mode_specific_native_evidence(tmp_path, monkey
               **{k: [True] for k in ("attention", "document_attention", "model_numerics", "packed_model_numerics", "optimized_kernels",
                                       "packed_learned_qkv", "optimizer")},
               "fp8": {"weight_mode": "ternary", "fp32_wgrad": True,
-                      "weight_cache_refresh": True},
+                      "weight_cache_refresh": True, "surrogate_gradients": {"cases": [True]}},
               "ternary": {"weight_mode": "ternary", "fp8_operand_gate": True,
                           "reduced_model_numerics": True, "optimizer": True}}
     path = tmp_path / "qat-preflight.json"

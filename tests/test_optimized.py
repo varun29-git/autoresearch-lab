@@ -10,6 +10,14 @@ from tests.helpers import tiny_config
 
 
 class StreamingLossTests(unittest.TestCase):
+    def test_h100_roofline_rejects_amd_precision_and_hardware_inputs(self):
+        from production.amd.recipe import model_for
+        from terminus.roofline import training_roofline
+        from terminus.train import TrainConfig
+
+        with self.assertRaisesRegex(ValueError, "AMD requires"):
+            training_roofline(model_for(), TrainConfig())
+
     def test_dense_roofline_counts_attention_and_head_recomputation(self):
         from terminus.roofline import causal_pairs, training_roofline
         from terminus.train import TrainConfig

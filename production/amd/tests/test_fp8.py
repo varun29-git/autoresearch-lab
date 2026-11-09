@@ -146,6 +146,38 @@ def test_native_quantizer_gemm_and_full_backward():
         assert result["fp32_wgrad"] and result["weight_mode"] == mode
 
 
+@pytest.mark.parametrize("weight_mode", ["dense", "ternary"])
+def test_surrogate_gate_handles_zero_tiny_and_mixed_token_gradients(emulated, weight_mode):
+    from production.amd.preflight import surrogate_gradient_gate
+    from production.amd.recipe import model_for
+
+    torch.manual_seed(1337)
+    report = surrogate_gradient_gate(model_for("fp8_triton", weight_mode=weight_mode), torch.device("cpu"))
+    assert {case["stress"] for case in report["cases"]} == {
+        "normal", "zero_gradient", "tiny_gradient", "token_outliers"}
+
+
+def test_surrogate_gate_rejects_erased_token_even_when_global_error_is_small(emulated, monkeypatch):
+    from production.amd.preflight import surrogate_gradient_gate
+    from production.amd.recipe import model_for
+
+    original = backend.linear
+
+    def broken(x, w, **kwargs):
+        def erase_first_token(gradient):
+            gradient = gradient.clone()
+            gradient[0].zero_()
+            return gradient
+
+        x.register_hook(erase_first_token)
+        return original(x, w, **kwargs)
+
+    monkeypatch.setattr(backend, "linear", broken)
+    torch.manual_seed(1337)
+    with pytest.raises(AssertionError, match="low-magnitude token gradient"):
+        surrogate_gradient_gate(model_for("fp8_triton"), torch.device("cpu"))
+
+
 @pytest.mark.parametrize('weight_mode',['dense','ternary'])
 @pytest.mark.parametrize('need_x,need_w',[(True,True),(False,True),(True,False),(False,False)])
 def test_fnuz_producer_sidecar_preserves_forward_and_both_gradients(emulated,weight_mode,need_x,need_w):
