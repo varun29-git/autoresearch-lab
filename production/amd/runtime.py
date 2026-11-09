@@ -37,8 +37,12 @@ def _command(args):
 def hip_contract(device):
     properties = require_gfx942(device)
     tuning = {}
+    # These upstream switches do not have an AITER_/NVTE_ prefix. Omitting
+    # them lets a new process change CK to Triton with an unchanged receipt.
+    dispatch_switches = {"ENABLE_CK", "FLASH_ATTENTION_TRITON_AMD_ENABLE",
+                         "ROCBLAS_USE_HIPBLASLT", "TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL"}
     for key, value in sorted(os.environ.items()):
-        if key.startswith(("AITER_", "NVTE_", "PYTORCH_TUNABLEOP_", "TORCH_BLAS_", "HIPBLASLT_")):
+        if key in dispatch_switches or key.startswith(("AITER_", "NVTE_", "PYTORCH_TUNABLEOP_", "TORCH_BLAS_", "HIPBLASLT_")):
             # Cache locations may differ by node/rank; bind actual tuning content.
             if key.endswith(("_FILE", "_FILENAME")) and Path(value).is_file():
                 tuning[key] = {"sha256": file_sha256(value)}
@@ -50,6 +54,7 @@ def hip_contract(device):
             "rccl": list(torch.cuda.nccl.version()) if isinstance(torch.cuda.nccl.version(), tuple) else torch.cuda.nccl.version(),
             "image": os.environ.get("CI1_ROCM_IMAGE"), "tuning": tuning,
             "matmul_allow_tf32": torch.backends.cuda.matmul.allow_tf32,
+            "preferred_blas_library": str(torch.backends.cuda.preferred_blas_library()),
             "allow_bf16_reduced_precision_reduction": torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction,
             "fp8_format": "float8_e4m3fnuz", "fp8_max": torch.finfo(torch.float8_e4m3fnuz).max}
 

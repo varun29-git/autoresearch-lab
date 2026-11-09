@@ -182,6 +182,25 @@ class TestValueResidualForward:
         assert all(getattr(layer.attn, "values_used", None) is None for layer in model.layers)
         assert torch.allclose(model(ids)["logits"][:, 9:], result["logits"], atol=1e-4)
 
+    def test_later_layers_share_one_contiguous_gradient_carrying_v1(self):
+        model = make_model(value_residual="learned", n_layers=4, fuse_projections=True)
+        sources = []
+
+        def capture_source(_module, _args, kwargs):
+            sources.append(kwargs["value_source"])
+
+        hooks = [layer.attn.register_forward_pre_hook(capture_source, with_kwargs=True)
+                 for layer in model.layers[1:]]
+        ids = torch.randint(0, 32, (2, 16))
+        model(ids, ids)["loss"].backward()
+        for hook in hooks:
+            hook.remove()
+        assert len(sources) == 3
+        assert all(source.is_contiguous() and source.requires_grad for source in sources)
+        assert len({source.contiguous().data_ptr() for source in sources}) == 1
+        kv = model.config.n_kv_heads * model.config.head_dim
+        assert model.layers[0].attn.qkv_proj.weight.grad[-kv:].abs().sum() > 0
+
     def test_training_loop_with_stability_monitor(self):
         # Regression for the trial-002 screen crash: the protected StabilityMonitor
         # hooks each attention module's output and requires a plain tensor return.

@@ -90,8 +90,8 @@ class BitNetLlamaConfig:
             raise ValueError("unknown linear cross entropy backend")
         if self.loss_backend.startswith("triton_fp8") and not self.quantize_activations:
             raise ValueError("the FP8 head branch requires the FP8 activation recipe")
-        if self.fused_fp8_producers and not (self.fused_pointwise and (self.linear_backend == "deepgemm" or self.linear_backend.startswith("rocm_fp8")) and self.quantize_activations):
-            raise ValueError("producer FP8 fusion requires fused pointwise kernels and an explicit native FP8 recipe")
+        if self.fused_fp8_producers and not (self.fused_pointwise and self.fuse_projections and (self.linear_backend == "deepgemm" or self.linear_backend.startswith("rocm_fp8")) and self.quantize_activations):
+            raise ValueError("producer FP8 fusion requires fused pointwise kernels, packed projections and an explicit native FP8 recipe")
         if self.residual_dtype not in {"fp32", "bf16"}:
             raise ValueError("residual_dtype must be fp32 or bf16")
         if self.embedding_dim is not None and (isinstance(self.embedding_dim, bool)
@@ -632,7 +632,10 @@ class BitNetLlama(nn.Module):
             elif self.config.value_residual != "none":
                 hidden = layer(hidden, cos, sin, attention_mask, value_source=value_source, document_layout=document_layout)
                 if value_source is None:
-                    value_source = layer.attn.values_used
+                    # Every fused value-mix saves a contiguous V1 for backward.
+                    # Make that copy once, so the later layers share its storage
+                    # and its gradient-carrying layout conversion.
+                    value_source = layer.attn.values_used.contiguous()
                     layer.attn.values_used = None
             else:
                 hidden = layer(hidden, cos, sin, attention_mask, document_layout=document_layout)
@@ -673,7 +676,7 @@ class BitNetLlama(nn.Module):
             for index, (layer, layer_cache) in enumerate(zip(self.layers, cache.layers)):
                 if index == 0:
                     hidden = layer(hidden, cos, sin, cache=layer_cache, value_source=None)
-                    values = layer.attn.values_used
+                    values = layer.attn.values_used.contiguous()
                     layer.attn.values_used = None
                     buffer = values if cache.value_residual_buffer is None else torch.cat(
                         (cache.value_residual_buffer, values), dim=2)

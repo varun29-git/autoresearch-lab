@@ -241,3 +241,6 @@ def test_fp8_producer_candidate_is_explicit_and_uses_qualified_dense_rates():
         model=model_for('fp8_te',weight_mode=mode,fused_fp8_producers=True)
         assert model.fused_fp8_producers
     with pytest.raises(ValueError):model_for('bf16',fused_fp8_producers=True)
+    unpacked = replace(model_for(), fuse_projections=False, fused_qkv=False, fused_mlp=False)
+    with pytest.raises(ValueError, match="packed projections"):
+        replace(unpacked, fused_fp8_producers=True)

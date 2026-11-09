@@ -1,5 +1,12 @@
 # CI-1 on MI325X: native test handoff
 
+**2026-11-09:** architecture hardening adds a complete packed-model
+loss/gradient/document-isolation preflight gate and binds CK/Triton/BLAS
+dispatch switches to runtime identity. V1 is shared in contiguous storage and
+released from module attributes after handoff. Native FP8 requires immediate
+quantization; fused producers require packed projections. Regenerate native
+receipts from the final source and environment before launch.
+
 **2026-11-02:** use the [current readiness entry](pretraining_readiness/README.md).
 The H100 qualification campaign is complete and AMD ternary QAT is implemented;
 native AMD acceptance and provider/data qualification remain open. New offline

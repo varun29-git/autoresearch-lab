@@ -1,5 +1,13 @@
 # CI-1 production handoff
 
+**2026-11-09 architecture hardening:** V1 uses a transient handoff and one
+shared contiguous copy; model attributes no longer retain mixed-value
+activations between updates. Native FP8 rejects gradual quantization strength,
+and producer fusion requires packed projections. AMD preflight now requires
+full-model packed loss/gradient/isolation evidence; runtime identity binds CK,
+Triton and BLAS dispatch switches. The selected architecture and optimizer
+arithmetic are preserved. Native MI325X qualification remains unrun here.
+
 **2026-11-09 packed training integration:** the
 [packed training path](PACKED_TRAINING.md) connects finite dataset-child mixing,
 document masks, reset RoPE, actual-label DDP normalization, heldout evaluation
