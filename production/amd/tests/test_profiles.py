@@ -110,6 +110,20 @@ def test_hpo_batch_can_use_one_eight_gpu_microstep_without_changing_the_optimize
     assert conservative["training"]["warmup_tokens"] == larger_microbatch["training"]["warmup_tokens"]
 
 
+def test_fused_profile_keeps_the_balanced_batch_and_leaves_the_default_off():
+    original = manifest()
+    _, balanced, _ = select(original, profile="balanced")
+    _, fused, _ = select(original, profile="fused")
+    assert balanced["model"]["fused_fp8_producers"] is False
+    assert fused["model"]["fused_fp8_producers"] is True
+    assert fused["model"]["linear_backend"] == balanced["model"]["linear_backend"] == "rocm_fp8_te"
+    assert fused["model"]["fp8_wgrad_splits"] == balanced["model"]["fp8_wgrad_splits"] == 0
+    assert fused["training"]["gradient_accumulation_steps"] == balanced["training"]["gradient_accumulation_steps"] == 4
+    assert fused["optimizer"] == balanced["optimizer"]
+    with pytest.raises(ValueError, match="producer"):
+        select(original, profile="fused", candidate="bf16")
+
+
 def test_explicit_backend_fallback_keeps_selected_batch_and_data_phases():
     original = manifest(tokens=10_000_000_000)
     original = replace(original, config=replace(original.config, source_mix={}, phase_source_mixes=[

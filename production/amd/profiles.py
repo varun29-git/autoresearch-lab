@@ -39,6 +39,7 @@ class Profile:
     candidate: str = "fp8_te"
     local_attention: str = ""
     ddp_bucket_cap_mb: int = 25
+    fused_fp8_producers: bool = False
 
 
 PROFILES = {
@@ -64,6 +65,8 @@ PROFILES = {
     "ddp64": Profile("Conditional communication-overlap trial.", ddp_bucket_cap_mb=64),
     "ddp128": Profile("Conditional communication-overlap trial.", ddp_bucket_cap_mb=128),
     "ck_local": Profile("Independent CK for the twenty local layers.", local_attention="rocm_ck"),
+    "fused": Profile("Norm and SwiGLU FNUZ producers at the balanced batch. Native speed and the producer gate are unrun.",
+                     fused_fp8_producers=True),
     "single_gpu": Profile("Matched-global-batch rank-equivalence control, not a scaling claim.", world_size=1),
 }
 
@@ -121,7 +124,8 @@ def select(manifest, *, profile="balanced", purpose="training", candidate=None):
     config = build_config(manifest=derived, world_size=selected.world_size,
                           global_batch_tokens=batch, warmup_tokens=warmup, decay_tokens=decay,
                           candidate=selected.candidate, local_attention=selected.local_attention,
-                          ddp_bucket_cap_mb=selected.ddp_bucket_cap_mb)
+                          ddp_bucket_cap_mb=selected.ddp_bucket_cap_mb,
+                          fused_fp8_producers=selected.fused_fp8_producers)
     # Freeze training defaults too. Optimizer settings come from the baseline.
     training = asdict(TrainConfig(**config["training"]))
     training.update({name: max(1, tokens // batch) for name, tokens in CADENCE_TOKENS.items()})

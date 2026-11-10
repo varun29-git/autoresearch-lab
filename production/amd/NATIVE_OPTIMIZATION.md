@@ -6,8 +6,10 @@ weights/optimizer state and ternary straight-through gradient remain intact.
 
 ## Fused RMSNorm/SwiGLU to FP8
 
-Generate a candidate with `production.amd.build_config --fused-fp8-producers`.
-It is **off by default** and valid only for the AMD FP8 projection paths.
+Generate a candidate with `production.amd.build_config --fused-fp8-producers`
+or `prepare --profile fused`. The `balanced` profile leaves the flag **off**.
+`fused` changes only that flag at the same 2,097,152-token batch. It is valid
+only for the AMD FP8 projection paths.
 The producers emit FNUZ row codes and column-major FP32 scales directly from
 the BF16-rounded output held in registers. This eliminates a separate row
 quantizer launch/read at those sites. BF16 outputs remain available for

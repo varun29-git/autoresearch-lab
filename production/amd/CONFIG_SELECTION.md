@@ -249,6 +249,7 @@ stated field(s) relative to `balanced` and derive accumulation/cadence.
 | `bf16` | Removes projection FP8 quantization | Independent quality and timing control |
 | `triton` | Local Triton forward/dgrad/wgrad, splits 4 | Diagnosis if vendor kernels disagree; not mandatory tuning spend |
 | `ck_local` | Independent FA-CK for local layers | If local attention is a measured bottleneck |
+| `fused` | Norm and SwiGLU emit FNUZ sidecars at the balanced batch | Only after the producer preflight passes; speed is unmeasured |
 | `ddp64`, `ddp128` | Bucket cap 64 or 128 MiB | If traces show exposed communication; cap is not a hard maximum tensor size |
 | `single_gpu` | One rank, accumulation 32 | Bounded rank-equivalence control at the same 2M global batch |
 
