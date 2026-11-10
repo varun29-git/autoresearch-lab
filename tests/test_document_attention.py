@@ -61,7 +61,8 @@ def test_bad_layout_rejected(positions, segments):
 
 
 @pytest.mark.parametrize("backend", ["rocm_aiter", "rocm_ck"])
-def test_native_varlen_adapter_uses_layout_window_gqa_and_backward(monkeypatch, backend):
+@pytest.mark.parametrize("local_window,expected_window", [(512, (511, 0)), (None, (-1, -1))])
+def test_native_varlen_adapter_uses_layout_window_gqa_and_backward(monkeypatch, backend, local_window, expected_window):
     import production.amd.attention as amd
     import production.amd.runtime as runtime
     monkeypatch.setattr(runtime, "require_gfx942", lambda device: None)
@@ -73,10 +74,15 @@ def test_native_varlen_adapter_uses_layout_window_gqa_and_backward(monkeypatch, 
     layout = DocumentLayout.from_cpu([[0,1,0,1,2,0]], [[0,0,1,1,1,-1]])
     q = torch.randn(1,4,6,8,dtype=torch.bfloat16,requires_grad=True)
     k,v = [torch.randn(1,2,6,8,dtype=torch.bfloat16,requires_grad=True) for _ in range(2)]
-    output = amd.attention(q,k,v,backend=backend,local_window=512,document_layout=layout)
+    output = amd.attention(q,k,v,backend=backend,local_window=local_window,document_layout=layout)
     output.sum().backward()
     assert calls[0][0] == (5,4,8) and calls[0][1] == (5,2,8)
-    assert calls[0][2]["window_size"] == (511,0)
+    assert calls[0][2]["window_size"] == expected_window
+    assert calls[0][2]["causal"] is True and calls[0][2]["dropout_p"] == 0.0
+    if backend == "rocm_aiter":
+        assert calls[0][2]["how_v3_bf16_cvt"] == 0
+    else:
+        assert "how_v3_bf16_cvt" not in calls[0][2]
     assert calls[0][2]["cu_seqlens_q"].tolist() == [0,2,5]
     assert not output[:,:,5].any() and not q.grad[:,:,5].any()
 
