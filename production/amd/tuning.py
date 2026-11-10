@@ -40,6 +40,31 @@ def measured_splits():
             if payload.get("schema") == 2 else {})
 
 
+LEGAL_SPLITS = (1, 2, 4, 8, 16)
+
+
+def resolve_splits(requested, recorded, *, group, k):
+    """Use a measured per-shape split when a schema-2 table is loaded.
+
+    With no table, this is the historical ``min(requested, K/128)`` rule.
+    A loaded table replaces that request for the matching shape. Forward and
+    input-gradient rows are rejected unless they were measured at one split.
+    """
+    if type(requested) is not int or requested not in LEGAL_SPLITS:
+        raise ValueError("AMD wgrad split count must be 1, 2, 4, 8 or 16")
+    if group not in (1, 128) or type(k) is not int or k <= 0 or k % 128:
+        raise ValueError("split-K requires group 1 or 128 and a positive K multiple of 128")
+    if recorded is None:
+        return min(requested, k // 128)
+    if type(recorded) is not int or recorded not in LEGAL_SPLITS:
+        raise ValueError("measured split-K count must be 1, 2, 4, 8 or 16")
+    if group != 1 and recorded != 1:
+        raise ValueError("measured forward or dgrad split-K must stay 1")
+    if recorded > k // 128:
+        raise ValueError("measured split-K does not fit this reduction length")
+    return recorded
+
+
 def tile_for(m, n, k, group, *, splits=1):
     selected = table()
     expected = measured_splits().get(f"{m},{n},{k},{group}")
@@ -74,4 +99,10 @@ def validate_measured_table(payload, *, identity=None):
         winner = measurements.get(key, {})
         if winner.get("tile") != tile or winner.get("correctness_passed") is not True:
             raise ValueError("tuning tile has no matching native correctness measurement")
+        splits = winner.get("splits")
+        if type(splits) is not int or splits not in LEGAL_SPLITS:
+            raise ValueError("measured split-K count must be 1, 2, 4, 8 or 16")
+        group = int(str(key).rsplit(",", 1)[-1])
+        if group != 1 and splits != 1:
+            raise ValueError("measured forward or dgrad split-K must stay 1")
     return payload

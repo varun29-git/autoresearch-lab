@@ -1,7 +1,9 @@
 """Describe or explicitly measure gfx942 GEMM tiles for the real model shapes.
 
-Default is CPU-only shape preparation. --run is a human-invoked native test,
-not a paid launch performed by this tool's implementation or by documentation.
+Default is CPU-only shape preparation. Weight-gradient rows list split-K
+candidates 1, 2, 4 and 8 and do not select one. --run is a human-invoked
+native test on already available hardware, not a paid launch performed by
+this tool's implementation or by documentation.
 """
 import argparse
 from dataclasses import asdict
@@ -15,6 +17,7 @@ from terminus.integrity import fingerprint, write_json_atomic
 from terminus.train import load_config
 from .tuning import native_identity, validate_tile
 
+WGRAD_SPLITS = (1, 2, 4, 8)
 TILES = [
     {'bm':32,'bn':64,'num_warps':4,'num_stages':2,'waves_per_eu':0},
     {'bm':32,'bn':128,'num_warps':4,'num_stages':2,'waves_per_eu':0},
@@ -34,6 +37,25 @@ def shapes(model, microbatch):
             out.append({'projection':name,'role':role,'m':a,'n':b,'k':c,'group':group,
                         'dtype':'float32' if group==1 else 'bfloat16','key':f'{a},{b},{c},{group}'})
     return out
+
+
+def split_candidates(shape):
+    group, k = shape['group'], shape['k']
+    if group not in (1, 128) or type(k) is not int or k <= 0 or k % 128:
+        raise ValueError('GEMM shape needs group 1 or 128 and a positive K multiple of 128')
+    if group != 1:
+        return (1,)
+    return tuple(count for count in WGRAD_SPLITS if count <= k // 128)
+
+
+def plan(model, microbatch):
+    return [{**shape, 'split_candidates': split_candidates(shape)} for shape in shapes(model, microbatch)]
+
+
+def unmeasured(model, microbatch):
+    return {'status': 'prepared_not_measured', 'shapes': plan(model, microbatch), 'candidate_tiles': TILES,
+            'wgrad_split_candidates': list(WGRAD_SPLITS), 'model': asdict(model),
+            'scope': 'CPU shape plan only; no tuning table or split-K count selected'}
 
 
 def measure(model,microbatch,*,iterations=10):
@@ -57,25 +79,27 @@ def measure(model,microbatch,*,iterations=10):
             dtype=torch.float32 if group==1 else torch.bfloat16
             expected=reference.gemm(a,b,rhs_group_size=group,out_dtype=dtype)
             winners=[]
-            for tile in TILES:
-                validate_tile(tile)
-                try:
-                    with patch('production.amd.tuning.tile_for',return_value=tile):
-                        def call():
-                            return fp8_kernels.gemm(a,b,rhs_group_size=group,out_dtype=dtype,
-                                splits=(model.fp8_wgrad_splits or 1) if group==1 else 1)
-                        error=_errors([call()],[expected],limit=.025,atol=0.)
-                        for _ in range(3):call()
-                        times=[]
-                        for _ in range(iterations):
-                            torch.cuda.synchronize();begin=time.perf_counter();call();torch.cuda.synchronize()
-                            times.append(time.perf_counter()-begin)
-                        winners.append({'tile':tile,'correctness_passed':True,'errors':error,
-                                        'median_seconds':statistics.median(times),'samples_seconds':times,
-                                        'splits':min(model.fp8_wgrad_splits or 1,k//128) if group==1 else 1})
-                except (RuntimeError,AssertionError) as exc:
-                    failures.append({'key':key,'tile':tile,'error':str(exc)})
-                    if isinstance(exc,torch.cuda.OutOfMemoryError):torch.cuda.empty_cache()
+            for candidate_splits in split_candidates(shape):
+                for tile in TILES:
+                    validate_tile(tile)
+                    try:
+                        with patch('production.amd.tuning.tile_for',return_value=tile), \
+                             patch('production.amd.tuning.measured_splits',return_value={}):
+                            def call(candidate_splits=candidate_splits):
+                                return fp8_kernels.gemm(a,b,rhs_group_size=group,out_dtype=dtype,
+                                    splits=candidate_splits)
+                            error=_errors([call()],[expected],limit=.025,atol=0.)
+                            for _ in range(3):call()
+                            times=[]
+                            for _ in range(iterations):
+                                torch.cuda.synchronize();begin=time.perf_counter();call();torch.cuda.synchronize()
+                                times.append(time.perf_counter()-begin)
+                            winners.append({'tile':tile,'correctness_passed':True,'errors':error,
+                                            'median_seconds':statistics.median(times),'samples_seconds':times,
+                                            'splits':candidate_splits})
+                    except (RuntimeError,AssertionError) as exc:
+                        failures.append({'key':key,'tile':tile,'splits':candidate_splits,'error':str(exc)})
+                        if isinstance(exc,torch.cuda.OutOfMemoryError):torch.cuda.empty_cache()
             if not winners:raise RuntimeError(f'no correct GEMM tile for {key}')
             winner=min(winners,key=lambda x:x['median_seconds'])
             tiles[key]=winner['tile'];measurements[key]=winner
@@ -94,9 +118,7 @@ def main():
     p.add_argument('--run',action='store_true',help='Explicit native measurement on already available hardware')
     args=p.parse_args();model,_,_=load_config(external_path(args.config))
     output=external_path(args.output,fresh=True)
-    result=measure(model,args.microbatch,iterations=args.iterations) if args.run else {
-        'status':'prepared_not_measured','shapes':shapes(model,args.microbatch),'candidate_tiles':TILES,
-        'model':asdict(model),'scope':'CPU shape plan only; no tuning table selected'}
+    result=measure(model,args.microbatch,iterations=args.iterations) if args.run else unmeasured(model,args.microbatch)
     write_json_atomic(output,result)
     print(json.dumps({'output':str(output),'native_measured':args.run}))
 

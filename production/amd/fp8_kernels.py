@@ -202,17 +202,16 @@ def check_operands(lhs, rhs, group, dtype):
 
 def gemm(lhs, rhs, *, rhs_group_size=128, out_dtype=torch.bfloat16, splits=1):
     check_operands(lhs, rhs, rhs_group_size, out_dtype)
-    if type(splits) is not int or splits not in (1, 2, 4, 8, 16):
-        raise ValueError("AMD wgrad split count must be 1, 2, 4, 8 or 16")
     a, sa = lhs
     b, sb = rhs
     m, k = a.shape
     n = b.shape[0]
-    splits = min(splits, k // 128)
+    from .tuning import measured_splits, resolve_splits, tile_for
+
+    recorded = measured_splits().get(f"{m},{n},{k},{rhs_group_size}")
+    splits = resolve_splits(splits, recorded, group=rhs_group_size, k=k)
     output = torch.empty((m, n), device=a.device, dtype=out_dtype)
     work = torch.empty((splits, m, n), device=a.device, dtype=torch.float32) if splits > 1 else output
-    from .tuning import tile_for
-
     tile = tile_for(m, n, k, rhs_group_size, splits=splits)
     bm, bn = tile["bm"], tile["bn"]
     _gemm[(triton.cdiv(m, bm) * triton.cdiv(n, bn), splits)](

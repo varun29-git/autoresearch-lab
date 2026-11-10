@@ -61,6 +61,12 @@ a GPU with spare capacity. TE owns its own scheduling and uses config value
 zero for this field. Never concatenate and requantize microsteps to make
 wgrad larger without a separate numerical review.
 
+`python -m production.amd.autotune --run` times split counts 1, 2, 4 and 8
+separately on each weight-gradient shape. The CPU plan only lists them. A
+loaded schema-2 table applies the measured count to that shape's local Triton
+GEMM; TE still ignores the table, and the config value remains the untuned
+default.
+
 `CI1_AMD_GEMM_TUNING` can name an external JSON table for the local GEMM.
 Keys are `M,N,K,right_scale_group_rows`; entries specify validated launch
 fields. For example, a candidate launch for QKV wgrad at microbatch 16 has

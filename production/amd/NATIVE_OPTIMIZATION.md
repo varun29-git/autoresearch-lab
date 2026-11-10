@@ -33,16 +33,23 @@ python -m production.amd.autotune --config /external/config.json \
 On an already available MI325X, the human explicitly adds `--run` and chooses a
 fresh output to benchmark six tile candidates for the actual packed QKV,
 attention output, gate/up and down projections, including forward, input
-gradient and long-reduction weight gradient. Correctness uses independent
-dequantized FP32 matmul. Measurements record synchronized timing samples,
-correctness, actual split-K, source hashes and runtime/GPU identity.
+gradient and long-reduction weight gradient. Each weight-gradient shape also
+tries split-K counts 1, 2, 4 and 8. Forward and input gradients stay at one
+split. Correctness uses independent dequantized FP32 matmul and the existing
+2.5% bound. A candidate that fails that bound or runs out of memory is not
+selected. Measurements record synchronized timing samples, correctness, the
+winning split-K count, source hashes and runtime/GPU identity.
 
-Set `CI1_AMD_GEMM_TUNING=/external/measured-tiles.json` in a **fresh process**,
-recapture runtime/preflight receipts and rerun full updates. A measured table
-is rejected after identity/checksum/split-K changes. Missing shapes retain the
-default tile. This tunes the local Triton GEMMs: TE's own GEMMs are unaffected;
-AITER's local weight-gradient path can benefit. The tool does not sweep
-split-K itself; regenerate/remeasure if that setting changes.
+The CPU plan lists those candidates and does not choose a tile or a split.
+Without `CI1_AMD_GEMM_TUNING`, local GEMMs keep the config split and the
+default tile. Set that variable to a schema-2 table in a **fresh process** and
+the local Triton GEMM uses the measured split and tile for each recorded
+shape. Forward and input-gradient rows must record split 1. A measured table
+is rejected after identity, checksum, or split-K changes. Missing shapes
+retain the default tile and the requested split. This tunes the local Triton
+GEMMs: TE's own GEMMs are unaffected; AITER's local weight-gradient path can
+benefit. Recapture runtime/preflight receipts and rerun full updates before
+using a table for training. No MI325X speed has been measured.
 
 ## Promotion criteria
 
