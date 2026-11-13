@@ -1,8 +1,8 @@
 """Rewrite a finished four-GPU checkpoint for the eight-GPU continuation.
 
 The selected global batch stays 2,097,152 tokens. Doubling the ranks halves
-accumulation, so a microbatch-16 prefix (accumulation 8) becomes accumulation 4
-and a microbatch-32 prefix (accumulation 4) becomes accumulation 2. Weights,
+accumulation. The selected four-GPU prefix is microbatch 32 and accumulation 4,
+so the eight-GPU continuation is accumulation 2. Weights,
 optimizer moments, and tokens already scored are copied. The microstep counter
 is halved so the next sequence is the same one. Ranks 4–7 receive a fresh
 generator seeded as ``seed + rank``.

@@ -973,8 +973,8 @@ Reads issued & & \(211.5\GiB\) \\
 The element sum is \(24\times 131072\times(2304+10368+23424)=113{,}548{,}197{,}888\),
 times \(2\) bytes is \(227{,}096{,}395{,}776\) bytes, which is \(211.5\GiB\).
 Across the two microsteps of \code{balanced} that is \(423.0\GiB\) of source
-reads per rank per update. \code{world4} keeps \(M=65{,}536\) and runs eight
-microsteps, so the same rule gives \(846.0\GiB\). The live FP32 tile is
+reads per rank per update. \code{world4} uses the same \(M=131{,}072\) and
+four microsteps, so \(4\times 211.5\GiB=846.0\GiB\). The live FP32 tile is
 \(128\times 128\times 4=65{,}536\) bytes per CTA. At eight wavefronts of
 \(64\) lanes that is \(32\) FP32 values per lane before the quotient. A
 compiler spill of that tile is unmeasured and would put the same bytes back
@@ -1419,15 +1419,18 @@ Profile & \(B\) & World & Global tokens & Other change \\
 \code{ck\_local} & 16 & 8 & 2{,}097{,}152 & local attention \code{rocm\_ck} \\
 \code{fused} & 16 & 8 & 2{,}097{,}152 & accumulation \(4\) \\
 \code{single\_gpu} & 16 & 1 & 2{,}097{,}152 & accumulation \(32\) \\
-\code{world4} & 16 & 4 & 2{,}097{,}152 & accumulation \(8\) \\
-\code{world4\_mb32} & 32 & 4 & 2{,}097{,}152 & accumulation \(4\) \\
+\code{world4}, \code{world4\_mb32} & 32 & 4 & 2{,}097{,}152 & accumulation \(4\) \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\(M=B\times 4096\). \code{balanced} uses \(M=131{,}072\). \code{fused} and
-\code{world4} keep microbatch \(16\), so \(M=65{,}536\), with accumulation
-\(4\) and \(8\). \code{single\_gpu} also keeps microbatch \(16\) and raises
+\(M=B\times 4096\). \code{balanced} and \code{world4} use \(M=131{,}072\).
+On four ranks that is accumulation \(4\), because
+\(4\times 32\times 4096\times 4=2{,}097{,}152\). A finished \code{world4}
+checkpoint widens onto \code{mb32\_fused}, which keeps microbatch \(32\) and
+halves accumulation to \(2\). \code{fused} keeps microbatch \(16\), so
+\(M=65{,}536\) and accumulation \(4\). \code{single\_gpu} also keeps
+microbatch \(16\) and raises
 accumulation to \(32\) so the global token count matches. Fit of
 \(M=131{,}072\) is unmeasured. Training refuses an unbounded run unless
 \code{--operations-config} is set, and it refuses a preflight receipt whose

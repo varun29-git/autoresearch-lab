@@ -258,12 +258,12 @@ stated field(s) relative to `balanced` and derive accumulation/cadence.
 | `bf16` | Removes projection FP8 quantization | Independent quality and timing control |
 | `triton` | Local Triton forward/dgrad/wgrad, splits 4 | Diagnosis if vendor kernels disagree; not mandatory tuning spend |
 | `ck_local` | Independent FA-CK for local layers | If local attention is a measured bottleneck |
-| `fused` | microbatch 16, accumulation 4; producers are already on in `balanced` | Eight-GPU microbatch-16 control, and the widening target of a finished `world4` checkpoint |
+| `fused` | microbatch 16, accumulation 4; producers are already on in `balanced` | Eight-GPU microbatch-16 control |
 | `ddp64`, `ddp128` | Bucket cap 64 or 128 MiB | If traces show exposed communication; cap is not a hard maximum tensor size |
 | `single_gpu` | One rank, microbatch 16, accumulation 32 | Bounded rank-equivalence control at the same 2M global batch. It does not inherit microbatch 32 |
-| `world4` | Four ranks, microbatch 16, accumulation 8, norm and SwiGLU FP8 producers on | The four-GPU launch. Each RMSNorm and packed SwiGLU writes the BF16 value and the FNUZ sidecar the next GEMM consumes, so that activation is not quantized again. A finished checkpoint widens onto `fused` |
-| `world4_mb32` | Four ranks, microbatch 32, accumulation 4, same producers | Same global batch with more of the 256 GB HBM in use. Fit is unmeasured. Start here only after `world4` has completed an update with memory headroom. A finished checkpoint widens onto `mb32_fused` |
-| `mb32_fused` | Eight ranks, microbatch 32, accumulation 2, same producers | Eight-GPU continuation of `world4_mb32`. Fit is unmeasured |
+| `world4` | Four ranks, microbatch 32, accumulation 4, norm and SwiGLU FP8 producers on | The four-GPU launch. 4 × 32 × 4096 × 4 = 2,097,152. Fit is unmeasured. A finished checkpoint widens onto `mb32_fused` |
+| `world4_mb32` | Same microbatch, accumulation, world size and producers as `world4` | Named alias of the four-GPU launch |
+| `mb32_fused` | Eight ranks, microbatch 32, accumulation 2, same producers | Eight-GPU continuation of `world4`. Fit is unmeasured |
 
 The selected runtime has OMP 4 and no speculative RCCL channel/protocol
 overrides. Select NUMA affinity from the actual GPU/CPU topology. Do not

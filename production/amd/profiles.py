@@ -52,7 +52,7 @@ PROFILES = {
         "Same microbatch, producers, and global batch as balanced. Named alias; fit is unmeasured.",
         microbatch=32),
     "mb32_fused": Profile(
-        "Eight-GPU continuation of world4_mb32. Microbatch 32, accumulation 2, same producers. Fit is unmeasured.",
+        "Eight-GPU continuation of world4. Microbatch 32, accumulation 2, same producers. Fit is unmeasured.",
         microbatch=32, fused_fp8_producers=True),
     "batch_1m_mb16": Profile("Intermediate global-batch quality candidate at microbatch 16.",
                             global_batch_tokens=1_048_576),
@@ -75,17 +75,17 @@ PROFILES = {
     "ddp128": Profile("Conditional communication-overlap trial.", ddp_bucket_cap_mb=128),
     "ck_local": Profile("Independent CK for the twenty local layers.", local_attention="rocm_ck"),
     "fused": Profile(
-        "Eight-GPU continuation of world4. Norm and SwiGLU emit the FNUZ sidecar the next GEMM consumes. "
+        "Eight-GPU microbatch-16 control. Norm and SwiGLU emit the FNUZ sidecar the next GEMM consumes. "
         "The producer preflight must pass before the first step.",
         fused_fp8_producers=True),
     "single_gpu": Profile("Matched-global-batch rank-equivalence control, not a scaling claim.", world_size=1),
     "world4": Profile(
-        "Four-GPU launch. Same global batch, accumulation 8, with the norm and SwiGLU FP8 producers on. "
-        "A finished update widens onto the fused profile.",
-        world_size=4, fused_fp8_producers=True),
+        "Four-GPU launch. Microbatch 32, accumulation 4, same global batch, with the norm and SwiGLU FP8 producers on. "
+        "Fit is unmeasured. A finished update widens onto mb32_fused.",
+        microbatch=32, world_size=4, fused_fp8_producers=True),
     "world4_mb32": Profile(
-        "Four-GPU HBM attempt at the same global batch. Microbatch 32, accumulation 4, producers on. "
-        "Fit on 256 GB is unmeasured. A finished update widens onto mb32_fused.",
+        "Same four-GPU launch as world4: microbatch 32, accumulation 4, producers on. "
+        "Fit is unmeasured. A finished update widens onto mb32_fused.",
         microbatch=32, world_size=4, fused_fp8_producers=True),
 }
 
@@ -182,7 +182,7 @@ def select(manifest, *, profile="balanced", purpose="training", candidate=None):
             {"scope": "four_gpu_prefix_of_the_eight_gpu_run", "gpus": 4, "continues_on_gpus": 8,
              "global_batch_tokens": batch, "accumulation": training["gradient_accumulation_steps"],
              "fp8_producers": True,
-             "eight_gpu_profile": "fused" if profile == "world4" else "mb32_fused",
+             "eight_gpu_profile": "mb32_fused",
              "measured_rate": None,
              "note": "Same 2097152-token update and the same norm and SwiGLU FP8 producers as balanced. Widen a finished checkpoint and launch the named eight-GPU profile so the model contract matches. This is not the 5760 GPU-hour month."}
             if profile in {"world4", "world4_mb32"} else

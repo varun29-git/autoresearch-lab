@@ -60,8 +60,9 @@ def test_selected_profiles_roundtrip_and_comparison_contract(tmp_path, name):
         assert report["allocation"]["scope"] == "four_gpu_prefix_of_the_eight_gpu_run"
         assert report["allocation"]["gpus"] == 4
         assert report["allocation"]["fp8_producers"] is True
-        assert report["accumulation"] == (8 if name == "world4" else 4)
-        assert report["allocation"]["eight_gpu_profile"] == ("fused" if name == "world4" else "mb32_fused")
+        assert derived.config.batch_size == 32
+        assert report["accumulation"] == 4
+        assert report["allocation"]["eight_gpu_profile"] == "mb32_fused"
         assert selected.global_batch_tokens == GLOBAL_BATCH_TOKENS
         assert config["model"]["fused_fp8_producers"] is True
     else:
@@ -136,10 +137,14 @@ def test_selected_fp8_profiles_emit_norm_and_swiglu_codes():
     assert fused["training"]["gradient_accumulation_steps"] == 4
     assert balanced_report["global_sequences_per_update"] == fused_report["global_sequences_per_update"] == 512
     assert fused["optimizer"] == balanced["optimizer"]
-    _, world4, _ = select(original, profile="world4")
-    _, world4_mb32, _ = select(original, profile="world4_mb32")
+    derived4, world4, world4_report = select(original, profile="world4")
+    derived4_alias, world4_mb32, _ = select(original, profile="world4_mb32")
     _, mb32_fused, _ = select(original, profile="mb32_fused")
-    assert world4["model"] == fused["model"]
+    assert derived4.config.batch_size == derived4_alias.config.batch_size == 32
+    assert world4["training"]["gradient_accumulation_steps"] == 4
+    assert world4_mb32["training"]["gradient_accumulation_steps"] == 4
+    assert world4_report["allocation"]["eight_gpu_profile"] == "mb32_fused"
+    assert world4["model"] == mb32_fused["model"]
     assert world4_mb32["model"] == mb32_fused["model"]
     assert mb32_fused["model"]["fused_fp8_producers"] is True
     assert mb32_fused["training"]["gradient_accumulation_steps"] == 2

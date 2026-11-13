@@ -167,7 +167,9 @@ is no automatic sweep. `balanced` selects TE and needs `INSTALL_TE=1`.
 retains its original `fp8` default, and leaves producers off; it does not
 apply profile policies. Confirm the generated manifest before launch. The
 first training command is a bounded update. If that allocation fails,
-regenerate with `mb8`. Microbatch 16 remains `fused` and `world4`. If a
+regenerate with `mb8`. `world4` is the four-GPU form of the same
+microbatch: 32 sequences and accumulation 4. `fused` remains microbatch 16.
+If a
 finished microbatch-32 update leaves headroom, compare `batch_3m_mb16` and
 `batch_3m_mb24` at the same 3.146M-token global batch and qualify that batch
 against the 2M baseline before promotion.
