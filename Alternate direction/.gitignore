@@ -1,0 +1,10 @@
+*.pem
+__pycache__/
+*.safetensors
+*.bin
+
+# Generated evaluation and probe dumps stay on the machine.
+results/**/*.json
+results/**/*.jsonl
+results/**/*.log
+results/**/*.out
