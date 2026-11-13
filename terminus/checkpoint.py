@@ -137,7 +137,7 @@ def _load_checkpoint(path, expected_contract):
         raise ValueError("checkpoint integrity verification failed")
     if receipt["contract_sha256"] != fingerprint(expected_contract):
         raise ValueError("resume contract changed; use a deliberate fresh run instead")
-    payload = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
+    payload = torch.load(os.fspath(path), map_location="cpu", weights_only=True, mmap=True)
     if payload.get("schema_version") != SCHEMA_VERSION or payload.get("contract") != expected_contract:
         raise ValueError("checkpoint schema or resume contract mismatch")
     if payload["state"] != receipt["state"]:

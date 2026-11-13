@@ -45,26 +45,26 @@ class TaskItem:
     role: str = "development"          # development | final
 
 
-def encode_pair(tokenizer, prompt, reference, *, max_seq_len):
-    """Tokenize prompt+reference; truncate the prompt from the left if needed.
+def masked_continuation(prompt_ids, continuation_ids, *, max_seq_len):
+    """Build one pre-shifted pair. Prompt positions are masked except the last.
 
-    Returns (inputs, targets, meta): pre-shifted tensors with prompt positions
-    masked; the first output token position is never masked.
+    The last prompt position predicts the first continuation token. A long
+    prompt is truncated from the left so the continuation stays intact.
     """
-    prompt_ids = tokenizer.encode(prompt)
-    reference_ids = tokenizer.encode(reference)
-    original_reference_tokens = len(reference_ids)
-    if not reference_ids:
+    prompt_ids = list(prompt_ids)
+    continuation_ids = list(continuation_ids)
+    original_continuation_tokens = len(continuation_ids)
+    if not continuation_ids:
         raise ValueError("empty reference cannot be scored")
-    total = len(prompt_ids) + len(reference_ids)
+    total = len(prompt_ids) + len(continuation_ids)
     truncated_prompt = 0
     if total > max_seq_len + 1:
         overflow = total - (max_seq_len + 1)
         truncated_prompt = min(overflow, len(prompt_ids))
         prompt_ids = prompt_ids[truncated_prompt:]
-        if len(reference_ids) + 1 > max_seq_len + 1:
-            reference_ids = reference_ids[:max_seq_len]  # last resort; counted
-    tokens = prompt_ids + reference_ids
+        if len(continuation_ids) + 1 > max_seq_len + 1:
+            continuation_ids = continuation_ids[:max_seq_len]
+    tokens = prompt_ids + continuation_ids
     inputs = torch.tensor([tokens[:-1]], dtype=torch.long)
     targets = torch.tensor([tokens[1:]], dtype=torch.long)
     if prompt_ids:
@@ -74,9 +74,20 @@ def encode_pair(tokenizer, prompt, reference, *, max_seq_len):
         raise ValueError("reference has no predictable tokens; provide a prompt")
     meta = {"output_tokens": scored_tokens, "prompt_tokens": len(prompt_ids),
             "truncated_prompt_tokens": truncated_prompt,
-            "truncated_reference_tokens": original_reference_tokens - len(reference_ids),
-            "unscored_reference_prefix_tokens": int(not prompt_ids),
-            "reference_utf8_bytes": len(reference.encode("utf-8"))}
+            "truncated_reference_tokens": original_continuation_tokens - len(continuation_ids),
+            "unscored_reference_prefix_tokens": int(not prompt_ids)}
+    return inputs, targets, meta
+
+
+def encode_pair(tokenizer, prompt, reference, *, max_seq_len):
+    """Tokenize prompt+reference; truncate the prompt from the left if needed.
+
+    Returns (inputs, targets, meta): pre-shifted tensors with prompt positions
+    masked; the first output token position is never masked.
+    """
+    inputs, targets, meta = masked_continuation(tokenizer.encode(prompt), tokenizer.encode(reference),
+                                                max_seq_len=max_seq_len)
+    meta["reference_utf8_bytes"] = len(reference.encode("utf-8"))
     return inputs, targets, meta
 
 
@@ -231,6 +242,98 @@ def load_scalingbench_items(path, *, task, role="development", max_items=None):
             if max_items and len(items) >= max_items:
                 break
     return items
+
+
+def load_development_choices(root, *, expected_tokenizer_sha256=None):
+    """Load the frozen development choice rows scored at every validation stop.
+
+    Final rows and reference-answer tasks stay out of this set. Each token
+    file must match the manifest digest, and the atom tokenizer digest must
+    match the training manifest when one is supplied.
+    """
+    root = Path(root)
+    manifest_path = root / "MANIFEST.json"
+    if not manifest_path.is_file():
+        raise ValueError(f"benchmark token manifest is missing: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text())
+    if expected_tokenizer_sha256 is not None and manifest.get("tokenizer_sha256") != expected_tokenizer_sha256:
+        raise ValueError("benchmark tokens use a different tokenizer than the training manifest")
+    records = []
+    for task, info in sorted(manifest.get("tasks", {}).items()):
+        if info.get("kind") != "choice" or info.get("cadence") != "every_validation_stop":
+            continue
+        path = root / info["file"]
+        payload = path.read_bytes()
+        if hashlib.sha256(payload).hexdigest() != info["sha256"]:
+            raise ValueError(f"benchmark token file differs from its manifest: {task}")
+        for line in payload.decode("utf-8").splitlines():
+            if not line:
+                continue
+            row = json.loads(line)
+            if row.get("role") != "development" or row.get("kind") != "choice":
+                continue
+            if not row.get("choice_ids") or type(row.get("correct_choice")) is not int:
+                raise ValueError(f"choice record is incomplete: {task} {row.get('item_id')}")
+            records.append(row)
+    if not records:
+        raise ValueError("benchmark directory has no development choice items")
+    return records
+
+
+@torch.no_grad()
+def score_frozen_choices(model, records, *, device, max_seq_len, rank=0, world_size=1, amp_dtype=None):
+    """Score stored choice continuations and reduce accuracy across ranks.
+
+    This uses the token ids frozen by the atom tokenizer. It does not
+    re-encode text. Every rank must call it so the reduction stays aligned.
+    """
+    import torch.distributed as distributed
+
+    if world_size <= 0 or not 0 <= rank < world_size:
+        raise ValueError("invalid benchmark rank/world size")
+    was_training = model.training
+    model.eval()
+    buckets = {}
+    try:
+        for index, row in enumerate(records):
+            if index % world_size != rank:
+                continue
+            losses = []
+            for choice in row["choice_ids"]:
+                inputs, targets, meta = masked_continuation(row["prompt_ids"], choice, max_seq_len=max_seq_len)
+                inputs, targets = inputs.to(device), targets.to(device)
+                enabled = amp_dtype is not None and amp_dtype != torch.float32
+                with torch.autocast(device_type=device.type, dtype=amp_dtype if enabled else torch.float32, enabled=enabled):
+                    output = model(inputs, targets=targets, return_logits=False)
+                losses.append(float(output["loss_sum"].double()) / meta["output_tokens"])
+            correct = row["correct_choice"]
+            if len(losses) < 2 or not 0 <= correct < len(losses):
+                raise ValueError(f"choice index differs: {row['task']} {row['item_id']}")
+            predicted = min(range(len(losses)), key=lambda i: (losses[i], i))
+            margin = min(loss for choice_index, loss in enumerate(losses) if choice_index != correct) - losses[correct]
+            bucket = buckets.setdefault(row["task"], [0, 0, 0.0])
+            bucket[0] += int(predicted == correct)
+            bucket[1] += 1
+            bucket[2] += margin
+    finally:
+        model.train(was_training)
+    tasks = sorted({row["task"] for row in records})
+    vector = torch.zeros(len(tasks) * 3, dtype=torch.float64, device=device)
+    for index, task in enumerate(tasks):
+        correct, count, margin = buckets.get(task, (0, 0, 0.0))
+        vector[index * 3] = correct
+        vector[index * 3 + 1] = count
+        vector[index * 3 + 2] = margin
+    if world_size > 1:
+        distributed.all_reduce(vector)
+    result = {}
+    for index, task in enumerate(tasks):
+        correct, count, margin = vector[index * 3:index * 3 + 3].tolist()
+        if count <= 0 or not math.isfinite(margin):
+            raise ValueError(f"benchmark task has no finite scored items: {task}")
+        result[task] = {"correct": int(correct), "items": int(count),
+                        "accuracy": correct / count, "mean_margin": margin / count}
+    return result
 
 
 def task_text_hashes(paths, *, max_rows_per_file=None):

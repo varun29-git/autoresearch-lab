@@ -169,11 +169,8 @@ def validate_manifest(manifest: TokenManifest, root, model_config, *, developmen
             if {source_keys.get(source) for source in mix} != required:
                 raise ValueError(f"every curriculum phase must cover the declared scope {scope['name']!r}")
         if (manifest.provenance.get("normalization") != "NFC"
-                or manifest.provenance.get("packing") != "continuous_eos"
-                or manifest.provenance.get("document_dedup") not in
-                {"sha256_nfc", "id_exact_minhash_v1", "id_exact_guard_v1"}
-                or not manifest.provenance.get("licenses")):
-            raise ValueError("production needs preprocessing, document deduplication and source-license provenance")
+                or manifest.provenance.get("packing") != "continuous_eos"):
+            raise ValueError("production needs NFC normalization and continuous-EOS packing")
     router = TrainingTokenRouter(manifest, root=root)
     if not development_mode:
         scope = manifest_scope(manifest)

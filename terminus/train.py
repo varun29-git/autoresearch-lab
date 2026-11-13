@@ -48,6 +48,7 @@ class TrainConfig:
     validation_interval: int = 1000
     validation_batches_per_language: int = 8
     validation_sequences_per_language: int | None = None
+    benchmark_tokens: str | None = None
     log_interval: int = 10
     stability_log_interval: int = 0
     compile: bool = False
@@ -74,6 +75,8 @@ class TrainConfig:
         if self.validation_sequences_per_language is not None and (type(self.validation_sequences_per_language) is not int
                 or self.validation_sequences_per_language <= 0):
             raise ValueError("validation_sequences_per_language must be a positive integer when set")
+        if self.benchmark_tokens is not None and (not isinstance(self.benchmark_tokens, str) or not self.benchmark_tokens):
+            raise ValueError("benchmark_tokens must be a path when set")
         if (isinstance(self.stability_log_interval, bool) or not isinstance(self.stability_log_interval, int)
                 or self.stability_log_interval < 0):
             raise ValueError("stability_log_interval must be a nonnegative integer")
@@ -303,8 +306,8 @@ def poll_checkpoint_writer(writer, rank, world_size, *, wait=False):
 
 
 OPERATIONAL_TRAINING_FIELDS = ("checkpoint_interval", "validation_interval",
-                               "validation_batches_per_language", "validation_sequences_per_language", "log_interval",
-                               "stability_log_interval", "prefetch_batches", "time_limit_seconds",
+                               "validation_batches_per_language", "validation_sequences_per_language", "benchmark_tokens",
+                               "log_interval", "stability_log_interval", "prefetch_batches", "time_limit_seconds",
                                "async_checkpoint", "checkpoint_timeout_seconds")
 
 
@@ -327,6 +330,7 @@ class PreparedTraining:
     def __init__(self):
         self.stop_after_updates = None
         self.checkpoint_writer = None
+        self.choice_records = None
         self.monitor = None
         self.captured = None
         self.should_stop = [False]
@@ -478,8 +482,21 @@ class PreparedTraining:
                                training.validation_batches_per_language, self.rank, self.world_size,
                                sequences_per_language=training.validation_sequences_per_language,
                                verified_files=self.verified_files)
+            mixture = results.pop("mixture", None)
+            benchmarks = None
+            if self.choice_records:
+                from .task_eval import score_frozen_choices
+
+                benchmarks = score_frozen_choices(self.model, self.choice_records, device=self.device,
+                                                  max_seq_len=self.model_config.max_seq_len, rank=self.rank,
+                                                  world_size=self.world_size, amp_dtype=self.amp_dtype)
             if self.rank == 0:
-                append_event(self.output_dir / "events.jsonl", {"event": "validation", **state, "languages": results})
+                payload = {"event": "validation", **state, "languages": results}
+                if mixture is not None:
+                    payload["mixture"] = mixture
+                if benchmarks is not None:
+                    payload["benchmarks"] = benchmarks
+                append_event(self.output_dir / "events.jsonl", payload)
         if stopped or complete:
             if self.rank == 0:
                 append_event(self.output_dir / "events.jsonl", {"event": "complete" if complete else "stopped", **state,
@@ -676,6 +693,11 @@ def prepare_training(config_path, manifest_path, data_root, output_dir, *, resum
         workload.iterator = iterator
         workload.packed_batcher = packed_batcher
         workload.verified_files = manifest_report.get("packed_files")
+        if training.benchmark_tokens:
+            from .task_eval import load_development_choices
+
+            workload.choice_records = load_development_choices(
+                training.benchmark_tokens, expected_tokenizer_sha256=manifest.tokenizer["sha256"])
         workload.should_stop = should_stop
         workload.started = started
         workload.last_log = last_log

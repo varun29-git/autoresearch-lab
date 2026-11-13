@@ -56,7 +56,17 @@ def test_selected_profiles_roundtrip_and_comparison_contract(tmp_path, name):
     assert validate_production(model, loaded, optimizer) == selected.candidate
     assert optimizer == OptimizerConfig(**SELECTED_OPTIMIZER)
     assert report["allocation"]["measured_rate"] is None
-    assert report["allocation"]["scope"] == "standalone_dense_only"
+    if name in {"world4", "world4_mb32"}:
+        assert report["allocation"]["scope"] == "four_gpu_prefix_of_the_eight_gpu_run"
+        assert report["allocation"]["gpus"] == 4
+        assert report["allocation"]["fp8_producers"] is True
+        assert report["accumulation"] == (8 if name == "world4" else 4)
+        assert report["allocation"]["eight_gpu_profile"] == ("fused" if name == "world4" else "mb32_fused")
+        assert selected.global_batch_tokens == GLOBAL_BATCH_TOKENS
+        assert config["model"]["fused_fp8_producers"] is True
+    else:
+        assert report["allocation"]["scope"] == "standalone_dense_only"
+        assert report["allocation"]["gpus"] == 8
 
 
 def test_schedule_token_alignment_and_manifest_horizon_are_preserved():
@@ -120,8 +130,17 @@ def test_fused_profile_keeps_the_balanced_batch_and_leaves_the_default_off():
     assert fused["model"]["fp8_wgrad_splits"] == balanced["model"]["fp8_wgrad_splits"] == 0
     assert fused["training"]["gradient_accumulation_steps"] == balanced["training"]["gradient_accumulation_steps"] == 4
     assert fused["optimizer"] == balanced["optimizer"]
+    _, world4, _ = select(original, profile="world4")
+    _, world4_mb32, _ = select(original, profile="world4_mb32")
+    _, mb32_fused, _ = select(original, profile="mb32_fused")
+    assert world4["model"] == fused["model"]
+    assert world4_mb32["model"] == mb32_fused["model"]
+    assert mb32_fused["model"]["fused_fp8_producers"] is True
+    assert mb32_fused["training"]["gradient_accumulation_steps"] == 2
     with pytest.raises(ValueError, match="producer"):
         select(original, profile="fused", candidate="bf16")
+    with pytest.raises(ValueError, match="producer"):
+        select(original, profile="world4", candidate="bf16")
 
 
 def test_explicit_backend_fallback_keeps_selected_batch_and_data_phases():

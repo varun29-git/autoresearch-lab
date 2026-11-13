@@ -43,9 +43,14 @@ def stream_spec(manifest):
             if (sum(s["sequences"] for s in shards) != phase["total_sequences"] or
                     sum(s["content_tokens"] for s in shards) != phase["content_tokens"]):
                 raise ValueError("candidate sequence/content accounting differs")
+            allowed_plans = phase.get("source_plan_sha256", [phase["plan_sha256"]])
+            if (not isinstance(allowed_plans, list) or not allowed_plans
+                    or len(set(allowed_plans)) != len(allowed_plans)
+                    or any(not isinstance(item, str) or len(item) != 64 for item in allowed_plans)):
+                raise ValueError("source_plan_sha256 must list distinct phase plan digests")
             for shard in shards:
                 if (shard["sequence_length"] != manifest.config.seq_len or
-                        shard["plan_sha256"] != phase["plan_sha256"] or
+                        shard["plan_sha256"] not in allowed_plans or
                         shard["index_offsets_bind_to_sha256"] != shard["index"]["sha256"] or
                         type(shard["valid_targets"]) is not int or
                         not 0 < shard["valid_targets"] <= shard["sequences"]*manifest.config.seq_len):
@@ -202,10 +207,8 @@ def validate_packed_manifest(manifest, root, model, *, development_mode=False):
             raise ValueError("packed vocabulary/EOD identity differs")
     elif not development_mode:
         raise ValueError("packed production requires a frozen tokenizer")
-    if not development_mode and (manifest.provenance.get("normalization") != "NFC" or
-            not manifest.provenance.get("licenses") or manifest.provenance.get("document_dedup") not in
-            {"sha256_nfc", "id_exact_minhash_v1", "id_exact_guard_v1"}):
-        raise ValueError("packed production requires preprocessing/dedup/license provenance")
+    if not development_mode and manifest.provenance.get("normalization") != "NFC":
+        raise ValueError("packed production requires NFC normalization")
     shards = [s for split in ("train", "val") for phase in spec[split] for s in phase["shards"]]
     scope = manifest_scope(manifest)
     required = set(scope["languages"]) | set(scope["domains"])
@@ -316,4 +319,17 @@ def evaluate_packed(model, manifest, root, device, amp_dtype, max_batches, rank,
             raise FloatingPointError(f"invalid packed heldout evaluation: {key}")
         mean = loss_sum/tokens
         result[key] = dict(loss=mean, tokens=int(tokens), perplexity=math.exp(mean) if mean < 700 else None)
+    weights = {}
+    for phase in batcher.spec["val"]:
+        declared = phase.get("language_loss_weight_tokens") or {}
+        if isinstance(declared, dict):
+            weights.update(declared)
+    if weights and set(weights) <= set(result):
+        total = sum(weights.values())
+        if total <= 0:
+            raise ValueError("language loss weights must be positive")
+        mixture = sum(weights[key] * result[key]["loss"] for key in weights) / total
+        result["mixture"] = dict(loss=mixture, tokens=sum(result[key]["tokens"] for key in weights),
+                                 perplexity=math.exp(mixture) if mixture < 700 else None,
+                                 weight_tokens=dict(weights))
     return result

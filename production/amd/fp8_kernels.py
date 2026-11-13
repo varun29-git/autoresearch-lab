@@ -124,6 +124,84 @@ def quantize_ternary(weight):
     return codes, scales
 
 
+@triton.jit
+def _both(X, CR, SR, CC, SC, M: tl.constexpr, K: tl.constexpr, PAD: tl.constexpr,
+          XR: tl.constexpr, XK: tl.constexpr, SR0: tl.constexpr, SR1: tl.constexpr,
+          EPS: tl.constexpr, LIMIT: tl.constexpr):
+    # One 128x128 tile is one rowwise group and one columnwise group. The
+    # column tiles match _columns (128x32). The row scale is the max of those
+    # chunks, then the tile is reread for the rowwise codes. The preflight
+    # requires both results to match the separate kernels.
+    rb = tl.program_id(0).to(tl.int64)
+    cb = tl.program_id(1).to(tl.int64)
+    rows = rb * 128 + tl.arange(0, 128)
+    row_max = tl.zeros((128,), tl.float32)
+    for chunk in tl.static_range(4):
+        cols = cb * 128 + chunk * 32 + tl.arange(0, 32)
+        x = tl.load(X + rows[:, None] * XR + cols[None, :] * XK,
+                    (rows[:, None] < M) & (cols[None, :] < K), other=0).to(tl.float32)
+        row_max = tl.maximum(row_max, tl.max(tl.abs(x), 1))
+        scale = _scale(tl.max(tl.abs(x), 0), EPS, LIMIT)
+        y = tl.div_rn(x, scale[None, :])
+        y = tl.where((tl.abs(x) < float("inf")) & (tl.abs(y) < float("inf")),
+                     tl.minimum(tl.maximum(y, -LIMIT), LIMIT), float("nan"))
+        tl.store(CC + cols[None, :] * PAD + rows[:, None], y.to(CC.dtype.element_ty),
+                 (rows[:, None] < PAD) & (cols[None, :] < K))
+        tl.store(SC + rb * K + cols, scale, cols < K)
+    cols = cb * 128 + tl.arange(0, 128)
+    x = tl.load(X + rows[:, None] * XR + cols[None, :] * XK,
+                (rows[:, None] < M) & (cols[None, :] < K), other=0).to(tl.float32)
+    scale = _scale(row_max, EPS, LIMIT)
+    y = tl.div_rn(x, scale[:, None])
+    y = tl.where((tl.abs(x) < float("inf")) & (tl.abs(y) < float("inf")),
+                 tl.minimum(tl.maximum(y, -LIMIT), LIMIT), float("nan"))
+    tl.store(CR + rows[:, None] * K + cols[None, :], y.to(CR.dtype.element_ty),
+             (rows[:, None] < M) & (cols[None, :] < K))
+    tl.store(SR + rows * SR0 + cb * SR1, scale, rows < M)
+
+
+def quantize_columns(values, *, eps=1e-5):
+    from .runtime import require_gfx942
+
+    require_gfx942(values.device)
+    if (values.ndim != 2 or min(values.shape) <= 0 or values.shape[1] % 128
+            or not math.isfinite(eps) or eps < 0):
+        raise ValueError("invalid directional FP8 matrix")
+    m, k = values.shape
+    padded = triton.cdiv(m, 128) * 128
+    codes = torch.empty((k, padded), device=values.device, dtype=FP8)
+    scales = torch.empty((padded // 128, k), device=values.device, dtype=torch.float32)
+    _columns[(padded // 128, triton.cdiv(k, 32))](
+        values, codes, scales, m, k, padded, *values.stride(), eps, FP8_MAX, num_warps=4)
+    return codes, scales.T
+
+
+def quantize_both(values, *, eps=1e-5):
+    """Rowwise and columnwise FNUZ for the same 128x128 tile.
+
+    Column groups are the 128x32 tiles of the separate column kernel. The row
+    scale is the max of those chunks, and the tile is loaded again only to
+    emit the rowwise codes. The preflight rejects any code or scale that
+    differs from the two separate kernels.
+    """
+    from .runtime import require_gfx942
+
+    require_gfx942(values.device)
+    if (values.ndim != 2 or min(values.shape) <= 0 or values.shape[1] % 128
+            or not math.isfinite(eps) or eps < 0):
+        raise ValueError("invalid directional FP8 matrix")
+    m, k = values.shape
+    padded = triton.cdiv(m, 128) * 128
+    row_codes = torch.empty((m, k), device=values.device, dtype=FP8)
+    row_scales = torch.empty((k // 128, m), device=values.device, dtype=torch.float32).T
+    col_codes = torch.empty((k, padded), device=values.device, dtype=FP8)
+    col_scales = torch.empty((padded // 128, k), device=values.device, dtype=torch.float32)
+    _both[(padded // 128, k // 128)](
+        values, row_codes, row_scales, col_codes, col_scales, m, k, padded,
+        *values.stride(), *row_scales.stride(), eps, FP8_MAX, num_warps=8, enable_fp_fusion=False)
+    return (row_codes, row_scales), (col_codes, col_scales.T)
+
+
 def quantize_directions(values, *, rowwise=True, transposed=False, eps=1e-5):
     from .runtime import require_gfx942
 
@@ -131,16 +209,10 @@ def quantize_directions(values, *, rowwise=True, transposed=False, eps=1e-5):
     if (values.ndim != 2 or min(values.shape) <= 0 or values.shape[1] % 128
             or not (rowwise or transposed) or not math.isfinite(eps) or eps < 0):
         raise ValueError("invalid directional FP8 matrix")
+    if rowwise and transposed:
+        return quantize_both(values, eps=eps)
     primary = quantize(values, eps=eps) if rowwise else None
-    secondary = None
-    if transposed:
-        m, k = values.shape
-        padded = triton.cdiv(m, 128) * 128
-        codes = torch.empty((k, padded), device=values.device, dtype=FP8)
-        scales = torch.empty((padded // 128, k), device=values.device, dtype=torch.float32)
-        _columns[(padded // 128, triton.cdiv(k, 32))](
-            values, codes, scales, m, k, padded, *values.stride(), eps, FP8_MAX, num_warps=4)
-        secondary = codes, scales.T
+    secondary = quantize_columns(values, eps=eps) if transposed else None
     return primary, secondary
 
 

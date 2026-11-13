@@ -193,7 +193,7 @@ later requires a reviewed migration, not editing JSON mid-run.
 | --- | ---: | ---: |
 | Scalar training log | 25,165,824 | 12 |
 | Expensive stability/gradient scans | 201,326,592 | 96 |
-| Validation | 503,316,480 | 240 |
+| Validation | 2,013,265,920 | 960 |
 | Committed checkpoint | 2,013,265,920 | 960 |
 
 All comparisons keep **1,024 full sequences globally per language/domain**,
@@ -249,9 +249,12 @@ stated field(s) relative to `balanced` and derive accumulation/cadence.
 | `bf16` | Removes projection FP8 quantization | Independent quality and timing control |
 | `triton` | Local Triton forward/dgrad/wgrad, splits 4 | Diagnosis if vendor kernels disagree; not mandatory tuning spend |
 | `ck_local` | Independent FA-CK for local layers | If local attention is a measured bottleneck |
-| `fused` | Norm and SwiGLU emit FNUZ sidecars at the balanced batch | Only after the producer preflight passes; speed is unmeasured |
+| `fused` | Eight-GPU continuation of `world4`: norm and SwiGLU emit FNUZ sidecars at the balanced batch | Launch this after widening a finished `world4` checkpoint. The producer preflight must already have passed |
 | `ddp64`, `ddp128` | Bucket cap 64 or 128 MiB | If traces show exposed communication; cap is not a hard maximum tensor size |
 | `single_gpu` | One rank, accumulation 32 | Bounded rank-equivalence control at the same 2M global batch |
+| `world4` | Four ranks, microbatch 16, accumulation 8, norm and SwiGLU FP8 producers on | The four-GPU launch. Each RMSNorm and packed SwiGLU writes the BF16 value and the FNUZ sidecar the next GEMM consumes, so that activation is not quantized again. A finished checkpoint widens onto `fused` |
+| `world4_mb32` | Four ranks, microbatch 32, accumulation 4, same producers | Same global batch with more of the 256 GB HBM in use. Fit is unmeasured. Start here only after `world4` has completed an update with memory headroom. A finished checkpoint widens onto `mb32_fused` |
+| `mb32_fused` | Eight ranks, microbatch 32, accumulation 2, same producers | Eight-GPU continuation of `world4_mb32`. Fit is unmeasured |
 
 The selected runtime has OMP 4 and no speculative RCCL channel/protocol
 overrides. Select NUMA affinity from the actual GPU/CPU topology. Do not

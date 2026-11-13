@@ -143,7 +143,7 @@ def document_attention_gate(config, device):
 
 
 def fp8_gate(config, device):
-    from .fp8_kernels import quantize, quantize_directions, quantize_ternary
+    from .fp8_kernels import quantize, quantize_columns, quantize_directions, quantize_ternary
 
     quantizers, cases = [], []
     ternary = config.weight_mode == "ternary"
@@ -153,6 +153,13 @@ def fp8_gate(config, device):
         for amplitude in (0., 1e-7, 1., 1000.):
             x = torch.randn(rows, 256, dtype=torch.bfloat16, device=device) * amplitude
             native = quantize_directions(x, transposed=True)
+            rows_only, cols_only = quantize(x, eps=1e-5), quantize_columns(x, eps=1e-5)
+            for got, separate in ((native[0][0], rows_only[0]), (native[0][1], rows_only[1]),
+                                  (native[1][0], cols_only[0]), (native[1][1], cols_only[1])):
+                got_f, separate_f = got.float(), separate.float()
+                if not (torch.equal(got_f.isnan(), separate_f.isnan())
+                        and torch.equal(got_f.nan_to_num(), separate_f.nan_to_num())):
+                    raise AssertionError("dual-layout FP8 codes differ from the separate quantizers")
             expected = reference.directional(x, transposed=True)
             errors = _errors([reference.dequantize(n) for n in native],
                              [reference.dequantize(e) for e in expected], limit=.004, atol=0.)

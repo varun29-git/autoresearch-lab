@@ -24,7 +24,7 @@ VALIDATION_SEQUENCES = 1024  # Per language/domain, globally, at every microbatc
 MIN_TRAINING_TOKENS = (10_000_000_000 // 4096) * 4096
 CADENCE_TOKENS = {
     "checkpoint_interval": 320 * COMPARISON_QUANTUM,
-    "validation_interval": 80 * COMPARISON_QUANTUM,
+    "validation_interval": 320 * COMPARISON_QUANTUM,
     "stability_log_interval": 32 * COMPARISON_QUANTUM,
     "log_interval": 4 * COMPARISON_QUANTUM,
 }
@@ -47,6 +47,9 @@ PROFILES = {
     "mb4": Profile("First memory-conservative full update; same global batch.", microbatch=4),
     "mb8": Profile("Memory fallback / execution comparison; same global batch.", microbatch=8),
     "mb32": Profile("Use only after measured HBM headroom; same global batch.", microbatch=32),
+    "mb32_fused": Profile(
+        "Eight-GPU continuation of world4_mb32. Microbatch 32, accumulation 2, same producers. Fit is unmeasured.",
+        microbatch=32, fused_fp8_producers=True),
     "batch_1m_mb16": Profile("Intermediate global-batch quality candidate; same microbatch as balanced.",
                             global_batch_tokens=1_048_576),
     "batch_3m_mb16": Profile("3.146M-token quality control with the same microbatch as balanced.",
@@ -65,9 +68,19 @@ PROFILES = {
     "ddp64": Profile("Conditional communication-overlap trial.", ddp_bucket_cap_mb=64),
     "ddp128": Profile("Conditional communication-overlap trial.", ddp_bucket_cap_mb=128),
     "ck_local": Profile("Independent CK for the twenty local layers.", local_attention="rocm_ck"),
-    "fused": Profile("Norm and SwiGLU FNUZ producers at the balanced batch. Native speed and the producer gate are unrun.",
-                     fused_fp8_producers=True),
+    "fused": Profile(
+        "Eight-GPU continuation of world4. Norm and SwiGLU emit the FNUZ sidecar the next GEMM consumes. "
+        "The producer preflight must pass before the first step.",
+        fused_fp8_producers=True),
     "single_gpu": Profile("Matched-global-batch rank-equivalence control, not a scaling claim.", world_size=1),
+    "world4": Profile(
+        "Four-GPU launch. Same global batch, accumulation 8, with the norm and SwiGLU FP8 producers on. "
+        "A finished update widens onto the fused profile.",
+        world_size=4, fused_fp8_producers=True),
+    "world4_mb32": Profile(
+        "Four-GPU HBM attempt at the same global batch. Microbatch 32, accumulation 4, producers on. "
+        "Fit on 256 GB is unmeasured. A finished update widens onto mb32_fused.",
+        microbatch=32, world_size=4, fused_fp8_producers=True),
 }
 
 
@@ -159,10 +172,19 @@ def select(manifest, *, profile="balanced", purpose="training", candidate=None):
         "validation_tokens_per_check": len(coverage) * VALIDATION_SEQUENCES * 4096,
         "bridge_stop_after_updates": BRIDGE_END_TOKENS // batch if purpose == "training" else None,
         "bridge_end_tokens": BRIDGE_END_TOKENS if purpose == "training" else None,
-        "allocation": {"scope": "standalone_dense_only", "gpu_hours": 5760, "gpus": 8, "reserve_gpu_hours": 320,
-                       "assumed_production_duty_cycle": .9,
-                       "required_steady_state_tokens_per_second_per_gpu": total / allocation_seconds,
-                       "measured_rate": None, "feasibility": "unmeasured"},
+        "allocation": (
+            {"scope": "four_gpu_prefix_of_the_eight_gpu_run", "gpus": 4, "continues_on_gpus": 8,
+             "global_batch_tokens": batch, "accumulation": training["gradient_accumulation_steps"],
+             "fp8_producers": True,
+             "eight_gpu_profile": "fused" if profile == "world4" else "mb32_fused",
+             "measured_rate": None,
+             "note": "Same 2097152-token update as balanced, with norm and SwiGLU FP8 producers on. Widen a finished checkpoint and launch the named eight-GPU profile so the model contract matches. This is not the 5760 GPU-hour month."}
+            if profile in {"world4", "world4_mb32"} else
+            {"scope": "standalone_dense_only", "gpu_hours": 5760, "gpus": 8, "reserve_gpu_hours": 320,
+             "assumed_production_duty_cycle": .9,
+             "required_steady_state_tokens_per_second_per_gpu": total / allocation_seconds,
+             "measured_rate": None, "feasibility": "unmeasured"}
+        ),
         "data_verification": "metadata_only_run_full_staging_before_training",
         "qualification_policy": {
             "minimum_hbm_headroom_fraction": .15, "minimum_paired_speed_improvement_fraction": .03,
