@@ -195,8 +195,9 @@ def fp8_gate(config, device):
     shapes = [(rows, outputs, width) for outputs, width in sorted(set(projection_shapes(config).values()))
               for rows in (17, 256)]
     # Exercise wgrad's long reduction axis without allocating a full model.
-    # The selected microbatch has 16 * 4096 token rows per GPU.
-    shapes.append((16 * config.max_seq_len, 256, 256))
+    # The selected balanced microbatch has 32 * 4096 token rows per GPU.
+    # Width 256 is a compile-and-numerics check, not an HBM fit measurement.
+    shapes.append((32 * config.max_seq_len, 256, 256))
     for rows, outputs, width in shapes:
         for gradient_scale in (1., 2. ** -24):
             x = torch.randn(rows, width, dtype=torch.bfloat16, device=device, requires_grad=True)

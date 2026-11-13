@@ -27,8 +27,9 @@ and stops paid GPU campaigns.
   1,446,478,126 parameters; Peri-LN, learned Q/K gains and value residual.
 - [x] Selected spectral Muon/auxiliary AdamW implementation and starting rates.
 - [x] Selected eight-GPU starting profiles: 2,097,152-token global batch,
-  microbatch 16 / accumulation 4, TE FP8, roughly 1B-token warmup, final 10%
-  decay, fixed evaluation coverage and token-based operational cadence.
+  microbatch 32 / accumulation 2, fused FP8 producers on, TE FP8, roughly
+  1B-token warmup, final 10% decay, fixed evaluation coverage and
+  token-based operational cadence. Microbatch-32 fit is unmeasured.
   Selection is complete; native qualification remains due.
 - [x] Frozen tokenizer artifact and tokenizer implementation.
 - [x] Three explicit AMD FP8 projection candidates and a BF16 control;
@@ -113,8 +114,11 @@ the full production corpus and held-outs must be ready before the long run.
 
 7. **Generate the bounded test configurations.**
    - [ ] Use `production.amd.prepare` with the real manifest and fresh external
-     outputs. `balanced` selects microbatch 16, accumulation 4 and global batch
-     2,097,152; `mb4`/`mb8` preserve that global batch at smaller microbatches.
+     outputs. `balanced` selects microbatch 32, accumulation 2, fused FP8
+     producers on, and global batch 2,097,152. Fit of that microbatch is
+     unmeasured: pass preflight, then run one bounded update, and regenerate
+     with `mb8` if the allocation fails. `mb4`/`mb8` preserve the global
+     batch at smaller microbatches and keep the producers on.
      `batch_bridge_mb12` keeps the 393,216-token HPO global batch with one
      microstep (8 GPUs × 12 sequences × 4096 tokens); compare its execution
      with `batch_bridge` before concluding that the HPO batch is too slow.
@@ -138,7 +142,9 @@ the full production corpus and held-outs must be ready before the long run.
    - [ ] Pass the reduced-model composition and spectral-Muon comparisons.
    - [ ] Fix failures without weakening the arithmetic contract or widening
      tolerances to hide a bug. Save the successful preflight and runtime
-     receipts after native initialization.
+     receipts after native initialization. `balanced` requires the
+     `fp8_producers` section. Regenerate the receipt from this source
+     revision; a stale identity will not start training.
 
 At this point, a bounded real-data training trial is appropriate. A preflight
 receipt alone does not clear the long production run.
@@ -146,8 +152,9 @@ receipt alone does not clear the long production run.
 ## Work before the month-long run
 
 9. **Prove full-size training fits and updates correctly.**
-   - [ ] Run several complete updates of the actual 1.446B model, first with a
-     conservative microbatch and then with candidate larger batches.
+   - [ ] Run one bounded update of the actual 1.446B model at `balanced`
+     (microbatch 32, accumulation 2). If it does not allocate, repeat at
+     `mb8` before any longer run.
    - [ ] Check finite loss/gradients, clipping, learned gains/value coefficients,
      actual optimizer-state creation and parameter updates.
    - [ ] Measure allocated/reserved HBM after caches and optimizer state are

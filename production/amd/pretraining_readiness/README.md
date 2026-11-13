@@ -161,14 +161,14 @@ blockers in [TRAINING_RISKS.md](TRAINING_RISKS.md). The detailed evidence and te
 ## Decisions to resolve on the actual eight-GPU node
 
 - [ ] **Microbatch and HBM:** Benchmark complete, warm updates at a fixed
-  global batch. Start with the 2,097,152-token `balanced` profile
-  (microbatch 16, accumulation 4); compare `mb8` (accumulation 8) and
-  conditionally `mb32` (accumulation 2). Microbatch remains a measured
-  variable until eight-GPU full-update fit and speed checks finish; all three
-  profiles retain the same global tokens per update.
-  At 3,145,728 tokens/update, compare `batch_3m_mb16` against
+  global batch. The locked `balanced` profile is 2,097,152 tokens/update,
+  microbatch 32, accumulation 2, with fused FP8 producers on. Fit is
+  unmeasured. Pass native preflight, then one bounded update. If that
+  allocation fails, use `mb8` (accumulation 8, producers still on). `mb4`
+  is the smaller conservative check. All three keep the same global tokens
+  per update. At 3,145,728 tokens/update, compare `batch_3m_mb16` against
   `batch_3m_mb24`. Require at least 15% of usable HBM free through optimizer,
-  validation and checkpoint peaks. Microbatch 16 is a starting point, not a
+  validation and checkpoint peaks. Microbatch 32 is the locked start, not a
   measured optimum.
 - [ ] **Global batch and learning:** Use the completed H100 selection and
   transferred full-size confirmation at 2,097,152 tokens/update. Reconcile the

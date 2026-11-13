@@ -41,12 +41,12 @@ The original H100 recipe in `production/recipe.py` remains unchanged.
 Use [LAUNCH_CHECKLIST.md](LAUNCH_CHECKLIST.md) for the ordered readiness list,
 including production data, S3 backup integration and the native gates still due.
 Use [CONFIG_SELECTION.md](CONFIG_SELECTION.md) for the researched eight-GPU
-starting settings and named comparisons selected on 2026-10-25: microbatch 16,
-accumulation 4, global batch 2,097,152, TE FP8, roughly 1B-token warmup and a
-final 10% WSD decay. These choices await native fit, speed and quality evidence.
-Microbatch 16 is not a measured optimum; the paired 3,145,728-token
-`batch_3m_mb16`/`batch_3m_mb24` profiles test whether more HBM use reduces
-complete-update time without conflating microbatch and global-batch effects.
+comparisons. The 13 November 2026 lock of `balanced` is microbatch 32,
+accumulation 2, fused FP8 producers on, global batch 2,097,152, TE FP8,
+roughly 1B-token warmup and a final 10% WSD decay. Fit of microbatch 32,
+producer preflight, speed and quality are unmeasured. The paired
+3,145,728-token `batch_3m_mb16`/`batch_3m_mb24` profiles remain a separate
+comparison of HBM use at one global batch.
 At the HPO's 393,216-token global batch, `batch_bridge_mb12` uses one
 12-sequence microstep per rank and can be compared with `batch_bridge`'s
 three smaller microsteps without changing optimizer-update frequency.
@@ -161,12 +161,16 @@ and every-update diagnostics; do not use it as a convergence comparison.
 Use distinct external output directories for `mb8`, `aiter`, `bf16` and the
 other [named profiles](CONFIG_SELECTION.md). Each is an explicit run; there
 is no automatic sweep. `balanced` selects TE and needs `INSTALL_TE=1`.
-The lower-level `production.amd.build_config` remains available for explicit
-experiments and retains its original `fp8` default; it does not apply the new
-profile policies. Compare microbatch 8 and 16 first. If full-update memory
-leaves headroom, compare `batch_3m_mb16` and `batch_3m_mb24` at the same
-3.146M-token global batch; qualify that batch against the 2M baseline before
-promotion. Test microbatch 32 only after a memory profile shows headroom.
+`prepare --profile balanced` is the launch generator. It writes microbatch
+32, accumulation 2 and fused producers on. The lower-level
+`production.amd.build_config` remains available for explicit experiments,
+retains its original `fp8` default, and leaves producers off; it does not
+apply profile policies. Confirm the generated manifest before launch. The
+first training command is a bounded update. If that allocation fails,
+regenerate with `mb8`. Microbatch 16 remains `fused` and `world4`. If a
+finished microbatch-32 update leaves headroom, compare `batch_3m_mb16` and
+`batch_3m_mb24` at the same 3.146M-token global batch and qualify that batch
+against the 2M baseline before promotion.
 Recreate data staging receipts for each derived manifest, even if its shards
 are shared.
 
@@ -236,8 +240,16 @@ python3 -m torch.distributed.run --standalone --nproc_per_node=8 \
 
 Then set `CONFIG`, `MANIFEST`, `DATA_ROOT`, `OUTPUT_DIR`, `RUNTIME_REPORT`,
 `PREFLIGHT_REPORT`, `STAGING_RECEIPT`, `EXPECTED_WORLD_SIZE=8`, and
-`EXPECTED_GLOBAL_BATCH_TOKENS` to the inspected values. A first real-update
-measurement is:
+`EXPECTED_GLOBAL_BATCH_TOKENS` to the inspected values. The first full-model
+command is one update. Microbatch 32 fit is unmeasured, and this catches an
+allocation failure before a measurement window:
+
+```bash
+bash production/amd/train.sh --stop-after-updates 1
+```
+
+If that update allocates and the loss is finite, a measurement window in a
+fresh output directory is:
 
 ```bash
 bash production/amd/train.sh --warmup-updates 5 --benchmark-updates 20

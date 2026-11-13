@@ -120,15 +120,21 @@ def test_hpo_batch_can_use_one_eight_gpu_microstep_without_changing_the_optimize
     assert conservative["training"]["warmup_tokens"] == larger_microbatch["training"]["warmup_tokens"]
 
 
-def test_fused_profile_keeps_the_balanced_batch_and_leaves_the_default_off():
+def test_selected_fp8_profiles_emit_norm_and_swiglu_codes():
     original = manifest()
-    _, balanced, _ = select(original, profile="balanced")
-    _, fused, _ = select(original, profile="fused")
-    assert balanced["model"]["fused_fp8_producers"] is False
+    derived, balanced, balanced_report = select(original, profile="balanced")
+    _, fused, fused_report = select(original, profile="fused")
+    assert derived.config.batch_size == 32
+    assert balanced["model"]["fused_fp8_producers"] is True
     assert fused["model"]["fused_fp8_producers"] is True
+    assert balanced["model"] == fused["model"]
+    _, bf16, _ = select(original, profile="bf16")
+    assert bf16["model"]["fused_fp8_producers"] is False
     assert fused["model"]["linear_backend"] == balanced["model"]["linear_backend"] == "rocm_fp8_te"
     assert fused["model"]["fp8_wgrad_splits"] == balanced["model"]["fp8_wgrad_splits"] == 0
-    assert fused["training"]["gradient_accumulation_steps"] == balanced["training"]["gradient_accumulation_steps"] == 4
+    assert balanced["training"]["gradient_accumulation_steps"] == 2
+    assert fused["training"]["gradient_accumulation_steps"] == 4
+    assert balanced_report["global_sequences_per_update"] == fused_report["global_sequences_per_update"] == 512
     assert fused["optimizer"] == balanced["optimizer"]
     _, world4, _ = select(original, profile="world4")
     _, world4_mb32, _ = select(original, profile="world4_mb32")
@@ -164,8 +170,8 @@ def test_external_bundle_is_consumable_and_shell_safe(tmp_path):
     output = tmp_path / "bundle ' with $(touch BAD)"
     report = prepare(manifest_path=source, output_dir=output)
     assert source.read_bytes() == before
-    assert load_config(output / "config.json")[1].gradient_accumulation_steps == 4
-    assert TokenManifest.load(output / "manifest.json").config.batch_size == 16
+    assert load_config(output / "config.json")[1].gradient_accumulation_steps == 2
+    assert TokenManifest.load(output / "manifest.json").config.batch_size == 32
     assert json.loads((output / "selection.json").read_text()) == report
     # Source the generated shell file using positional arguments, never string interpolation.
     result = subprocess.run(["bash", "-c", 'source "$1"; printf "%s" "$CONFIG"', "bash", str(output / "env.sh")],

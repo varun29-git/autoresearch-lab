@@ -39,26 +39,32 @@ class Profile:
     candidate: str = "fp8_te"
     local_attention: str = ""
     ddp_bucket_cap_mb: int = 25
-    fused_fp8_producers: bool = False
+    fused_fp8_producers: bool = True
 
 
 PROFILES = {
-    "balanced": Profile("Selected starting point; native fit, speed and quality pending."),
+    "balanced": Profile(
+        "Selected starting point. Microbatch 32, accumulation 2, global batch 2097152. AttnNorm, FfnNorm and packed SwiGLU emit the FNUZ row sidecar from the rounded BF16 value. Fit and the producer preflight are unmeasured.",
+        microbatch=32),
     "mb4": Profile("First memory-conservative full update; same global batch.", microbatch=4),
     "mb8": Profile("Memory fallback / execution comparison; same global batch.", microbatch=8),
-    "mb32": Profile("Use only after measured HBM headroom; same global batch.", microbatch=32),
+    "mb32": Profile(
+        "Same microbatch, producers, and global batch as balanced. Named alias; fit is unmeasured.",
+        microbatch=32),
     "mb32_fused": Profile(
         "Eight-GPU continuation of world4_mb32. Microbatch 32, accumulation 2, same producers. Fit is unmeasured.",
         microbatch=32, fused_fp8_producers=True),
-    "batch_1m_mb16": Profile("Intermediate global-batch quality candidate; same microbatch as balanced.",
+    "batch_1m_mb16": Profile("Intermediate global-batch quality candidate at microbatch 16.",
                             global_batch_tokens=1_048_576),
-    "batch_3m_mb16": Profile("3.146M-token quality control with the same microbatch as balanced.",
+    "batch_3m_mb16": Profile("3.146M-token quality control at microbatch 16.",
                             global_batch_tokens=3_145_728),
     "batch_3m_mb24": Profile("Larger microbatch at the matched 3.146M global batch; HBM fit unmeasured.",
                             microbatch=24, global_batch_tokens=3_145_728),
     "aiter": Profile("Independent AITER forward/dgrad plus local FP32 wgrad.", candidate="fp8"),
     "triton": Profile("Independent local GEMM diagnostic, not a mandatory speed trial.", candidate="fp8_triton"),
-    "bf16": Profile("Quality control with projection quantization removed.", candidate="bf16"),
+    "bf16": Profile(
+        "Quality control with projection quantization removed.",
+        candidate="bf16", fused_fp8_producers=False),
     "batch_bridge": Profile("Historical global batch on the selected full model; quality control.",
                             microbatch=4, global_batch_tokens=393_216),
     "batch_bridge_mb12": Profile("Historical HPO global batch in one larger eight-GPU microstep; fit unmeasured.",
@@ -178,7 +184,7 @@ def select(manifest, *, profile="balanced", purpose="training", candidate=None):
              "fp8_producers": True,
              "eight_gpu_profile": "fused" if profile == "world4" else "mb32_fused",
              "measured_rate": None,
-             "note": "Same 2097152-token update as balanced, with norm and SwiGLU FP8 producers on. Widen a finished checkpoint and launch the named eight-GPU profile so the model contract matches. This is not the 5760 GPU-hour month."}
+             "note": "Same 2097152-token update and the same norm and SwiGLU FP8 producers as balanced. Widen a finished checkpoint and launch the named eight-GPU profile so the model contract matches. This is not the 5760 GPU-hour month."}
             if profile in {"world4", "world4_mb32"} else
             {"scope": "standalone_dense_only", "gpu_hours": 5760, "gpus": 8, "reserve_gpu_hours": 320,
              "assumed_production_duty_cycle": .9,

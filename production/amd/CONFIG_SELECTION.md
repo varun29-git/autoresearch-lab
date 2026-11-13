@@ -35,11 +35,18 @@ itself an optimization objective.
 
 ## Main choice: `balanced`
 
+**Locked 13 November 2026.** `balanced` is microbatch 32, accumulation 2,
+global batch 2,097,152, with AttnNorm, FfnNorm and packed SwiGLU emitting
+the FNUZ row sidecar. Fit on 256 GB is unmeasured. The first GPU command is
+native preflight, then one bounded update. If that allocation fails, use
+`mb8`.
+
 | Setting | Selected value | Reason |
 | --- | --- | --- |
 | Node / parallelism | One node, 8 MI325X, DDP; TP=PP=1, no FSDP/ZeRO | Replicate this small model and use xGMI for gradients; avoid parameter gathers and pipeline bubbles |
-| Context / microbatch | 4096 tokens / 16 sequences per GPU | Measurable starting point; larger microbatches remain candidates |
-| Accumulation | 4 microsteps | 8 × 16 × 4096 × 4 = **2,097,152 tokens/update**, 512 sequences |
+| Context / microbatch | 4096 tokens / 32 sequences per GPU | Locked start. Fit is unmeasured; `mb8` is the fallback |
+| Accumulation | 2 microsteps | 8 × 32 × 4096 × 2 = **2,097,152 tokens/update**, 512 sequences |
+| FP8 producers | On for AttnNorm, FfnNorm and packed SwiGLU | Row codes come from the rounded BF16 register. The producer preflight must pass. `bf16` turns the flag off |
 | Projection backend | `fp8_te`, pinned ROCm TE HipKittens | Vendor implementation of forward, dgrad and FP32 wgrad; test against the independent AITER path |
 | FP8 recipe | E4M3 FNUZ; activation/gradient scales 1×128; weight scales 128×128; FP32 scales | Preserve the existing explicit AMD numerical candidate; no per-tensor/delayed/MXFP8 substitution |
 | Attention | `rocm_aiter`; its CK route for local layers | Preserve 20 local layers, exact 512-token window and four global layers |
@@ -107,9 +114,11 @@ selected model has 24 layers, different attention windows and AMD kernels.
 They do show why leaving nominal HBM unused at 16 does not establish that
 32 will fit with checkpoint/validation headroom.
 
-At the selected batch, each rank processes 262,144 tokens/update. Moving from
-microbatch 8 to 16 reduces eight microsteps to four, with the same number of
-optimizer updates and gradient reductions. Moving the *global* batch to 4M
+At the selected batch, each rank processes 262,144 tokens/update in two
+microsteps of 131,072 tokens. Microbatch 8 is eight microsteps and microbatch
+16 is four, at the same optimizer-update count. The H100 extrapolation of
+about 279 GB at microbatch 32 is not an MI325X measurement, which is why the
+first command stays bounded. Moving the *global* batch to 4M
 halves update/reduction counts per token, but changes learning dynamics.
 For intuition, all FP32 gradients are about 5.79 GB; an ideal ring all-reduce
 on eight ranks transfers roughly 10.13 GB/rank/update. Actual bucket overlap,
@@ -153,7 +162,7 @@ at **4,026,531,840 tokens**, after warmup and before decay:
 | `batch_bridge` | 4 | 393,216 | 3 | 10,240 |
 | `batch_bridge_mb12` | 12 | 393,216 | 1 | 10,240 |
 | `batch_1m_mb16` | 16 | 1,048,576 | 2 | 3,840 |
-| `balanced` | 16 | 2,097,152 | 4 | 1,920 |
+| `balanced` | 32 | 2,097,152 | 2 | 1,920 |
 | `large_batch` | 16 | 4,194,304 | 8 | 960 |
 | `batch_3m_mb16` | 16 | 3,145,728 | 6 | 1,280 |
 | `batch_3m_mb24` | 24 | 3,145,728 | 4 | 1,280 |
@@ -237,9 +246,9 @@ stated field(s) relative to `balanced` and derive accumulation/cadence.
 
 | Profile | Difference | When to run |
 | --- | --- | --- |
-| `mb4` | microbatch 4, accumulation 16 | First conservative full-size memory/update check |
-| `mb8` | microbatch 8, accumulation 8 | Memory fallback and fixed-global-batch speed control |
-| `mb32` | microbatch 32, accumulation 2 | Only after measured full-update HBM headroom |
+| `mb4` | microbatch 4, accumulation 16, producers stay on | First conservative full-size memory/update check |
+| `mb8` | microbatch 8, accumulation 8, producers stay on | Memory fallback if microbatch 32 does not allocate |
+| `mb32` | same microbatch, accumulation and producers as `balanced` | Named alias of the locked start. Fit is unmeasured |
 | `batch_bridge` | HPO global batch 393,216, microbatch 4, accumulation 3 | Conservative execution and quality control |
 | `batch_bridge_mb12` | HPO global batch 393,216, microbatch 12, accumulation 1 | Fixed-global-batch execution comparison against `batch_bridge` (microbatch 4, accumulation 3) |
 | `batch_1m_mb16` | global batch 1,048,576, accumulation 2 | Intermediate quality candidate to bridge HPO 393k and selected 2M |
@@ -249,9 +258,9 @@ stated field(s) relative to `balanced` and derive accumulation/cadence.
 | `bf16` | Removes projection FP8 quantization | Independent quality and timing control |
 | `triton` | Local Triton forward/dgrad/wgrad, splits 4 | Diagnosis if vendor kernels disagree; not mandatory tuning spend |
 | `ck_local` | Independent FA-CK for local layers | If local attention is a measured bottleneck |
-| `fused` | Eight-GPU continuation of `world4`: norm and SwiGLU emit FNUZ sidecars at the balanced batch | Launch this after widening a finished `world4` checkpoint. The producer preflight must already have passed |
+| `fused` | microbatch 16, accumulation 4; producers are already on in `balanced` | Eight-GPU microbatch-16 control, and the widening target of a finished `world4` checkpoint |
 | `ddp64`, `ddp128` | Bucket cap 64 or 128 MiB | If traces show exposed communication; cap is not a hard maximum tensor size |
-| `single_gpu` | One rank, accumulation 32 | Bounded rank-equivalence control at the same 2M global batch |
+| `single_gpu` | One rank, microbatch 16, accumulation 32 | Bounded rank-equivalence control at the same 2M global batch. It does not inherit microbatch 32 |
 | `world4` | Four ranks, microbatch 16, accumulation 8, norm and SwiGLU FP8 producers on | The four-GPU launch. Each RMSNorm and packed SwiGLU writes the BF16 value and the FNUZ sidecar the next GEMM consumes, so that activation is not quantized again. A finished checkpoint widens onto `fused` |
 | `world4_mb32` | Four ranks, microbatch 32, accumulation 4, same producers | Same global batch with more of the 256 GB HBM in use. Fit is unmeasured. Start here only after `world4` has completed an update with memory headroom. A finished checkpoint widens onto `mb32_fused` |
 | `mb32_fused` | Eight ranks, microbatch 32, accumulation 2, same producers | Eight-GPU continuation of `world4_mb32`. Fit is unmeasured |

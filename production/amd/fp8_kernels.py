@@ -125,39 +125,41 @@ def quantize_ternary(weight):
 
 
 @triton.jit
+def _fnuz(x, scale, LIMIT: tl.constexpr):
+    y = tl.div_rn(x, scale)
+    finite = (tl.abs(x) < float("inf")) & (tl.abs(y) < float("inf"))
+    return tl.where(finite, tl.minimum(tl.maximum(y, -LIMIT), LIMIT), float("nan"))
+
+
+@triton.jit
 def _both(X, CR, SR, CC, SC, M: tl.constexpr, K: tl.constexpr, PAD: tl.constexpr,
           XR: tl.constexpr, XK: tl.constexpr, SR0: tl.constexpr, SR1: tl.constexpr,
           EPS: tl.constexpr, LIMIT: tl.constexpr):
-    # One 128x128 tile is one rowwise group and one columnwise group. The
-    # column tiles match _columns (128x32). The row scale is the max of those
-    # chunks, then the tile is reread for the rowwise codes. The preflight
-    # requires both results to match the separate kernels.
+    # One HBM load of the 128x128 tile. The FP32 values stay in registers
+    # while both layouts are formed. Column codes use the same strided store
+    # as _columns, so this launch does not transpose an FP8 tile. Row scale
+    # is the max over the 128 columns of each row, matching group-1
+    # _quantize. Column scale is the max over the 128 rows of each column,
+    # matching _columns; that kernel's width-32 loop only tiles the same
+    # reduction. Padded rows are loaded as zeros and written, so a tail
+    # cannot poison wgrad.
     rb = tl.program_id(0).to(tl.int64)
     cb = tl.program_id(1).to(tl.int64)
     rows = rb * 128 + tl.arange(0, 128)
-    row_max = tl.zeros((128,), tl.float32)
-    for chunk in tl.static_range(4):
-        cols = cb * 128 + chunk * 32 + tl.arange(0, 32)
-        x = tl.load(X + rows[:, None] * XR + cols[None, :] * XK,
-                    (rows[:, None] < M) & (cols[None, :] < K), other=0).to(tl.float32)
-        row_max = tl.maximum(row_max, tl.max(tl.abs(x), 1))
-        scale = _scale(tl.max(tl.abs(x), 0), EPS, LIMIT)
-        y = tl.div_rn(x, scale[None, :])
-        y = tl.where((tl.abs(x) < float("inf")) & (tl.abs(y) < float("inf")),
-                     tl.minimum(tl.maximum(y, -LIMIT), LIMIT), float("nan"))
-        tl.store(CC + cols[None, :] * PAD + rows[:, None], y.to(CC.dtype.element_ty),
-                 (rows[:, None] < PAD) & (cols[None, :] < K))
-        tl.store(SC + rb * K + cols, scale, cols < K)
     cols = cb * 128 + tl.arange(0, 128)
     x = tl.load(X + rows[:, None] * XR + cols[None, :] * XK,
                 (rows[:, None] < M) & (cols[None, :] < K), other=0).to(tl.float32)
-    scale = _scale(row_max, EPS, LIMIT)
-    y = tl.div_rn(x, scale[:, None])
-    y = tl.where((tl.abs(x) < float("inf")) & (tl.abs(y) < float("inf")),
-                 tl.minimum(tl.maximum(y, -LIMIT), LIMIT), float("nan"))
-    tl.store(CR + rows[:, None] * K + cols[None, :], y.to(CR.dtype.element_ty),
+    amplitude = tl.abs(x)
+    row_scale = _scale(tl.max(amplitude, 1), EPS, LIMIT)
+    col_scale = _scale(tl.max(amplitude, 0), EPS, LIMIT)
+    row_codes = _fnuz(x, row_scale[:, None], LIMIT).to(CR.dtype.element_ty)
+    tl.store(CR + rows[:, None] * K + cols[None, :], row_codes,
              (rows[:, None] < M) & (cols[None, :] < K))
-    tl.store(SR + rows * SR0 + cb * SR1, scale, rows < M)
+    tl.store(SR + rows * SR0 + cb * SR1, row_scale, rows < M)
+    col_q = _fnuz(x, col_scale[None, :], LIMIT).to(CC.dtype.element_ty)
+    tl.store(CC + cols[None, :] * PAD + rows[:, None], col_q,
+             (rows[:, None] < PAD) & (cols[None, :] < K))
+    tl.store(SC + rb * K + cols, col_scale, cols < K)
 
 
 def quantize_columns(values, *, eps=1e-5):
@@ -177,12 +179,14 @@ def quantize_columns(values, *, eps=1e-5):
 
 
 def quantize_both(values, *, eps=1e-5):
-    """Rowwise and columnwise FNUZ for the same 128x128 tile.
+    """Rowwise and columnwise FNUZ from one load of each 128x128 tile.
 
-    Column groups are the 128x32 tiles of the separate column kernel. The row
-    scale is the max of those chunks, and the tile is loaded again only to
-    emit the rowwise codes. The preflight rejects any code or scale that
-    differs from the two separate kernels.
+    The FP32 tile stays live for both quotients. Column scales are the
+    per-column max over 128 rows, and row scales are the per-row max over
+    128 columns. Column codes are stored at ``column * PAD + row``, the same
+    address ``_columns`` uses. The preflight rejects any code or scale that
+    differs from the two separate kernels. Padded column-code lanes are
+    written as zeros.
     """
     from .runtime import require_gfx942
 
