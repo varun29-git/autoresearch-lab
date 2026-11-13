@@ -1,0 +1,185 @@
+{
+  "spark_sha256": "710cce15cf3565674c499f9413997c6e8101f2bdd96245cff8f0311fb501248c",
+  "donor_sha256": "c53e0e95cd19e2954a8c7114c0a580eeb16698b153fdf84c5d80a7187d778d29",
+  "counts": {
+    "spark_vocab": 131072,
+    "spark_kept": 77842,
+    "spark_dropped": 53230,
+    "merges_kept": 77486,
+    "sarvam_reused": 3357,
+    "sarvam_added": 36434,
+    "vocab_size": 114276,
+    "surface_collisions": 0,
+    "pinned_ids": 14
+  },
+  "closure_ok": true,
+  "byte_symbols_present": 243,
+  "byte_alphabet_kept": true,
+  "pinned_ids_fixed": true,
+  "identity": {
+    "prose": {
+      "tokens_identical": true,
+      "ids_match_map": true,
+      "tokens": 10
+    },
+    "code": {
+      "tokens_identical": true,
+      "ids_match_map": true,
+      "tokens": 15
+    },
+    "math": {
+      "tokens_identical": true,
+      "ids_match_map": true,
+      "tokens": 37
+    },
+    "newline": {
+      "tokens_identical": true,
+      "ids_match_map": true,
+      "tokens": 1
+    },
+    "newline_spaces": {
+      "tokens_identical": true,
+      "ids_match_map": true,
+      "tokens": 2
+    },
+    "newline_tab": {
+      "tokens_identical": true,
+      "ids_match_map": true,
+      "tokens": 2
+    },
+    "newline_return": {
+      "tokens_identical": true,
+      "ids_match_map": true,
+      "tokens": 3
+    },
+    "leading_spaces": {
+      "tokens_identical": true,
+      "ids_match_map": true,
+      "tokens": 2
+    },
+    "accents": {
+      "tokens_identical": true,
+      "ids_match_map": true,
+      "tokens": 6
+    },
+    "greek": {
+      "tokens_identical": true,
+      "ids_match_map": true,
+      "tokens": 3
+    },
+    "specials": {
+      "tokens_identical": true,
+      "ids_match_map": true,
+      "tokens": 4
+    }
+  },
+  "donor_gates": {
+    "नमस्ते": true,
+    "हिन्दी": true,
+    "ಕನ್ನಡ": true
+  },
+  "donor_gate_pieces": {
+    "नमस्ते": [
+      "Ġनम",
+      "स्ते"
+    ],
+    "हिन्दी": [
+      "Ġह",
+      "िन्",
+      "दी"
+    ],
+    "ಕನ್ನಡ": [
+      "Ġಕ",
+      "ನ್ನ",
+      "ಡ"
+    ]
+  },
+  "mixed": {
+    "indic_pieces": [
+      "Ġजा",
+      "Ġरहा"
+    ],
+    "matches_donor_indic": true,
+    "english_main": [
+      "main"
+    ],
+    "english_hoon": [
+      "ho",
+      "on"
+    ]
+  },
+  "pure_indic_matches_donor": {
+    "hi": true,
+    "mr": true,
+    "kn": true,
+    "te": true,
+    "ta": true,
+    "gu": true,
+    "bn": true
+  },
+  "fertility": {
+    "hi": {
+      "stock_tokens": 20,
+      "ours_tokens": 15,
+      "stock_per_word": 1.6667,
+      "ours_per_word": 1.25,
+      "lower": true
+    },
+    "mr": {
+      "stock_tokens": 19,
+      "ours_tokens": 12,
+      "stock_per_word": 2.375,
+      "ours_per_word": 1.5,
+      "lower": true
+    },
+    "kn": {
+      "stock_tokens": 25,
+      "ours_tokens": 17,
+      "stock_per_word": 3.5714,
+      "ours_per_word": 2.4286,
+      "lower": true
+    },
+    "te": {
+      "stock_tokens": 31,
+      "ours_tokens": 14,
+      "stock_per_word": 5.1667,
+      "ours_per_word": 2.3333,
+      "lower": true
+    },
+    "ta": {
+      "stock_tokens": 24,
+      "ours_tokens": 16,
+      "stock_per_word": 3.4286,
+      "ours_per_word": 2.2857,
+      "lower": true
+    },
+    "gu": {
+      "stock_tokens": 22,
+      "ours_tokens": 12,
+      "stock_per_word": 2.75,
+      "ours_per_word": 1.5,
+      "lower": true
+    },
+    "bn": {
+      "stock_tokens": 21,
+      "ours_tokens": 12,
+      "stock_per_word": 3.5,
+      "ours_per_word": 2.0,
+      "lower": true
+    }
+  },
+  "kept_with_dropped_script": 0,
+  "examples": {
+    "devanagari": {
+      "old_id": 641,
+      "surface": "ा",
+      "kept": true
+    },
+    "cjk": {
+      "old_id": 276,
+      "surface": "的",
+      "kept": false
+    }
+  },
+  "pass": true
+}
