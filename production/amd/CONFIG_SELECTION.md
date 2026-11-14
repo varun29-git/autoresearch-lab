@@ -128,7 +128,9 @@ algorithm and topology must be measured; this is traffic accounting.
 
 Select **WSD**, with linear warmup over **1,006,632,960 tokens** (480 balanced
 updates), a constant plateau, then cosine decay over the **final 10%** of the
-manifest's usable tokens, ending at **0.1 × each starting rate**. The decay
+manifest's scored training targets, ending at **0.1 × each starting rate**. For
+continuous streams the scored count equals usable tokens; packed streams may
+have fewer scored targets than input slots. The decay
 length rounds up to a 4096-token boundary. The original data horizon and
 mixture phases are never rewritten by the generator.
 
@@ -206,7 +208,9 @@ later requires a reviewed migration, not editing JSON mid-run.
 | Committed checkpoint | 2,013,265,920 | 960 |
 
 All comparisons keep **1,024 full sequences globally per language/domain**,
-4,194,304 scored tokens per scope key. The generator derives the per-rank
+4,194,304 input slots per scope key. Packed validation can score fewer targets
+because of document boundaries and padding; its sequence count comes from the
+packed descriptor, without a continuous-stream lookahead token. The generator derives the per-rank
 validation batch count: 32/16/8/4 for microbatch 4/8/16/32, or 6 for
 microbatch 24 on eight ranks. The trainer caps the selected global sequences
 at 1,024, so the last microbatch-24 evaluation step contains eight sequences

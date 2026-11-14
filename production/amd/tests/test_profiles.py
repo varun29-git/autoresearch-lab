@@ -1,4 +1,5 @@
 from dataclasses import asdict, dataclass, replace
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -29,6 +30,59 @@ def manifest(tokens=10**12):
          TokenShardSpec("code-val.bin", "code", "val", validation, language="en")],
         tokenizer={"sha256": "a" * 64},
         provenance={"scope": {"name": "test-en-code-v1", "languages": ["en"], "domains": ["code"]}})
+
+
+def packed_manifest(val_sequences=1024):
+    # Metadata only: the packed evaluator uses per-shard sequence counts, with
+    # no continuous-stream lookahead token between adjacent packed examples.
+    plan = "a" * 64
+    train_sequences = (10_000_000_000 + 4095) // 4096
+    paths, catalog = {}, []
+
+    def packed_shard(name, split, sequences, key):
+        artifacts = {}
+        for kind in ("payload", "index", "index_offsets"):
+            uri = f"s3://example/{name}-{kind}"
+            artifacts[kind] = {"uri": uri, "sha256": hashlib.sha256(uri.encode()).hexdigest()}
+            paths[uri] = f"{name}-{kind}"
+        catalog.append(TokenShardSpec(paths[artifacts["payload"]["uri"]], name, split,
+                                      sequences * 4096, language="en",
+                                      sha256=artifacts["payload"]["sha256"]))
+        return {"leaf": name, "evaluation_key": key, "sequence_length": 4096,
+                "plan_sha256": plan, "sequences": sequences,
+                "content_tokens": sequences * 4000, "valid_targets": sequences * 3900,
+                "index_offsets_bind_to_sha256": artifacts["index"]["sha256"], **artifacts}
+
+    def phase(shards):
+        return {"schema": "ci1_packed_mixture_candidate_v1", "plan_sha256": plan,
+                "repeats_sequences": False, "seed": "test", "block_sequences": 64,
+                "total_sequences": sum(shard["sequences"] for shard in shards),
+                "content_tokens": sum(shard["content_tokens"] for shard in shards),
+                "shards": shards}
+
+    train = phase([packed_shard("en/train", "train", train_sequences - 1, "en"),
+                   packed_shard("en/code-train", "train", 1, "code")])
+    heldout = phase([packed_shard("en/heldout", "val", val_sequences, "en"),
+                     packed_shard("en/code-heldout", "val", val_sequences, "code")])
+    return TokenManifest(TokenDataConfig(seq_len=4096, total_train_tokens=train_sequences * 4096),
+                         catalog, tokenizer={"sha256": "d" * 64},
+                         provenance={"scope": {"name": "test-en-code-v1", "languages": ["en"],
+                                               "domains": ["code"]},
+                                     "packing": "document_segments_v1",
+                                     "packed_stream": {"schema": 1, "train": [train], "val": [heldout],
+                                                       "paths": paths}})
+
+
+def test_packed_heldout_counts_full_sequences_without_continuous_lookahead():
+    original = packed_manifest()
+    _, config, report = select(original)
+    assert report["validation_available_sequences"] == {"code": 1024, "en": 1024}
+    assert report["scored_train_tokens"] == original.scored_train_tokens
+    assert report["usable_train_tokens"] > report["scored_train_tokens"]
+    assert report["decay_start_tokens"] == original.scored_train_tokens - config["training"]["decay_tokens"]
+    assert 0 <= report["decay_tokens"] - original.scored_train_tokens / 10 < 4096
+    with pytest.raises(ValueError, match="code"):
+        select(packed_manifest(val_sequences=1023))
 
 
 @pytest.mark.parametrize("name", PROFILES)

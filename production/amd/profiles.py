@@ -91,18 +91,29 @@ PROFILES = {
 
 
 def validation_coverage(manifest):
-    """Match train.evaluate's domain grouping and full-sequence accounting."""
+    """Match the selected evaluator's per-key sequence accounting."""
     scope = manifest_scope(manifest)
     domains = set(scope["domains"])
     required = set(scope["languages"]) | domains
     counts = {}
-    for spec in manifest.shards_for(split=manifest.config.val_split):
-        key = spec.source if spec.source in domains else spec.language
-        if key not in required:
-            raise ValueError(f"validation shard outside declared scope: {spec.path}")
-        counts[key] = counts.get(key, 0) + spec.num_tokens
-    blocks = {key: max(0, (counts.get(key, 0) - 1) // manifest.config.seq_len)
-              for key in sorted(required)}
+    if manifest.is_packed:
+        from terminus.packed_data import stream_spec
+
+        for phase in stream_spec(manifest)["val"]:
+            for shard in phase["shards"]:
+                key = shard.get("evaluation_key", shard["leaf"].split("/")[0])
+                if key not in required:
+                    raise ValueError(f"validation shard outside declared scope: {shard['leaf']}")
+                counts[key] = counts.get(key, 0) + shard["sequences"]
+        blocks = {key: counts.get(key, 0) for key in sorted(required)}
+    else:
+        for spec in manifest.shards_for(split=manifest.config.val_split):
+            key = spec.source if spec.source in domains else spec.language
+            if key not in required:
+                raise ValueError(f"validation shard outside declared scope: {spec.path}")
+            counts[key] = counts.get(key, 0) + spec.num_tokens
+        blocks = {key: max(0, (counts.get(key, 0) - 1) // manifest.config.seq_len)
+                  for key in sorted(required)}
     short = {key: count for key, count in blocks.items() if count < VALIDATION_SEQUENCES}
     if short:
         raise ValueError(f"need {VALIDATION_SEQUENCES} full validation sequences per scope key: {short}")
@@ -129,13 +140,15 @@ def select(manifest, *, profile="balanced", purpose="training", candidate=None):
     derived = TokenManifest(replace(manifest.config, batch_size=selected.microbatch),
                             manifest.shards, manifest.tokenizer, manifest.provenance)
     coverage = validation_coverage(derived)
-    total, batch = derived.config.usable_train_tokens, selected.global_batch_tokens
+    total, scored, batch = (derived.config.usable_train_tokens,
+                            derived.scored_train_tokens, selected.global_batch_tokens)
     if purpose == "training":
         if total < MIN_TRAINING_TOKENS:
             raise ValueError("training profile needs at least 10B usable tokens; use purpose=smoke for bring-up")
         warmup = WARMUP_TOKENS
-        # Round the final 10% up to a full sequence, never change data horizon.
-        decay = ((derived.config.total_examples + 9) // 10) * 4096
+        # The trainer schedules by scored targets, not packed input slots.
+        # Round the final 10% up to a full sequence without changing that clock.
+        decay = ((scored + 10 * 4096 - 1) // (10 * 4096)) * 4096
     else:
         if total < 26 * batch:
             raise ValueError("smoke needs at least 26 complete global updates in the manifest")
@@ -166,12 +179,13 @@ def select(manifest, *, profile="balanced", purpose="training", candidate=None):
         "input_manifest_identity": fingerprint(asdict(manifest)),
         "derived_manifest_identity": fingerprint(asdict(derived)),
         "config_identity": fingerprint(config),
-        "usable_train_tokens": total, "discarded_subsequence_tail_tokens": manifest.config.total_train_tokens - total,
+        "usable_train_tokens": total, "scored_train_tokens": scored,
+        "discarded_subsequence_tail_tokens": manifest.config.total_train_tokens - total,
         "global_sequences_per_update": batch // 4096,
         "tokens_per_rank_per_update": batch // selected.world_size,
         "accumulation": training["gradient_accumulation_steps"],
         "optimizer_updates": (total + batch - 1) // batch, "last_update_tokens": total % batch or batch,
-        "warmup_tokens": warmup, "decay_tokens": decay, "decay_start_tokens": total - decay,
+        "warmup_tokens": warmup, "decay_tokens": decay, "decay_start_tokens": scored - decay,
         "cadence_tokens": {key: training[key] * batch for key in CADENCE_TOKENS},
         "validation_sequences_per_scope_key": VALIDATION_SEQUENCES,
         "validation_available_sequences": coverage,
