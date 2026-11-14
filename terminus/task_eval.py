@@ -281,7 +281,8 @@ def load_development_choices(root, *, expected_tokenizer_sha256=None):
 
 
 @torch.no_grad()
-def score_frozen_choices(model, records, *, device, max_seq_len, rank=0, world_size=1, amp_dtype=None):
+def score_frozen_choices(model, records, *, device, max_seq_len, rank=0, world_size=1, amp_dtype=None,
+                         progress_callback=None):
     """Score stored choice continuations and reduce accuracy across ranks.
 
     This uses the token ids frozen by the atom tokenizer. It does not
@@ -294,6 +295,8 @@ def score_frozen_choices(model, records, *, device, max_seq_len, rank=0, world_s
     was_training = model.training
     model.eval()
     buckets = {}
+    completed = 0
+    total_choices = sum(len(row["choice_ids"]) for index, row in enumerate(records) if index % world_size == rank)
     try:
         for index, row in enumerate(records):
             if index % world_size != rank:
@@ -306,6 +309,10 @@ def score_frozen_choices(model, records, *, device, max_seq_len, rank=0, world_s
                 with torch.autocast(device_type=device.type, dtype=amp_dtype if enabled else torch.float32, enabled=enabled):
                     output = model(inputs, targets=targets, return_logits=False)
                 losses.append(float(output["loss_sum"].double()) / meta["output_tokens"])
+                completed += 1
+                if progress_callback is not None:
+                    progress_callback(dict(phase="benchmark", key=row["task"],
+                        completed_choices=completed, total_choices=total_choices))
             correct = row["correct_choice"]
             if len(losses) < 2 or not 0 <= correct < len(losses):
                 raise ValueError(f"choice index differs: {row['task']} {row['item_id']}")

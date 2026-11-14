@@ -68,6 +68,8 @@ class TrainingOperations:
         try:
             self._collective(setup)
             self.poll(force=True)
+            self.last_evaluation_progress = float('-inf')
+            workload.evaluation_progress = self.evaluation_progress if workload.rank == 0 else None
         except Exception:
             if self.service is not None:
                 try:self.service.close()
@@ -99,9 +101,29 @@ class TrainingOperations:
             return budget['training_seconds']<=0
         if self._collective(inspect):w.should_stop[0]=True
 
+    def evaluation_progress(self, progress):
+        """Heartbeat only after real evaluation work; no timer that hides a hang."""
+        if self.closed:
+            return
+        now = time.monotonic()
+        if now-self.last_evaluation_progress < 30:
+            return
+        w = self.workload
+        if w.device.type == 'cuda':
+            import torch
+            torch.cuda.synchronize(w.device)
+        budget = remaining(self.allocation, reserve_seconds=self.config.shutdown_reserve_seconds)
+        if budget['training_seconds'] <= 0:
+            raise TimeoutError('allocation training deadline reached during evaluation')
+        write_json_atomic(w.output_dir/'heartbeat.json', dict(schema=1, time_unix=time.time(),
+            state=dict(w.state), allocation_identity=self.allocation['identity_sha256'], budget=budget,
+            status='evaluating', progress=dict(progress)))
+        self.last_evaluation_progress = now
+
     def close_local(self):
         if self.closed:return
         self.closed=True
+        self.workload.evaluation_progress = None
         if self.workload.rank==0:
             error=None
             try:

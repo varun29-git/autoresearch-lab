@@ -27,3 +27,38 @@ def test_training_operations_survive_exact_cpu_resume_with_async_snapshots(tmp_p
     receipt=json.loads((run/'checkpoints/latest.json').read_text())
     assert receipt['state']['tokens_seen']==96
     assert (tmp_path/'durable'/marker_name(receipt['file'])).exists()
+
+
+def test_evaluation_heartbeat_requires_actual_progress_and_keeps_allocation_identity(tmp_path, monkeypatch):
+    import time
+    import pytest
+    from production.amd.allocation import create
+    from production.amd.operations import OperationsConfig, TrainingOperations
+    from terminus.train import prepare_training
+    from tests.helpers import fixture
+
+    data=tmp_path/'data';fixture(data, examples=4)
+    allocation=tmp_path/'allocation.json'
+    record=create(allocation, allocation_id='progress', started_unix=time.time()-1, gpu_hours=1, gpus=1)
+    config=OperationsConfig(str(allocation), str(tmp_path/'durable'), min_free_bytes=0)
+    run=tmp_path/'run'
+    with prepare_training(data/'config.json', data/'manifest.json', data, run) as w:
+        ops=TrainingOperations(w, config)
+        assert json.loads((run/'heartbeat.json').read_text())['status']=='running'
+        w.stop_after_updates=1
+        w.complete_update();w.cadence()
+        beat=json.loads((run/'heartbeat.json').read_text())
+        assert beat['allocation_identity']==record['identity_sha256']
+        assert beat['status']=='evaluating' and beat['progress']['phase']=='heldout'
+        assert beat['progress']['completed_sequences']>0
+        before=(run/'heartbeat.json').read_bytes()
+        ops.evaluation_progress(dict(phase='heldout', key='en', completed_sequences=3, total_sequences=4))
+        assert (run/'heartbeat.json').read_bytes()==before  # Writes are bounded to one per 30 seconds.
+        ops.last_evaluation_progress=float('-inf')
+        with monkeypatch.context() as patch:
+            patch.setattr('production.amd.operations.remaining', lambda *a, **kw: {'training_seconds': 0})
+            with pytest.raises(TimeoutError, match='deadline reached during evaluation'):
+                ops.evaluation_progress(dict(phase='heldout', key='en', completed_sequences=3, total_sequences=4))
+        assert (run/'heartbeat.json').read_bytes()==before
+        ops.close()
+        assert w.evaluation_progress is None

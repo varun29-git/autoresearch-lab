@@ -9,6 +9,7 @@ from bisect import bisect_right
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 import multiprocessing
+import math
 import os
 from dataclasses import asdict
 from pathlib import Path
@@ -19,6 +20,33 @@ import torch
 
 from production.packed_mixture import PackedMixture, PackedSequenceReader
 from .document_attention import DocumentLayout
+
+
+def evaluation_weights(phases):
+    """Seal a complete language mixture without double-counting domain probes."""
+    weights, languages = {}, set()
+    for phase in phases:
+        for shard in phase["shards"]:
+            language = shard["leaf"].split("/")[0]
+            if shard.get("evaluation_key", language) == language:
+                languages.add(language)
+        declared = phase.get("language_loss_weight_tokens")
+        if declared is None:
+            continue
+        if not isinstance(declared, dict):
+            raise ValueError("language loss weights must be a mapping")
+        for key, value in declared.items():
+            if (not isinstance(key, str) or not key or type(value) not in (int, float)
+                    or not math.isfinite(value) or value <= 0):
+                raise ValueError("language loss weights must be finite and positive")
+            if key in weights and weights[key] != value:
+                raise ValueError("language loss weights conflict across heldout phases")
+            weights[key] = value
+    if weights and set(weights) != languages:
+        raise ValueError("language loss weights must cover every heldout language exactly")
+    if weights and not math.isfinite(sum(weights.values())):
+        raise ValueError("language loss weights have a nonfinite total")
+    return weights
 
 
 def stream_spec(manifest):
@@ -59,6 +87,7 @@ def stream_spec(manifest):
                     item = shard[name]
                     if item["uri"] not in spec.get("paths", {}) or len(item["sha256"]) != 64:
                         raise ValueError("every packed artifact needs a local path and checksum binding")
+    evaluation_weights(spec["val"])
     slots = sum(p["total_sequences"] for p in spec["train"])*manifest.config.seq_len
     if slots != manifest.config.total_train_tokens:
         raise ValueError("packed sequence horizon differs from manifest input slots")
@@ -159,6 +188,8 @@ def verify_shard(shard, paths, root, vocab_size):
             raise ValueError("descriptor target count differs from decoded labels")
         if targets.max() >= vocab_size or np.any((targets < 0) & (targets != -100)):
             raise ValueError("packed lookahead label outside vocabulary")
+        if np.any((targets >= 5) & (targets <= 31)):
+            raise ValueError("reserved vocabulary IDs cannot occur in pretraining labels")
         for name in counts:
             counts[name] += descriptor[name]
         for segment in descriptor["segments"]:
@@ -283,7 +314,7 @@ def validate_packed_manifest(manifest, root, model, *, development_mode=False):
 
 @torch.no_grad()
 def evaluate_packed(model, manifest, root, device, amp_dtype, max_batches, rank, world_size,
-                    *, sequences_per_language=None, verified_files=None):
+                    *, sequences_per_language=None, verified_files=None, progress_callback=None):
     import math
     import torch.distributed as distributed
 
@@ -312,6 +343,9 @@ def evaluate_packed(model, manifest, root, device, amp_dtype, max_batches, rank,
                 output = model(inputs, targets, return_logits=False, document_layout=layout)
             totals[0] += output["loss_sum"].double()
             totals[1] += output["loss_tokens"].double()
+            if progress_callback is not None:
+                progress_callback(dict(phase="heldout", key=key,
+                    completed_sequences=start+len(rows), total_sequences=len(indices)))
         if world_size > 1:
             distributed.all_reduce(totals)
         loss_sum, tokens = totals.tolist()
@@ -319,15 +353,9 @@ def evaluate_packed(model, manifest, root, device, amp_dtype, max_batches, rank,
             raise FloatingPointError(f"invalid packed heldout evaluation: {key}")
         mean = loss_sum/tokens
         result[key] = dict(loss=mean, tokens=int(tokens), perplexity=math.exp(mean) if mean < 700 else None)
-    weights = {}
-    for phase in batcher.spec["val"]:
-        declared = phase.get("language_loss_weight_tokens") or {}
-        if isinstance(declared, dict):
-            weights.update(declared)
-    if weights and set(weights) <= set(result):
+    weights = evaluation_weights(batcher.spec["val"])
+    if weights:
         total = sum(weights.values())
-        if total <= 0:
-            raise ValueError("language loss weights must be positive")
         mixture = sum(weights[key] * result[key]["loss"] for key in weights) / total
         result["mixture"] = dict(loss=mixture, tokens=sum(result[key]["tokens"] for key in weights),
                                  perplexity=math.exp(mixture) if mixture < 700 else None,

@@ -222,7 +222,8 @@ def append_record(path, payload):
 
 
 @torch.no_grad()
-def evaluate(model, manifest, root, device, amp_dtype, max_batches, rank, world_size, *, sequences_per_language=None, verified_files=None):
+def evaluate(model, manifest, root, device, amp_dtype, max_batches, rank, world_size, *, sequences_per_language=None,
+             verified_files=None, progress_callback=None):
     was_training = model.training
     state = rng_state()
     model.eval()
@@ -235,7 +236,8 @@ def evaluate(model, manifest, root, device, amp_dtype, max_batches, rank, world_
             from .packed_data import evaluate_packed
 
             return evaluate_packed(model, manifest, root, device, amp_dtype, max_batches,
-                                   rank, world_size, sequences_per_language=sequences_per_language, verified_files=verified_files)
+                                   rank, world_size, sequences_per_language=sequences_per_language,
+                                   verified_files=verified_files, progress_callback=progress_callback)
         val_shards = manifest.shards_for(split=manifest.config.val_split)
         key_of = lambda spec: spec.source if spec.source in domains else spec.language
         languages = sorted({key_of(spec) for spec in val_shards})
@@ -255,6 +257,9 @@ def evaluate(model, manifest, root, device, amp_dtype, max_batches, rank, world_
                     output = model(inputs, targets, return_logits=False)
                 totals[0] += output["loss_sum"].double()
                 totals[1] += output["loss_tokens"].double()
+                if progress_callback is not None:
+                    progress_callback(dict(phase="heldout", key=language,
+                        completed_sequences=start+len(rows), total_sequences=len(local_indices)))
             if world_size > 1:
                 distributed.all_reduce(totals)
             loss_sum, tokens = totals.tolist()
@@ -331,6 +336,7 @@ class PreparedTraining:
         self.stop_after_updates = None
         self.checkpoint_writer = None
         self.choice_records = None
+        self.evaluation_progress = None
         self.monitor = None
         self.captured = None
         self.should_stop = [False]
@@ -436,7 +442,9 @@ class PreparedTraining:
         if sampled:
             self.monitor.after_step()
         self.model.clear_fp8_weight_cache()
-        self.state = {"next_micro_step": state["next_micro_step"] + micro_steps,
+        # Carry sealed phase decisions through every update and checkpoint.
+        # Rebuilding just the counters silently discarded ending_commitment.
+        self.state = {**state, "next_micro_step": state["next_micro_step"] + micro_steps,
                       "tokens_seen": state["tokens_seen"] + update_tokens, "updates": state["updates"] + 1}
         if packed_plan is not None:
             self.state.update(input_slots_seen=state.get("input_slots_seen", 0)+planned_slots,
@@ -481,7 +489,7 @@ class PreparedTraining:
             results = evaluate(self.model, self.manifest, self.data_root, self.device, self.amp_dtype,
                                training.validation_batches_per_language, self.rank, self.world_size,
                                sequences_per_language=training.validation_sequences_per_language,
-                               verified_files=self.verified_files)
+                               verified_files=self.verified_files, progress_callback=self.evaluation_progress)
             mixture = results.pop("mixture", None)
             benchmarks = None
             if self.choice_records:
@@ -489,7 +497,8 @@ class PreparedTraining:
 
                 benchmarks = score_frozen_choices(self.model, self.choice_records, device=self.device,
                                                   max_seq_len=self.model_config.max_seq_len, rank=self.rank,
-                                                  world_size=self.world_size, amp_dtype=self.amp_dtype)
+                                                  world_size=self.world_size, amp_dtype=self.amp_dtype,
+                                                  progress_callback=self.evaluation_progress)
             if self.rank == 0:
                 payload = {"event": "validation", **state, "languages": results}
                 if mixture is not None:
