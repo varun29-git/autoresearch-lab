@@ -1,6 +1,7 @@
 """CPU regression tests for the qualification config builder/validator."""
 
 import json
+from dataclasses import fields
 from pathlib import Path
 import subprocess
 import sys
@@ -11,6 +12,7 @@ from production.kimi_h100_5b import campaign
 from production.kimi_h100_5b.builder import (build_confirmation_config, build_trial_config,
                                              main as builder_main,
                                              validate_qualification_config)
+from terminus.train import TrainConfig
 
 
 def proxy_manifest(root, *, total=4_999_610_368, batch=4):
@@ -38,7 +40,7 @@ class BuilderTests(unittest.TestCase):
                          [0.017, 0.017, 0.017, 0.0082, 0.0082])
         config = configs["H"]
         self.assertEqual(len(config["model"]), 46)
-        self.assertEqual(len(config["training"]), 27)
+        self.assertEqual(set(config["training"]), {field.name for field in fields(TrainConfig)})
         self.assertFalse(config["training"]["async_checkpoint"])
         self.assertEqual(config["training"]["checkpoint_timeout_seconds"], 600.)
         self.assertEqual(len(config["optimizer"]), 19)

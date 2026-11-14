@@ -24,7 +24,9 @@ def test_packed_model_matches_independent_documents_and_gradients(checkpointing)
     loss = 0
     for row, start, end in layout.spans:
         actual = independent(inputs[row:row+1, start:end], targets[row:row+1, start:end])
-        torch.testing.assert_close(packed["logits"][row:row+1, start:end], actual["logits"], rtol=2e-5, atol=1e-6)
+        # FP32 BLAS reductions differ slightly for packed vs single-document
+        # matrix shapes (measured 1.47e-6 on Apple CPU). Keep native gates intact.
+        torch.testing.assert_close(packed["logits"][row:row+1, start:end], actual["logits"], rtol=2e-5, atol=2e-6)
         loss += actual["loss_sum"]
     torch.testing.assert_close(packed["loss_sum"], loss)
     packed["loss_sum"].backward()
