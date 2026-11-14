@@ -74,6 +74,19 @@ then checks snapshot stats and avoids rehashing corpus files per GPU/rank or
 rechecking complete offset tables after an LRU reopen. File stats stay outside
 the portable checkpoint identity.
 
+Reserved vocabulary IDs are rejected in both payloads and label-only
+lookaheads. If language-loss weights are declared, they must cover all
+held-out language keys, be positive and finite, and agree across phases.
+Separate domain evaluation keys are excluded from that language aggregate.
+Malformed weights are rejected during manifest inspection before evaluation.
+
+When only the packed manifest's microbatch changes, `production.amd.staging`
+supports `--rebind-from <verified-receipt> --original-manifest <its-manifest>`.
+It checks the original immutable snapshot and exact model/source identity,
+permits no other manifest change, and seals a separate manifest-bound receipt.
+This avoids another full payload/descriptor scan for a memory fallback. It
+does not accept new data or replace that microbatch's native memory test.
+
 Example CPU preparation, with all artifacts outside Git:
 
 ```sh

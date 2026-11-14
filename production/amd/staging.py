@@ -5,7 +5,8 @@ ctime. This is an accidental-change guard, not a hostile-storage attestation.
 Keep shards/tokenizer read-only for the run; changing any file invalidates it.
 """
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
+import copy
 import json
 import os
 from pathlib import Path
@@ -68,14 +69,40 @@ def verify(receipt, manifest, root, model, *, development_mode=False):
     return receipt["validation"]
 
 
+def rebind_microbatch(receipt, original, derived, root, model, *, development_mode=False):
+    """Reuse full packed acceptance only when batch_size is the sole change."""
+    if not original.is_packed or not derived.is_packed:
+        raise ValueError("microbatch receipt reuse requires packed manifests")
+    expected = replace(original, config=replace(original.config, batch_size=derived.config.batch_size))
+    if expected != derived:
+        raise ValueError("receipt reuse permits only a packed microbatch change")
+    verify(receipt, original, root, model, development_mode=development_mode)
+    result = copy.deepcopy(receipt)
+    result["manifest_sha256"] = fingerprint(asdict(derived))
+    result["validation"]["manifest_sha256"] = result["manifest_sha256"]
+    result["validation_reused_from_receipt_sha256"] = receipt["receipt_sha256"]
+    result.pop("receipt_sha256")
+    result["receipt_sha256"] = fingerprint(result)
+    return result
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     for name in ("config", "manifest", "data-root", "output"):
         p.add_argument("--" + name, required=True)
+    p.add_argument("--rebind-from", help="Reuse a verified packed receipt for a microbatch-only change")
+    p.add_argument("--original-manifest", help="Exact manifest belonging to --rebind-from")
     args = p.parse_args()
+    if bool(args.rebind_from) != bool(args.original_manifest):
+        p.error("receipt reuse requires both --rebind-from and --original-manifest")
     model, training, _ = load_config(external_path(args.config))
     manifest = TokenManifest.load(external_path(args.manifest))
-    result = create(manifest, external_path(args.data_root), model, development_mode=training.development_mode)
+    if args.rebind_from:
+        result = rebind_microbatch(json.loads(external_path(args.rebind_from).read_text()),
+            TokenManifest.load(external_path(args.original_manifest)), manifest,
+            external_path(args.data_root), model, development_mode=training.development_mode)
+    else:
+        result = create(manifest, external_path(args.data_root), model, development_mode=training.development_mode)
     write_json_atomic(external_path(args.output, fresh=True), result)
     print(json.dumps({"status": "snapshot_verified", "files": len(result["files"]),
                       "receipt_sha256": result["receipt_sha256"]}))
