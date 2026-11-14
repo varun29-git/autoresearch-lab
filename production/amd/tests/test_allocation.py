@@ -34,6 +34,22 @@ def test_faster_dense_rate_adds_only_dense_tokens_and_reserves_qat():
     assert q['remaining_dense_tokens']==0 and q['qat_tokens_remaining']==1000
 
 
+def test_packed_forecast_accepts_actual_labels_without_rounding_away_qat():
+    args=dict(remaining_node_seconds=100, dense_tokens_seen=1001, qat_tokens=2001,
+              qat_cluster_tps=100, dense_cluster_tps=100, batch_tokens=100,
+              dense_cooldown_tokens=501, reserve_seconds=10, max_dense_tokens=100001)
+    with pytest.raises(ValueError, match='align'):
+        fixed_qat_forecast(**args)
+    result=fixed_qat_forecast(**args, token_clock='scored_targets')
+    assert result['dense_end_tokens']==7901
+    assert result['qat_tokens']==2001
+    assert result['estimated_remaining_training_seconds']<=90
+    assert result['token_clock']=='scored_targets'
+    assert 'complete immutable' in result['horizon_policy']
+    qat=fixed_qat_forecast(**args, phase='qat', qat_tokens_seen=1001, token_clock='scored_targets')
+    assert qat['qat_tokens_remaining']==1000 and qat['remaining_dense_tokens']==0
+
+
 def policy(allocation):
     return Policy(str(allocation),[sys.executable,'-c','pass'],[sys.executable,'-c','pass'])
 

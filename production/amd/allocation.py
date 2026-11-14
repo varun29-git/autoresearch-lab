@@ -65,7 +65,8 @@ def remaining(record, *, now=None, reserve_seconds=0.):
 def fixed_qat_forecast(*, remaining_node_seconds, dense_tokens_seen, dense_cluster_tps,
                        qat_tokens, qat_tokens_seen=0, qat_cluster_tps,
                        batch_tokens, dense_cooldown_tokens, reserve_seconds,
-                       max_dense_tokens, phase='dense', dense_warmup_tokens=0):
+                       max_dense_tokens, phase='dense', dense_warmup_tokens=0,
+                       token_clock='continuous'):
     """Rates include normal cadence. Reserve only additional finishing/outage work."""
     for name,value in [('dense_cluster_tps',dense_cluster_tps),('qat_cluster_tps',qat_cluster_tps)]:
         finite_positive(value,name)
@@ -74,8 +75,11 @@ def fixed_qat_forecast(*, remaining_node_seconds, dense_tokens_seen, dense_clust
                        ('max_dense_tokens',max_dense_tokens),('dense_warmup_tokens',dense_warmup_tokens)]:
         if type(value) is not int or value<0:raise ValueError(f'{name} must be a nonnegative integer')
     if type(batch_tokens) is not int or batch_tokens<=0:raise ValueError('invalid global batch')
+    if token_clock not in ('continuous', 'scored_targets'):
+        raise ValueError('unknown forecast token clock')
     if (phase not in ('dense','qat') or qat_tokens_seen>qat_tokens or max_dense_tokens<dense_tokens_seen
-            or any(v%batch_tokens for v in (dense_tokens_seen,qat_tokens,qat_tokens_seen,dense_cooldown_tokens,max_dense_tokens))):
+            or (token_clock == 'continuous' and any(v%batch_tokens for v in
+                (dense_tokens_seen,qat_tokens,qat_tokens_seen,dense_cooldown_tokens,max_dense_tokens)))):
         raise ValueError('phase budgets must align with complete global updates')
     if (not math.isfinite(remaining_node_seconds) or not math.isfinite(reserve_seconds)
             or remaining_node_seconds<0 or reserve_seconds<0):raise ValueError('invalid remaining time')
@@ -95,7 +99,10 @@ def fixed_qat_forecast(*, remaining_node_seconds, dense_tokens_seen, dense_clust
     return {'dense_end_tokens':dense_end,'qat_tokens':qat_tokens,'qat_tokens_remaining':qat_tokens-qat_tokens_seen,
             'remaining_dense_tokens':dense_end-dense_tokens_seen,'total_final_tokens':dense_end+qat_tokens,
             'estimated_remaining_training_seconds':needed,'reserve_seconds':reserve_seconds,
-            'slack_seconds':useful-needed,'rate_units':'global tokens per node-second; normal cadence included'}
+            'slack_seconds':useful-needed,'token_clock':token_clock,
+            'rate_units':'global tokens per node-second on the selected clock; normal cadence included',
+            'horizon_policy':('Scored-token ceiling only; admit complete immutable future packed phases below it.'
+                              if token_clock == 'scored_targets' else 'Complete fixed-token global updates.')}
 
 
 def main():

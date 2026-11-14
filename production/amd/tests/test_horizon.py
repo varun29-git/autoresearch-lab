@@ -8,6 +8,7 @@ from production.amd.horizon import fork
 from terminus.data import TokenManifest
 from terminus.train import run_training
 from tests.helpers import fixture, checkpoint_payload
+from tests.test_document_training import packed_fixture
 
 
 def prepare(tmp_path):
@@ -47,6 +48,10 @@ def test_committed_ending_cannot_be_moved_even_before_decay(tmp_path):
     fork(tmp_path/'parent',data/'parent.json',data/'child-config.json',data/'child.json',data,tmp_path/'child',commit_ending=True)
     with pytest.raises(ValueError,match='already committed'):
         fork(tmp_path/'child',data/'child.json',data/'child-config.json',data/'child.json',data,tmp_path/'grandchild')
+    run_training(tmp_path/'child/config.json', tmp_path/'child/manifest.json', data, tmp_path/'child',
+                 resume=tmp_path/'child/checkpoints', stop_after_updates=3)
+    with pytest.raises(ValueError,match='already committed'):
+        fork(tmp_path/'child',data/'child.json',data/'child-config.json',data/'child.json',data,tmp_path/'later')
 
 
 @pytest.mark.parametrize('change',['warmup','lr','consumed_decay','data'])
@@ -64,3 +69,51 @@ def test_horizon_cannot_rewrite_past_learning_or_data(tmp_path,change):
     with pytest.raises(ValueError):
         fork(tmp_path/'parent',data/'parent.json',data/'child-config.json',data/'child.json',data,tmp_path/'child')
     assert not (tmp_path/'child/run.json').exists()
+
+
+def test_packed_horizon_uses_scored_clock_and_preserves_finite_phase_cursor(tmp_path):
+    import copy
+
+    data = tmp_path/'data'
+    _, parent = packed_fixture(data, examples=12)
+    _, extra = packed_fixture(data/'extension', examples=12, offset=1)
+    child = replace(copy.deepcopy(parent), config=replace(parent.config, batch_size=2, total_train_tokens=192))
+    stream = child.provenance['packed_stream']
+    stream['train'].extend(extra.provenance['packed_stream']['train'])
+    extra_path = extra.provenance['packed_stream']['paths']
+    for shard in stream['train'][-1]['shards']:
+        for name in ('payload', 'index', 'index_offsets'):
+            item = shard[name]
+            original = item['uri']
+            item['uri'] = 'extension/'+original
+            stream['paths'][item['uri']] = 'extension/'+extra_path[original]
+    child.shards.extend(replace(s, path='extension/'+s.path) for s in extra.shards if s.split == 'train')
+    parent.save(data/'parent.json')
+    child.save(data/'child.json')
+    cfg = json.loads((data/'config.json').read_text())
+    cfg['training'].update(schedule='wsd', warmup_tokens=0, decay_tokens=4)
+    (data/'parent-config.json').write_text(json.dumps(cfg))
+    cfg['training']['gradient_accumulation_steps'] = 1
+    (data/'child-config.json').write_text(json.dumps(cfg))
+    state = run_training(data/'parent-config.json', data/'parent.json', data, tmp_path/'parent', stop_after_updates=2)
+    assert state['input_slots_seen'] == 32 and state['tokens_seen'] != 32
+    assert child.scored_train_tokens % 16 != 0
+    report = fork(tmp_path/'parent', data/'parent.json', data/'child-config.json', data/'child.json', data, tmp_path/'child')
+    a, b = checkpoint_payload(tmp_path/'parent'), checkpoint_payload(tmp_path/'child')
+    assert b['state']['tokens_seen'] == a['state']['tokens_seen']
+    assert b['state']['next_micro_step'] == 2
+    assert report['schedule_proof']['new_total_tokens'] == child.scored_train_tokens
+    assert report['stream_proof']['verified_prefix_input_slots'] == 96
+    for key in a['model']:
+        torch.testing.assert_close(a['model'][key], b['model'][key], rtol=0, atol=0)
+    for param, states in a['optimizer']['state'].items():
+        for key, value in states.items():
+            torch.testing.assert_close(value, b['optimizer']['state'][param][key], rtol=0, atol=0)
+    resumed = run_training(tmp_path/'child/config.json', tmp_path/'child/manifest.json', data, tmp_path/'child',
+                           resume=tmp_path/'child/checkpoints', stop_after_updates=3)
+    assert resumed['input_slots_seen'] == 48 and resumed['next_micro_step'] == 3
+    assert resumed['tokens_seen'] > state['tokens_seen']
+    child.provenance['packed_stream']['train'][0]['seed'] += '-changed'
+    child.save(data/'changed.json')
+    with pytest.raises(ValueError, match='consumed finite phase'):
+        fork(tmp_path/'parent', data/'parent.json', data/'child-config.json', data/'changed.json', data, tmp_path/'bad')

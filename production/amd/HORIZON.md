@@ -21,6 +21,12 @@ ending. It never scales the LRs or changes a config. Rate provenance/freshness,
 curriculum quality, QAT recovery length and the outage reserve still require
 review; arbitrary user-entered rates are not measurement evidence.
 
+Packed runs must pass `--token-clock scored_targets`: use actual scored dense
+and QAT counts and measured scored-target rates, rather than payload slots.
+The resulting dense endpoint is a budget ceiling. Admit complete immutable
+future packed phases below that ceiling; the forecast does not cut, repack or
+automatically attach a phase. Keep QAT's exact target budget intact.
+
 ## Commit a prospective child
 
 Prepare an external child config/manifest with the qualified future data and
@@ -52,6 +58,14 @@ global batch**. Resume with the child's config/manifest/checkpoint and matching
 native receipts. A failed transaction leaves an unlaunched partial directory;
 inspect it and create a fresh output rather than treating it as a valid child.
 
+For packed data the schedule proof uses the scored-target clock, while cursor
+rebasing uses consumed input slots. A fork requires a complete global update;
+the packed target horizon need not be divisible by the input-slot batch size.
+The finite-phase proof preserves the original permutation, and `phase_mix`
+requires an exact phase boundary. Held-out document metadata and mixture
+weights remain fixed. Local staging file stats stay outside checkpoint
+identity, and a committed ending survives subsequent updates and resumes.
+
 Retain the same allocation ledger through every child. Use a separate durable
 backup prefix for each run contract and preserve the parent. The supervisor
 currently stops the provider when its training command terminates, so a
@@ -63,3 +77,11 @@ acceptance gates. Freeze a qualified absolute QAT token budget; do not copy the
 historical short HPO warmup/decay or treat a constant QAT budget as proof of
 sufficient recovery. If the remaining allocation cannot fund the commitment,
 preserve the last durable artifact and report the unfinished phase.
+
+Production evaluation reports progress to operations after completed batches
+or choice forwards. Rank zero synchronizes the device before updating its
+heartbeat, at most once per 30 seconds. An evaluation that stalls produces no
+new heartbeat; the supervisor's stale-progress and hard allocation deadlines
+remain active. Reaching the training deadline during evaluation aborts it and
+preserves the checkpoint/recovery path. This does not batch choice scoring or
+establish its runtime cost: include full validation cadence in native timing.

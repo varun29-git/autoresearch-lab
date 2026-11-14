@@ -12,6 +12,8 @@ def main():
     parser.add_argument('--allocation', required=True)
     parser.add_argument('--output', required=True)
     parser.add_argument('--phase', choices=('dense', 'qat'), default='dense')
+    parser.add_argument('--token-clock', choices=('continuous', 'scored_targets'), default='continuous',
+                        help='Packed runs use scored_targets for every budget and measured rate')
     for name in ('dense-tokens-seen', 'qat-tokens', 'batch-tokens',
                  'dense-cooldown-tokens', 'max-dense-tokens'):
         parser.add_argument('--' + name, type=int, required=True)

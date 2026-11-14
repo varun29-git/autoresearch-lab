@@ -15,17 +15,19 @@ from production.artifacts import external_path
 from terminus.checkpoint import commit_checkpoint_payload, load_checkpoint
 from terminus.data import TokenManifest
 from terminus.integrity import fingerprint, source_hashes, validate_manifest, write_json_atomic
-from terminus.stream_contract import verify_training_continuation
+from terminus.stream_contract import verify_training_continuation, verify_packed_continuation
 from terminus.train import OPERATIONAL_TRAINING_FIELDS, load_config
 from .staging import verify as verify_staging
 
 
-def schedule_proof(parent, child_training, state, old_total, new_total, *, old_batch, new_batch, weight_mode):
+def schedule_proof(parent, child_training, state, old_total, new_total, *, old_batch, new_batch, weight_mode,
+                   packed=False):
     old=dict(parent); new=asdict(child_training)
     for name in OPERATIONAL_TRAINING_FIELDS:new.pop(name)
     if old.get('schedule')!='wsd' or new.get('schedule')!='wsd':
         raise ValueError('prospective horizon changes require WSD')
-    if old_batch!=new_batch or new_total%new_batch or state['tokens_seen']!=state['updates']*old_batch:
+    cursor = state.get('input_slots_seen') if packed else state['tokens_seen']
+    if old_batch!=new_batch or (not packed and new_total%new_batch) or cursor!=state['updates']*old_batch:
         raise ValueError('horizon changes require the same complete global update')
     phase=old.get('phase_start_tokens') or 0
     commitment=state.get('ending_commitment',{})
@@ -72,25 +74,36 @@ def fork(parent_run, parent_manifest_path, child_config_path, child_manifest_pat
             raise ValueError('parent manifest does not match checkpoint')
         if pm.tokenizer!=cm.tokenizer or [asdict(s) for s in pm.shards_for(split=pm.config.val_split)]!=[asdict(s) for s in cm.shards_for(split=cm.config.val_split)]:
             raise ValueError('horizon fork changed tokenizer or held-out data')
+        if pm.is_packed != cm.is_packed:
+            raise ValueError('horizon fork cannot change the packing contract')
+        if pm.is_packed and pm.provenance['packed_stream']['val'] != cm.provenance['packed_stream']['val']:
+            raise ValueError('horizon fork changed held-out document metadata or weights')
         world=parent['world_size']
         if len(payload['rank_rng'])!=world:raise ValueError('rank RNG state count mismatch')
-        proof=schedule_proof(parent['training'],training,state,pm.config.usable_train_tokens,cm.config.usable_train_tokens,
+        proof=schedule_proof(parent['training'],training,state,pm.scored_train_tokens,cm.scored_train_tokens,
             old_batch=pm.config.tokens_per_step*world*parent['training']['gradient_accumulation_steps'],
-            new_batch=cm.config.tokens_per_step*world*training.gradient_accumulation_steps,weight_mode=model.weight_mode)
+            new_batch=cm.config.tokens_per_step*world*training.gradient_accumulation_steps,
+            weight_mode=model.weight_mode,packed=pm.is_packed)
         if child_staging_receipt:
             report=verify_staging(json.loads(external_path(child_staging_receipt).read_text()),cm,data_root,model,
                                   development_mode=training.development_mode)
         else:
             report=validate_manifest(cm,data_root,model,development_mode=training.development_mode)
-        continuity=verify_training_continuation(parent['data']['training_stream'],report['training_stream'],
-                                               state['tokens_seen'],policy=data_policy)
+        if pm.is_packed:
+            continuity=verify_packed_continuation(parent['data']['training_stream'],report['training_stream'],
+                                                state,policy=data_policy)
+        else:
+            continuity=verify_training_continuation(parent['data']['training_stream'],report['training_stream'],
+                                                   state['tokens_seen'],policy=data_policy)
         state['next_micro_step']=proof['new_next_micro_step']
         if commit_ending:
             state['ending_commitment']={'weight_mode':model.weight_mode,'phase_start_tokens':training.phase_start_tokens or 0,
-                                        'total_tokens':cm.config.usable_train_tokens,'decay_tokens':training.decay_tokens}
+                                        'total_tokens':cm.scored_train_tokens,'decay_tokens':training.decay_tokens}
         settings=asdict(training)
         for name in OPERATIONAL_TRAINING_FIELDS:settings.pop(name)
-        child=parent|{'training':settings,'data':report}
+        # Match the trainer's portable identity; local inode/cache stats belong
+        # to the staging receipt and must not enter a checkpoint contract.
+        child=parent|{'training':settings,'data':{k:v for k,v in report.items() if k!='packed_files'}}
         # Only metadata changes. Native tensors/optimizer/RNG are carried as CPU
         # checkpoint tensors and checked against the same runtime on resumption.
         child_payload=payload|{'contract':child,'state':state}

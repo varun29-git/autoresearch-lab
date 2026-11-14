@@ -1,5 +1,13 @@
 # CI-1 production handoff
 
+**2026-11-14 packed-run hardening:** packed horizon forks and budget forecasts
+use scored targets while preserving the input-slot cursor and finite phase
+order. Frozen endings survive subsequent updates. Acceptance checks reserved
+lookahead IDs and complete held-out language weights. Evaluation heartbeats
+follow completed work, and microbatch-only staging receipt reuse avoids
+repeating full corpus verification. Model, optimizer and kernel arithmetic
+remain unchanged; intended-cluster native acceptance is still required.
+
 **2026-11-09 architecture hardening:** V1 uses a transient handoff and one
 shared contiguous copy; model attributes no longer retain mixed-value
 activations between updates. Native FP8 rejects gradual quantization strength,
