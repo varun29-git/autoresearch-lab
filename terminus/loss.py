@@ -151,9 +151,12 @@ class StreamingLinearCrossEntropyFP8(torch.autograd.Function):
 class StreamingLinearCrossEntropyROCmFP8(torch.autograd.Function):
     """ROCm blockwise-FP8 tied vocabulary head (FNUZ) with streaming CE.
 
-    Same exact chunked online-LSE cross entropy as the BF16 head; the head
-    GEMMs use the production blockwise FP8 recipe and FP32 wgrad accumulation.
-    Class N: logits/gradients differ from the BF16 head within FP8 error.
+    Same exact chunked online-LSE cross entropy as the BF16 head. Forward and
+    hidden-dgrad GEMMs use the production blockwise FP8 recipe; the weight
+    gradient keeps the BF16 addmm with direct FP32 accumulation, so it is
+    identical to the BF16 head (no small-K chunked FP8 wgrad, and no column
+    quantization of the activations or dlogits). Class N: logits/hidden
+    gradients differ from the BF16 head within FP8 error.
     """
 
     @staticmethod
@@ -178,16 +181,16 @@ class StreamingLinearCrossEntropyROCmFP8(torch.autograd.Function):
             for start in range(0, targets.numel(), chunk_size):
                 inputs = flat[start:start + chunk_size]
                 labels = targets[start:start + chunk_size]
-                x_rows, x_cols = quantize_directions(inputs, transposed=need_weight)
-                logits = gemm(x_rows, w, backend="rocm_fp8_te", rhs_group_size=128)
+                x_rows, _ = quantize_directions(inputs, transposed=False)
+                logits = gemm(x_rows, w, backend="rocm_fp8_te", rhs_group_size=128, weight_shape=w[0].shape)
                 loss, gradient = cross_entropy_inplace(logits, labels, need_hidden or need_weight, normalizer=normalizer)
                 total.add_(loss)
-                if need_hidden or need_weight:
-                    g_rows, g_cols = quantize_directions(gradient, rowwise=need_hidden, transposed=need_weight, eps=0.0)
-                    if need_hidden:
-                        dh[start:start + inputs.shape[0]] = gemm(g_rows, wt, backend="rocm_fp8_te", rhs_group_size=128)
-                    if need_weight:
-                        dw.add_(gemm(g_cols, x_cols, backend="rocm_fp8_te", rhs_group_size=1, out_dtype=accumulation_dtype))
+                if need_hidden:
+                    g_rows, _ = quantize_directions(gradient, transposed=False, eps=0.0)
+                    dh[start:start + inputs.shape[0]] = gemm(g_rows, wt, backend="rocm_fp8_te", rhs_group_size=128, weight_shape=w[0].shape)
+                if need_weight:
+                    torch.addmm(dw, gradient.T, inputs, beta=0 if start == 0 else 1,
+                                out_dtype=accumulation_dtype, out=dw)
         ctx.save_for_backward(dh, dw, normalizer)
         return total
 

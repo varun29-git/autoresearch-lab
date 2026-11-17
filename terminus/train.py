@@ -713,6 +713,12 @@ def prepare_training(config_path, manifest_path, data_root, output_dir, *, resum
             forward_model = DistributedDataParallel(forward_model, device_ids=[local_rank] if device.type == "cuda" else None,
                                                     broadcast_buffers=False, gradient_as_bucket_view=True,
                                                     static_graph=True, bucket_cap_mb=training.ddp_bucket_cap_mb)
+            if os.environ.get("CI1_GRAD_BF16") == "1":
+                from torch.distributed.algorithms.ddp_comm_hooks.default_hooks import bf16_compress_hook
+
+                # Candidate-only wire compression: one BF16 rounding per bucket
+                # per update; Muon NS is scale-invariant and AdamW is relative.
+                forward_model.register_comm_hook(state=None, hook=bf16_compress_hook)
         if payload is not None:
             if len(payload["rank_rng"]) != world_size:
                 raise ValueError("checkpoint rank RNG states do not match world size")
