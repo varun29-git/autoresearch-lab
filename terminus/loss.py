@@ -24,10 +24,24 @@ def _torch_loss_gradient(logits, targets, need_gradient, normalizer):
 
 
 _HEAD_FP8_CACHE = {}
+_HEAD_ROCM_FP8_CACHE = {}
 
 
 def clear_head_fp8_cache():
     _HEAD_FP8_CACHE.clear()
+    _HEAD_ROCM_FP8_CACHE.clear()
+
+
+def _head_rocm_fp8_operands(weight):
+    """Per-update ROCm blockwise-FNUZ head weight operands, both orientations."""
+    identity = (weight.data_ptr(), weight._version, weight.device, tuple(weight.shape))
+    if _HEAD_ROCM_FP8_CACHE.get("identity") != identity:
+        from production.amd.backend import quantize_weight
+
+        operands = quantize_weight(weight.detach(), transposed=True)
+        _HEAD_ROCM_FP8_CACHE.clear()
+        _HEAD_ROCM_FP8_CACHE.update({"identity": identity, "primary": operands[0], "secondary": operands[1]})
+    return _HEAD_ROCM_FP8_CACHE["primary"], _HEAD_ROCM_FP8_CACHE["secondary"]
 
 
 def _head_fp8_operands(weight):
@@ -134,6 +148,60 @@ class StreamingLinearCrossEntropyFP8(torch.autograd.Function):
                 (dw * multiplier).to(ctx.weight_dtype) if dw is not None else None, None, None, None, None, None)
 
 
+class StreamingLinearCrossEntropyROCmFP8(torch.autograd.Function):
+    """ROCm blockwise-FP8 tied vocabulary head (FNUZ) with streaming CE.
+
+    Same exact chunked online-LSE cross entropy as the BF16 head; the head
+    GEMMs use the production blockwise FP8 recipe and FP32 wgrad accumulation.
+    Class N: logits/gradients differ from the BF16 head within FP8 error.
+    """
+
+    @staticmethod
+    def forward(ctx, hidden, weight, targets, chunk_size, backend, wgrad_recipe="1d1d"):
+        from production.amd.backend import gemm, quantize_directions
+        from .loss_kernels import cross_entropy_inplace
+
+        ctx.hidden_dtype, ctx.weight_dtype = hidden.dtype, weight.dtype
+        ctx.hidden_shape = hidden.shape
+        need_hidden, need_weight = ctx.needs_input_grad[:2]
+        dtype = (torch.get_autocast_dtype(hidden.device.type)
+                 if torch.is_autocast_enabled(hidden.device.type) else hidden.dtype)
+        flat = hidden.reshape(-1, hidden.shape[-1]).to(dtype)
+        targets = targets.reshape(-1)
+        normalizer = targets.ne(-100).sum().clamp_min(1).to(torch.float64 if dtype == torch.float64 else torch.float32)
+        accumulation_dtype = torch.float64 if dtype == torch.float64 else torch.float32
+        dh = torch.empty_like(flat) if need_hidden else None
+        dw = torch.zeros(weight.shape, dtype=accumulation_dtype, device=weight.device) if need_weight else None
+        total = torch.zeros((), dtype=accumulation_dtype, device=hidden.device)
+        w, wt = _head_rocm_fp8_operands(weight)
+        with torch.autocast(device_type=hidden.device.type, enabled=False):
+            for start in range(0, targets.numel(), chunk_size):
+                inputs = flat[start:start + chunk_size]
+                labels = targets[start:start + chunk_size]
+                x_rows, x_cols = quantize_directions(inputs, transposed=need_weight)
+                logits = gemm(x_rows, w, backend="rocm_fp8_te", rhs_group_size=128)
+                loss, gradient = cross_entropy_inplace(logits, labels, need_hidden or need_weight, normalizer=normalizer)
+                total.add_(loss)
+                if need_hidden or need_weight:
+                    g_rows, g_cols = quantize_directions(gradient, rowwise=need_hidden, transposed=need_weight, eps=0.0)
+                    if need_hidden:
+                        dh[start:start + inputs.shape[0]] = gemm(g_rows, wt, backend="rocm_fp8_te", rhs_group_size=128)
+                    if need_weight:
+                        dw.add_(gemm(g_cols, x_cols, backend="rocm_fp8_te", rhs_group_size=1, out_dtype=accumulation_dtype))
+        ctx.save_for_backward(dh, dw, normalizer)
+        return total
+
+    @staticmethod
+    @torch.autograd.function.once_differentiable
+    def backward(ctx, grad_output):
+        dh, dw, normalizer = ctx.saved_tensors
+        # The triton CE pre-divides dlogits by the normalizer; compensate so
+        # this returns d(total)/d(.) * grad_output like the other head classes.
+        multiplier = grad_output * normalizer
+        return ((dh.to(multiplier.dtype) * multiplier).to(ctx.hidden_dtype).reshape(ctx.hidden_shape) if dh is not None else None,
+                (dw * multiplier).to(ctx.weight_dtype) if dw is not None else None, None, None, None, None)
+
+
 class StreamingLinearCrossEntropy(torch.autograd.Function):
     @staticmethod
     def forward(ctx, hidden, weight, targets, chunk_size, backend):
@@ -201,6 +269,12 @@ def streaming_cross_entropy_sum(hidden, weight, targets, chunk_size, *, backend=
         raise RuntimeError("Triton linear cross entropy requires CUDA")
     if not torch.is_grad_enabled():
         hidden, weight = hidden.detach(), weight.detach()
+    if backend in {"triton_fp8", "triton_fp8_quack"} and torch.version.hip is not None:
+        if weight.shape[0] % 128 or weight.shape[1] % 128:
+            # Reduced/unaligned geometries (e.g. the preflight's 257-token
+            # vocabulary) keep the BF16 head; production shapes are aligned.
+            return StreamingLinearCrossEntropy.apply(hidden, weight, targets, chunk_size, "triton")
+        return StreamingLinearCrossEntropyROCmFP8.apply(hidden, weight, targets, chunk_size, backend, wgrad_recipe)
     if backend == "triton_fp8":
         return StreamingLinearCrossEntropyFP8.apply(hidden, weight, targets, chunk_size, backend, wgrad_recipe)
     if backend == "triton_fp8_quack":

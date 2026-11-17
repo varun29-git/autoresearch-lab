@@ -27,6 +27,21 @@ from .model import BitNetLlama, BitNetLlamaConfig
 from .optim import OptimizerConfig, build_optimizer
 
 
+class _PhaseScope:
+    def __init__(self, sink, pair):
+        self.sink = sink
+        self.pair = pair
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        if self.sink is not None:
+            self.pair[1].record()
+            self.sink.append(self.pair)
+        return False
+
+
 @dataclass(frozen=True)
 class TrainConfig:
     device: str = "cuda"
@@ -54,14 +69,20 @@ class TrainConfig:
     compile: bool = False
     cuda_graphs: bool = False
     ddp_bucket_cap_mb: int = 25
+    # Whole matrices only. Newton–Schulz still sees each full matrix; ranks that
+    # do not own a matrix skip it and then receive the owner's weight and momentum.
+    shard_muon: bool = False
+    gemm_table: str | None = None
     time_limit_seconds: float | None = None
     async_checkpoint: bool = False
     checkpoint_timeout_seconds: float = 600.0
 
     def __post_init__(self):
-        for name in ("development_mode", "compile", "cuda_graphs", "async_checkpoint"):
+        for name in ("development_mode", "compile", "cuda_graphs", "async_checkpoint", "shard_muon"):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"{name} must be a boolean")
+        if self.gemm_table is not None and (not isinstance(self.gemm_table, str) or not self.gemm_table):
+            raise ValueError("gemm_table must be a path when set")
         if self.device not in {"cpu", "cuda"} or self.dtype not in {"fp32", "bf16"}:
             raise ValueError("trainer supports CPU FP32 and CUDA BF16/FP32, not FP16 latent updates")
         if self.device == "cpu" and self.dtype != "fp32":
@@ -339,7 +360,31 @@ class PreparedTraining:
         self.evaluation_progress = None
         self.monitor = None
         self.captured = None
+        self.muon_owners = None
         self.should_stop = [False]
+        self.skip_validation = False
+        self._phase_timing = os.environ.get("CI1_PHASE_TIMING") == "1"
+        self._phase_events = None
+
+    def _phase_mark(self, name):
+        if not self._phase_timing:
+            return _PhaseScope(None, None)
+        if self._phase_events is None:
+            self._phase_events = {}
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        scope = _PhaseScope(self._phase_events.setdefault(name, []), (start, end))
+        return scope
+
+    def _phase_report(self):
+        if not self._phase_timing or not self._phase_events:
+            return None
+        torch.cuda.synchronize(self.device)
+        totals = {name: sum(s.elapsed_time(e) for s, e in pairs) / 1e3
+                  for name, pairs in self._phase_events.items()}
+        self._phase_events = None
+        return totals
 
     def complete_update(self):
         training, state = self.training, self.state
@@ -377,36 +422,65 @@ class PreparedTraining:
         local_loss_sum = torch.zeros((), dtype=torch.float64, device=self.device)
         local_valid = torch.zeros((), dtype=torch.float64, device=self.device)
         data_wait = 0.0
-        for micro_index in range(micro_steps):
+        # static_graph records its hook set on the first backward, and that
+        # backward has to synchronize. The opening accumulation step would
+        # otherwise run it under no_sync and the reducer aborts. The recording
+        # pass is discarded; the same batch is the first real microbatch.
+        replay = None
+        if self.world_size > 1 and not getattr(self, "ddp_graph_ready", False) and not training.cuda_graphs:
             wait_started = time.monotonic()
-            batch = next(self.iterator)
+            replay = next(self.iterator)
+            data_wait += time.monotonic() - wait_started
+            batch_index, inputs, targets = replay[:3]
+            document_layout = replay[3] if len(replay) == 4 else None
+            if batch_index != state["next_micro_step"]:
+                raise RuntimeError("prefetch cursor drift")
+            with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype, enabled=self.amp_dtype != torch.float32):
+                output = self.forward_model(inputs, targets, return_logits=False, **(dict(document_layout=document_layout) if document_layout is not None else {}))
+                loss = output["loss_sum"] * (self.world_size / update_tokens)
+            loss.backward()
+            self.optimizer.zero_grad(set_to_none=not training.cuda_graphs)
+            self.model.clear_fp8_weight_cache()
+            self.ddp_graph_ready = True
+        for micro_index in range(micro_steps):
+            if replay is not None:
+                batch = replay
+                replay = None
+            else:
+                wait_started = time.monotonic()
+                batch = next(self.iterator)
+                data_wait += time.monotonic() - wait_started
             batch_index, inputs, targets = batch[:3]
             document_layout = batch[3] if len(batch) == 4 else None
-            data_wait += time.monotonic() - wait_started
             local_valid += targets.ne(-100).sum()
             if batch_index != state["next_micro_step"] + micro_index:
                 raise RuntimeError("prefetch cursor drift")
             if training.cuda_graphs and self.captured is None:
                 from .cuda_graph import CapturedMicrostep
 
-                self.captured = CapturedMicrostep(self.model, inputs, targets, amp_dtype=self.amp_dtype)
-            if self.captured is not None and self.captured.matches(inputs, targets):
-                local_loss_sum += self.captured.run(inputs, targets, self.world_size / update_tokens).detach().double()
+                self.captured = CapturedMicrostep(self.model, inputs, targets, amp_dtype=self.amp_dtype,
+                                                 document_layout=document_layout)
+            if self.captured is not None and self.captured.matches(inputs, targets, document_layout):
+                local_loss_sum += self.captured.run(inputs, targets, self.world_size / update_tokens,
+                                                   document_layout=document_layout).detach().double()
                 continue
             sync_context = self.forward_model.no_sync() if self.world_size > 1 and micro_index + 1 < micro_steps else contextlib.nullcontext()
             with sync_context:
-                with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype, enabled=self.amp_dtype != torch.float32):
-                    output = self.forward_model(inputs, targets, return_logits=False, **(dict(document_layout=document_layout) if document_layout is not None else {}))
-                    loss = output["loss_sum"] * (self.world_size / update_tokens)
+                with self._phase_mark("forward"):
+                    with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype, enabled=self.amp_dtype != torch.float32):
+                        output = self.forward_model(inputs, targets, return_logits=False, **(dict(document_layout=document_layout) if document_layout is not None else {}))
+                        loss = output["loss_sum"] * (self.world_size / update_tokens)
                 local_loss_sum += output["loss_sum"].detach().double()
-                loss.backward()
+                with self._phase_mark("backward"):
+                    loss.backward()
             if self.monitor is not None:
                 self.monitor.active = False
         elapsed = time.monotonic() - self.started
         stop = self.should_stop[0] or (training.time_limit_seconds is not None and elapsed >= training.time_limit_seconds)
         summary = torch.stack((local_loss_sum, local_loss_sum.new_tensor(float(stop)), local_valid))
         if self.world_size > 1:
-            distributed.all_reduce(summary)
+            with self._phase_mark("summary_reduce"):
+                distributed.all_reduce(summary)
         loss_sum, stop_requests, valid_targets = summary.tolist()
         if not math.isfinite(loss_sum):
             if self.rank == 0:
@@ -430,7 +504,8 @@ class PreparedTraining:
         if sampled:
             self.monitor.gradients_before_clip()
         try:
-            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), training.grad_clip or float("inf"), error_if_nonfinite=True, foreach=True)
+            with self._phase_mark("clip"):
+                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), training.grad_clip or float("inf"), error_if_nonfinite=True, foreach=True)
         except Exception as exc:
             if self.rank == 0:
                 append_record(self.output_dir / "incidents.jsonl", {"event": "gradient_failure", "state": state,
@@ -438,10 +513,21 @@ class PreparedTraining:
             raise
         if sampled:
             self.monitor.before_step()
-        self.optimizer.step()
+        with self._phase_mark("optimizer"):
+            self.optimizer.step()
+            if self.muon_owners is not None:
+                from production.amd.sharded_muon import broadcast_owned_muon
+
+                broadcast_owned_muon(self.optimizer, self.muon_owners, distributed)
         if sampled:
             self.monitor.after_step()
-        self.model.clear_fp8_weight_cache()
+        with self._phase_mark("cache_clear"):
+            self.model.clear_fp8_weight_cache()
+        if self._phase_timing and self.rank == 0:
+            report = self._phase_report()
+            if report is not None:
+                report["data_wait"] = data_wait
+                print("PHASE_TIMING " + json.dumps({"update": state["updates"] + 1, **report}), flush=True)
         # Carry sealed phase decisions through every update and checkpoint.
         # Rebuilding just the counters silently discarded ending_commitment.
         self.state = {**state, "next_micro_step": state["next_micro_step"] + micro_steps,
@@ -485,7 +571,7 @@ class PreparedTraining:
         if state["updates"] % training.checkpoint_interval == 0 or stopped or complete:
             collective_checkpoint(self.output_dir / "checkpoints", self.model, self.optimizer, state, self.contract, self.rank, self.world_size,
                                   writer=self.checkpoint_writer, wait=stopped or complete)
-        if state["updates"] % training.validation_interval == 0 or stopped or complete:
+        if (not self.skip_validation) and (state["updates"] % training.validation_interval == 0 or stopped or complete):
             results = evaluate(self.model, self.manifest, self.data_root, self.device, self.amp_dtype,
                                training.validation_batches_per_language, self.rank, self.world_size,
                                sequences_per_language=training.validation_sequences_per_language,
@@ -537,6 +623,8 @@ def prepare_training(config_path, manifest_path, data_root, output_dir, *, resum
         if training.dtype == "bf16" and not torch.cuda.is_bf16_supported():
             raise RuntimeError("BF16 is unsupported on the selected GPU")
     device = torch.device("cuda", local_rank) if training.device == "cuda" else torch.device("cpu")
+    if not training.development_mode and model_config.gradient_checkpointing:
+        raise ValueError("production retains activations; gradient checkpointing is off")
     if not training.development_mode and (device.type != "cuda" or training.dtype != "bf16" or model_config.attention_backend == "sdpa_reference"):
         raise ValueError("production requires BF16 autocast and an explicit CUDA attention backend")
     if research_timing_only and (world_size != 1 or device.type != "cuda"):
@@ -545,6 +633,10 @@ def prepare_training(config_path, manifest_path, data_root, output_dir, *, resum
         from .preflight import validate_preflight_report
 
         validate_preflight_report(preflight_report, model_config, device, cuda_graphs=training.cuda_graphs)
+        if training.gemm_table:
+            from production.amd.gemm_dispatch import install_table
+
+            install_table(json.loads(Path(training.gemm_table).read_text()))
     if world_size > 1:
         distributed.init_process_group("nccl" if device.type == "cuda" else "gloo", timeout=timedelta(minutes=5))
     workload = PreparedTraining()
@@ -620,7 +712,7 @@ def prepare_training(config_path, manifest_path, data_root, output_dir, *, resum
         if world_size > 1:
             forward_model = DistributedDataParallel(forward_model, device_ids=[local_rank] if device.type == "cuda" else None,
                                                     broadcast_buffers=False, gradient_as_bucket_view=True,
-                                                    bucket_cap_mb=training.ddp_bucket_cap_mb)
+                                                    static_graph=True, bucket_cap_mb=training.ddp_bucket_cap_mb)
         if payload is not None:
             if len(payload["rank_rng"]) != world_size:
                 raise ValueError("checkpoint rank RNG states do not match world size")
@@ -634,8 +726,8 @@ def prepare_training(config_path, manifest_path, data_root, output_dir, *, resum
         if manifest.is_packed:
             from .packed_data import PackedTokenBatcher
 
-            if training.cuda_graphs or training.compile:
-                raise ValueError("packed document metadata requires eager training; graph/compile qualification is separate")
+            if training.compile:
+                raise ValueError("packed document metadata requires eager training; compile qualification is separate")
             packed_batcher = PackedTokenBatcher(manifest, root=data_root, rank=rank, world_size=world_size,
                                                verified_files=manifest_report["packed_files"])
             tokens_before = packed_batcher.spec.get("tokens_before", 0)
@@ -693,6 +785,10 @@ def prepare_training(config_path, manifest_path, data_root, output_dir, *, resum
         workload.model = model
         workload.monitor = monitor
         workload.optimizer = optimizer
+        if training.shard_muon and world_size > 1:
+            from production.amd.sharded_muon import install_owned_muon, muon_parameter_owners
+
+            workload.muon_owners = install_owned_muon(optimizer, muon_parameter_owners(optimizer, world_size), rank)
         workload.state = state
         workload.amp_dtype = amp_dtype
         workload.forward_model = forward_model

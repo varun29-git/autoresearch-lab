@@ -38,14 +38,32 @@ def quantize_weight(weight, *, transposed=False, weight_mode="dense"):
     return primary, secondary
 
 
-def gemm(lhs, rhs, *, backend, rhs_group_size=128, out_dtype=torch.bfloat16, splits=1):
+def gemm(lhs, rhs, *, backend, rhs_group_size=128, out_dtype=torch.bfloat16, splits=1,
+         role="forward", weight_shape=None):
     from .fp8_kernels import check_operands, gemm as triton_gemm
+    from .gemm_dispatch import choose_backend, choose_splits
 
+    splits = choose_splits(splits, role, weight_shape)
+    backend = choose_backend(backend, role, weight_shape)
     check_operands(lhs, rhs, rhs_group_size, out_dtype)
     if backend == "rocm_fp8_te":
         from .te_gemm import gemm as te_gemm
 
         return te_gemm(lhs, rhs, rhs_group_size=rhs_group_size, out_dtype=out_dtype)
+    if backend == "rocm_fp8_bpreshuffle":
+        if rhs_group_size != 128:
+            raise ValueError("bpreshuffle blockscale covers 2D-scaled forward/dgrad GEMMs")
+        from aiter.ops.gemm_op_a8w8 import gemm_a8w8_blockscale_bpreshuffle_tune
+        from aiter.ops.shuffle import shuffle_weight
+
+        # Same operands as the tuned probe: activation scales keep their
+        # producer layout, weight scales are contiguous, and the weight codes
+        # are shuffled for the CK bpreshuffle kernel (kernelId 0 won every
+        # production shape at ~3e-6 RMS relative error against TE).
+        out = torch.empty(lhs[0].shape[0], rhs[0].shape[0], device=lhs[0].device, dtype=out_dtype)
+        gemm_a8w8_blockscale_bpreshuffle_tune(
+            lhs[0], shuffle_weight(rhs[0], layout=(16, 16)), lhs[1], rhs[1].contiguous(), out, kernelId=0)
+        return out
     if backend == "rocm_fp8" and rhs_group_size == 128:
         from aiter.ops.gemm_op_a8w8 import gemm_a8w8_blockscale
 
@@ -83,7 +101,7 @@ def linear(values, weight, *, weight_operands=None, backend="rocm_fp8", splits=1
     if not torch.is_grad_enabled() or not (values.requires_grad or weight.requires_grad):
         x = _rows(values, activation_rows) if activation_rows is not None else quantize_directions(values.reshape(-1, values.shape[-1]))[0]
         w, _ = weight_operands or quantize_weight(weight, weight_mode=weight_mode)
-        return gemm(x, w, backend=backend).reshape(*values.shape[:-1], weight.shape[0])
+        return gemm(x, w, backend=backend, role="forward", weight_shape=weight.shape).reshape(*values.shape[:-1], weight.shape[0])
     return DenseFP8.apply(values, weight, weight_operands, backend, splits, weight_mode, activation_rows)
 
 
@@ -99,7 +117,7 @@ class DenseFP8(torch.autograd.Function):
             xt = quantize_directions(flat, rowwise=False, transposed=True)[1] if need_w else None
         w, wt = weight_operands or quantize_weight(weight, transposed=need_x,
                                                    weight_mode=weight_mode)
-        output = gemm(x, w, backend=backend)
+        output = gemm(x, w, backend=backend, role="forward", weight_shape=weight.shape)
         ctx.save_for_backward(*(xt if need_w else (None, None)), *(wt if need_x else (None, None)))
         ctx.input_shape, ctx.weight_shape = values.shape, weight.shape
         ctx.backend, ctx.splits = backend, splits
@@ -112,7 +130,9 @@ class DenseFP8(torch.autograd.Function):
         need_x, need_w = ctx.needs_input_grad[:2]
         g, gt = quantize_directions(gradient.reshape(-1, ctx.weight_shape[0]),
                                    rowwise=need_x, transposed=need_w, eps=0.0)
-        dx = gemm(g, (wc, ws), backend=ctx.backend).reshape(ctx.input_shape) if need_x else None
+        dx = gemm(g, (wc, ws), backend=ctx.backend, role="dgrad",
+                  weight_shape=ctx.weight_shape).reshape(ctx.input_shape) if need_x else None
         dw = gemm(gt, (xc, xs), backend=ctx.backend, rhs_group_size=1,
-                  out_dtype=torch.float32, splits=ctx.splits) if need_w else None
+                  out_dtype=torch.float32, splits=ctx.splits, role="wgrad",
+                  weight_shape=ctx.weight_shape) if need_w else None
         return dx, dw, None, None, None, None, None

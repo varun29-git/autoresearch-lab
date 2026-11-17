@@ -17,14 +17,17 @@ SELECTED_QAT_OPTIMIZER = SELECTED_OPTIMIZER | {
 
 
 def model_for(candidate="fp8", *, attention="rocm_aiter", local_attention="",
-              wgrad_splits=None, loss_chunk_size=4096, weight_mode="dense", fused_fp8_producers=False):
+              wgrad_splits=None, loss_chunk_size=4096, weight_mode="dense", fused_fp8_producers=False,
+              loss_backend="triton"):
     if candidate not in CANDIDATES or attention not in {"rocm_aiter", "rocm_ck"} or local_attention not in {"", "rocm_aiter", "rocm_ck"}:
         raise ValueError("unknown AMD linear/attention candidate")
+    if loss_backend not in {"triton", "triton_fp8"} or (loss_backend == "triton_fp8" and candidate == "bf16"):
+        raise ValueError("unknown AMD loss backend candidate")
     if weight_mode not in {"dense", "ternary"} or (candidate == "bf16" and weight_mode == "ternary"):
         raise ValueError("AMD QAT requires an FP8 candidate and ternary weight mode")
     values = SELECTED_MODEL | {"attention_backend": attention, "local_attention_backend": local_attention,
                                "loss_chunk_size": loss_chunk_size, "weight_mode": weight_mode,
-                               "fused_fp8_producers": fused_fp8_producers}
+                               "fused_fp8_producers": fused_fp8_producers, "loss_backend": loss_backend}
     if candidate == "bf16":
         if wgrad_splits not in (None, 0):
             raise ValueError("BF16 candidate does not use the FP8 split-K setting")
@@ -53,8 +56,11 @@ def validate_production(model, training, optimizer):
     expected = model_for(candidate, attention=model.attention_backend,
                          local_attention=model.local_attention_backend,
                          wgrad_splits=model.fp8_wgrad_splits, loss_chunk_size=model.loss_chunk_size,
-                         weight_mode=model.weight_mode, fused_fp8_producers=model.fused_fp8_producers)
+                         weight_mode=model.weight_mode, fused_fp8_producers=model.fused_fp8_producers,
+                         loss_backend=model.loss_backend)
     selected_optimizer = SELECTED_QAT_OPTIMIZER if model.weight_mode == "ternary" else SELECTED_DENSE_OPTIMIZER
+    if model.gradient_checkpointing:
+        raise ValueError("activation recomputation is off; the forward activations stay saved")
     if model != expected or optimizer != OptimizerConfig(**selected_optimizer):
         raise ValueError("model/optimizer differs from the reviewed AMD migration candidate")
     if training.device != "cuda" or training.dtype != "bf16" or training.development_mode or training.compile or training.cuda_graphs:

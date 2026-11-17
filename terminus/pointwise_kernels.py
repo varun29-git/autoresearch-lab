@@ -84,6 +84,9 @@ def norm_backward(gradient, values, weight, inverse, *, programs_override=None):
     # partial per CTA; channel gain must also bound its programs x width
     # reduction workspace. Hopper sweeps favor different grids for the two.
     programs = min(rows, 4096 if gain == 1 else (512 if width <= 4096 else 256)) if gain else rows
+    if torch.version.hip is not None and gain == 2 and programs_override is None:
+        # gfx942 sweep: 2048 CTAs beat 512 on the serialized row loop.
+        programs = min(rows, 2048)
     if programs_override is not None:
         programs = min(rows, programs_override)
     dx = torch.empty_like(values)
