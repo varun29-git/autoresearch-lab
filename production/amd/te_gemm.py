@@ -7,6 +7,29 @@ import torch
 
 
 def gemm(lhs, rhs, *, rhs_group_size=128, out_dtype=torch.bfloat16):
+    # CDNA3 TE tiles N by 256. A 128-column tail selects a much slower
+    # partial-N specialization for every tile, including the full tiles.
+    # Preserve the quantized operands while avoiding that specialization.
+    m, n = lhs[0].shape[0], rhs[0].shape[0]
+    if n % 256 == 128:
+        if rhs_group_size == 1 and m % 256 == 0:
+            # 1Dx1D scaling is symmetric. Exchange operands and transpose the
+            # FP32 result; no operand requantization or reduction split occurs.
+            return _gemm(rhs, lhs, rhs_group_size=1, out_dtype=out_dtype).T.contiguous()
+        codes, scales = rhs
+        padded_codes = torch.zeros((n + 128, codes.shape[1]), device=codes.device,
+                                   dtype=torch.uint8)
+        padded_codes[:n].copy_(codes.view(torch.uint8))
+        padded_scales = torch.ones(((n + 128) // rhs_group_size, scales.shape[1]),
+                                   device=scales.device, dtype=scales.dtype)
+        padded_scales[:scales.shape[0]].copy_(scales)
+        padded_rhs = padded_codes.view(codes.dtype), padded_scales
+        return _gemm(lhs, padded_rhs, rhs_group_size=rhs_group_size,
+                     out_dtype=out_dtype)[:, :n].contiguous()
+    return _gemm(lhs, rhs, rhs_group_size=rhs_group_size, out_dtype=out_dtype)
+
+
+def _gemm(lhs, rhs, *, rhs_group_size=128, out_dtype=torch.bfloat16):
     from transformer_engine.pytorch.cpp_extensions.gemm import general_gemm
     from transformer_engine.pytorch.tensor.storage.float8_blockwise_tensor_storage import Float8BlockwiseQTensorStorage
     import transformer_engine_torch as tex
