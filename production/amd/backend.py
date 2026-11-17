@@ -50,7 +50,10 @@ def gemm(lhs, rhs, *, backend, rhs_group_size=128, out_dtype=torch.bfloat16, spl
         from aiter.ops.gemm_op_a8w8 import gemm_a8w8_blockscale
 
         # Logical shape [M, K/128], with column-major physical storage.
-        result = gemm_a8w8_blockscale(lhs[0], rhs[0], lhs[1],
+        # AITER's unshuffled paths require contiguous row-major 1x128 scales.
+        # Our producer keeps a column-major view for TE/local GEMMs, so give
+        # AITER a contiguous copy of those same FP32 scale values.
+        result = gemm_a8w8_blockscale(lhs[0], rhs[0], lhs[1].contiguous(),
                                     rhs[1], dtype=out_dtype)
         if result.shape != (lhs[0].shape[0], rhs[0].shape[0]) or result.dtype != out_dtype:
             raise RuntimeError("AITER blockscale returned an unexpected shape/dtype")

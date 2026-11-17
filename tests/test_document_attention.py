@@ -83,8 +83,10 @@ def test_native_varlen_adapter_uses_layout_window_gqa_and_backward(monkeypatch, 
     assert calls[0][2]["causal"] is True and calls[0][2]["dropout_p"] == 0.0
     if backend == "rocm_aiter":
         assert calls[0][2]["how_v3_bf16_cvt"] == 0
+        assert calls[0][2]["deterministic"] is True
     else:
         assert "how_v3_bf16_cvt" not in calls[0][2]
+        assert calls[0][2]["deterministic"] is False
     assert calls[0][2]["cu_seqlens_q"].tolist() == [0,2,5]
     assert not output[:,:,5].any() and not q.grad[:,:,5].any()
 

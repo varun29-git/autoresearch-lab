@@ -96,7 +96,7 @@ def quantize(values, *, group_rows=1, eps=0.0):
     m, k = values.shape
     codes = torch.empty((m, k), device=values.device, dtype=FP8)
     if group_rows == 1:
-        # This layout passes directly to AITER without a scale transpose copy.
+        # TE and the local GEMM consume this view; AITER materializes it row-major.
         scales = torch.empty((k // 128, m), device=values.device, dtype=torch.float32).T
     else:
         scales = torch.empty((m // 128, k // 128), device=values.device, dtype=torch.float32)
@@ -240,8 +240,10 @@ def _gemm(A, B, AS, BS, OUT, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
     acc = tl.full((BM, BN), 0., tl.float32)
     for block in range(part * BLOCKS_PER_SPLIT, tl.minimum((part + 1) * BLOCKS_PER_SPLIT, K // 128)):
         kk = block * 128 + ki
-        a = tl.load(A + mi[:, None] * K + kk[None, :], mi[:, None] < M, other=0)
-        b = tl.load(B + ni[None, :] * K + kk[:, None], ni[None, :] < N, other=0)
+        # The pinned ROCm Triton cannot cast an int32 `other` tensor to FNUZ.
+        # Use floating zero for masked FP8 lanes so partial edge tiles stay 0.
+        a = tl.load(A + mi[:, None] * K + kk[None, :], mi[:, None] < M, other=0.0)
+        b = tl.load(B + ni[None, :] * K + kk[:, None], ni[None, :] < N, other=0.0)
         sa = tl.load(AS + mi * AS0 + block * AS1, mi < M, other=0)
         sb = tl.load(BS + (ni // GROUP) * BS0 + block * BS1, ni < N, other=0)
         dot = tl.dot(a, b, out_dtype=tl.float32)

@@ -43,6 +43,10 @@ def attention(query, key, value, *, backend, local_window=None,
     operands = [x if x.stride(-1) == 1 else x.contiguous() for x in operands]
     kwargs = dict(causal=True, dropout_p=0.0, window_size=window, deterministic=False)
     if backend == "rocm_aiter":
+        # The pinned CK atomic backward can return NaNs for short causal local
+        # sequences even when Q/K/V and the upstream gradient are finite.
+        # Its deterministic backward passes the reduced full-model gradient gate.
+        kwargs["deterministic"] = True
         # AITER otherwise defaults to RTNA on gfx942. RTNE matches the BF16
         # rounding convention of the PyTorch/FA3 reference more closely.
         kwargs["how_v3_bf16_cvt"] = 0
