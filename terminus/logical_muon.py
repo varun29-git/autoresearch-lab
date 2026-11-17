@@ -29,6 +29,19 @@ class LogicalMuonWithAuxAdam(SingleDeviceMuonWithAuxAdam):
         if not isinstance(batched, bool):
             raise ValueError("batched must be a bool")
         self.batched = batched
+        self.active_muon_ids = None
+        self._slice_cache = None
+
+    def set_active_muon(self, parameter_ids):
+        """None steps every Muon matrix. A set steps only those parameter ids.
+
+        The restricted step uses the per-matrix Newton–Schulz path so a matrix
+        does not change because it shared a batched stack with matrices that
+        belong to another rank.
+        """
+        if parameter_ids is not None and isinstance(parameter_ids, (str, bytes)):
+            raise ValueError("active Muon ids must be parameter ids or None")
+        self.active_muon_ids = None if parameter_ids is None else frozenset(parameter_ids)
         self._slice_cache = None
 
     def load_state_dict(self, state_dict):
@@ -50,10 +63,10 @@ class LogicalMuonWithAuxAdam(SingleDeviceMuonWithAuxAdam):
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
-        if self.batched:
-            self._step_batched()
-        else:
+        if self.active_muon_ids is not None or not self.batched:
             self._step_reference()
+        else:
+            self._step_batched()
         return loss
 
     def _collect_muon_slices(self):
@@ -171,6 +184,8 @@ class LogicalMuonWithAuxAdam(SingleDeviceMuonWithAuxAdam):
         for group in self.param_groups:
             if group["use_muon"]:
                 for parameter in group["params"]:
+                    if self.active_muon_ids is not None and id(parameter) not in self.active_muon_ids:
+                        continue
                     if parameter.grad is None:
                         parameter.grad = torch.zeros_like(parameter)
                     state = self.state[parameter]

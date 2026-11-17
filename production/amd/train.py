@@ -31,11 +31,15 @@ def main():
     p.add_argument("--stop-after-updates", type=int)
     p.add_argument("--benchmark-updates", type=int, default=0)
     p.add_argument("--warmup-updates", type=int, default=5)
+    p.add_argument("--skip-validation", action="store_true",
+                   help="Bounded check only: checkpoint, but do not run held-out or choice evaluation")
     args = p.parse_args()
     if args.benchmark_updates < 0 or args.warmup_updates < 0 or (args.stop_after_updates is not None and args.stop_after_updates <= 0):
         p.error("invalid update counts")
     if args.benchmark_updates and args.stop_after_updates:
         p.error("benchmark uses its own update bound")
+    if args.skip_validation and not (args.benchmark_updates or args.stop_after_updates):
+        p.error("skip-validation is only valid for a bounded allocation or speed check")
     for key in ("config", "manifest", "data_root", "output_dir", "runtime_report", "preflight_report", "staging_receipt"):
         setattr(args, key, external_path(getattr(args, key)))
     operations_config = None
@@ -67,6 +71,7 @@ def main():
     with prepare_training(args.config, args.manifest, args.data_root, args.output_dir,
                           resume=args.resume, preflight_report=args.preflight_report,
                           staging_receipt=args.staging_receipt) as workload:
+        workload.skip_validation = args.skip_validation
         if args.benchmark_updates:
             validate_window(total_tokens=workload.total_tokens, tokens_seen=workload.state["tokens_seen"],
                             batch_tokens=batch, warmup_updates=args.warmup_updates,
