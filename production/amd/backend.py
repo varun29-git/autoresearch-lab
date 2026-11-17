@@ -105,9 +105,43 @@ def linear(values, weight, *, weight_operands=None, backend="rocm_fp8", splits=1
     return DenseFP8.apply(values, weight, weight_operands, backend, splits, weight_mode, activation_rows)
 
 
+_DEFER_STATE = None
+
+
+def begin_defer(stream):
+    """Single-GPU only: run wgrad GEMMs on a side stream during backward."""
+    global _DEFER_STATE
+    if _DEFER_STATE is not None:
+        raise RuntimeError("nested deferred wgrad")
+    _DEFER_STATE = {"stream": stream, "pending": []}
+
+
+def resolve_deferred():
+    if _DEFER_STATE is None:
+        return
+    main = torch.cuda.current_stream()
+    main.wait_stream(_DEFER_STATE["stream"])
+    for weight, dw in _DEFER_STATE["pending"]:
+        dw.record_stream(main)
+        if weight.grad is None:
+            weight.grad = dw
+        else:
+            weight.grad += dw
+    _DEFER_STATE["pending"].clear()
+    _DEFER_STATE["bytes"] = 0
+
+
+def end_defer():
+    global _DEFER_STATE
+    if _DEFER_STATE is not None and _DEFER_STATE["pending"]:
+        raise RuntimeError("unresolved deferred wgrad")
+    _DEFER_STATE = None
+
+
 class DenseFP8(torch.autograd.Function):
     @staticmethod
     def forward(ctx, values, weight, weight_operands, backend, splits, weight_mode, activation_rows):
+        ctx.weight_parameter = weight
         flat = values.reshape(-1, values.shape[-1])
         need_x, need_w = ctx.needs_input_grad[:2]
         if activation_rows is None:
@@ -130,9 +164,27 @@ class DenseFP8(torch.autograd.Function):
         need_x, need_w = ctx.needs_input_grad[:2]
         g, gt = quantize_directions(gradient.reshape(-1, ctx.weight_shape[0]),
                                    rowwise=need_x, transposed=need_w, eps=0.0)
+        if need_w and _DEFER_STATE is not None:
+            stream = _DEFER_STATE["stream"]
+            stream.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(stream):
+                for tensor in (*gt, xc, xs):
+                    tensor.record_stream(stream)
+                dw = gemm(gt, (xc, xs), backend=ctx.backend, rhs_group_size=1,
+                          out_dtype=torch.float32, splits=ctx.splits, role="wgrad",
+                          weight_shape=ctx.weight_shape)
+            _DEFER_STATE["pending"].append((ctx.weight_parameter, dw))
+            _DEFER_STATE["bytes"] = _DEFER_STATE.get("bytes", 0) + dw.numel() * dw.element_size()
+            if _DEFER_STATE["bytes"] > 2_000_000_000:
+                # Bound side-stream residency; flush into grads and continue.
+                resolve_deferred()
+            dw = None
+        elif need_w:
+            dw = gemm(gt, (xc, xs), backend=ctx.backend, rhs_group_size=1,
+                      out_dtype=torch.float32, splits=ctx.splits, role="wgrad",
+                      weight_shape=ctx.weight_shape)
+        else:
+            dw = None
         dx = gemm(g, (wc, ws), backend=ctx.backend, role="dgrad",
                   weight_shape=ctx.weight_shape).reshape(ctx.input_shape) if need_x else None
-        dw = gemm(gt, (xc, xs), backend=ctx.backend, rhs_group_size=1,
-                  out_dtype=torch.float32, splits=ctx.splits, role="wgrad",
-                  weight_shape=ctx.weight_shape) if need_w else None
         return dx, dw, None, None, None, None, None

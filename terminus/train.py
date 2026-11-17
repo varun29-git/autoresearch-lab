@@ -442,6 +442,11 @@ class PreparedTraining:
             self.optimizer.zero_grad(set_to_none=not training.cuda_graphs)
             self.model.clear_fp8_weight_cache()
             self.ddp_graph_ready = True
+        defer_backend = None
+        if self.world_size == 1 and os.environ.get("CI1_DEFER_WGRAD") == "1":
+            from production.amd import backend as defer_backend
+
+            defer_backend.begin_defer(torch.cuda.Stream())
         for micro_index in range(micro_steps):
             if replay is not None:
                 batch = replay
@@ -473,8 +478,12 @@ class PreparedTraining:
                 local_loss_sum += output["loss_sum"].detach().double()
                 with self._phase_mark("backward"):
                     loss.backward()
+                if defer_backend is not None:
+                    defer_backend.resolve_deferred()
             if self.monitor is not None:
                 self.monitor.active = False
+        if defer_backend is not None:
+            defer_backend.end_defer()
         elapsed = time.monotonic() - self.started
         stop = self.should_stop[0] or (training.time_limit_seconds is not None and elapsed >= training.time_limit_seconds)
         summary = torch.stack((local_loss_sum, local_loss_sum.new_tensor(float(stop)), local_valid))
