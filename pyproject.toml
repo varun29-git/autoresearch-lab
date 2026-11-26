@@ -14,3 +14,4 @@ include = ["terminus*", "hpo*"]
 
 [project.optional-dependencies]
 muon = ["muon-optimizer @ git+https://github.com/KellerJordan/Muon.git@f98f1cacc0263b04290753e32be8d498c1efc806"]
+dev = ["pytest>=8,<10"]

@@ -41,7 +41,7 @@ The broader `production/ci-1` integration is **experimental and excluded from th
 ## Verify on CPU
 
 ```bash
-python -m pip install -e '.[muon]'
+python -m pip install -e '.[muon,dev]'
 python -m compileall -q terminus tests
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m unittest discover -s tests -t . -v
 python -m terminus.preflight --config configs/1.5b_candidate.json --count-only

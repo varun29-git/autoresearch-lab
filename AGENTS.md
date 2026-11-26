@@ -1,6 +1,6 @@
 # Working rules for the public research release
 
-This is the public Terminus Stack 4 research-release tree. Start with `README.md`, `docs/RESULTS.md`, and `docs/REPRODUCIBILITY.md`. The architecture, dense-speed, and 200M HPO campaigns are complete historical records; their `program.md` files do not authorize new work. The broader `production/ci-1` handoff is experimental and is not part of this release.
+This is the public AutoResearch Lab release tree. Terminus Stack 4 is its reference research workload. Start with `README.md`, `docs/RESULTS.md`, and `docs/REPRODUCIBILITY.md`. The architecture, dense-speed, and 200M HPO campaigns are complete historical records; their `program.md` files do not authorize new work. The broader `production/ci-1` handoff is experimental and is not part of this release.
 
 ## Development and verification
 
