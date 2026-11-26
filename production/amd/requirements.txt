@@ -1,0 +1,15 @@
+# Preserve ROCm torch/Triton from the digest-pinned image. Never install CUDA wheels.
+numpy==2.2.6
+orjson==3.11.4
+sentencepiece==0.2.1
+protobuf==6.32.0
+regex==2026.7.19
+unicodedata2==16.0.0; python_version < '3.14'
+pyarrow==20.0.0
+boto3==1.40.0
+packaging==25.0
+setuptools==80.9.0
+setuptools-scm==8.3.1
+wheel==0.45.1
+pydantic==2.12.3
+importlib-metadata==8.7.0

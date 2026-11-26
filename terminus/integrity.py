@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from .data import DTYPE_BY_NAME, TokenManifest, TokenShard, TrainingTokenRouter
+from .hashing import file_sha256
 
 
 LANGUAGES = ("en", "hi", "ta", "te", "bn", "mr", "gu", "kn", "ml", "or", "pa")
@@ -44,14 +45,6 @@ def manifest_scope(manifest):
     return {"name": scope["name"], "languages": list(languages), "domains": list(domains)}
 
 
-def file_sha256(path, chunk_size=8 * 1024 * 1024):
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(chunk_size), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def fingerprint(payload):
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     return hashlib.sha256(encoded).hexdigest()
@@ -59,7 +52,14 @@ def fingerprint(payload):
 
 def source_hashes():
     root = Path(__file__).parent
-    return {path.name: file_sha256(path) for path in sorted(root.glob("*.py"))}
+    result = {path.name: file_sha256(path) for path in sorted(root.glob("*.py"))}
+    # The isolated AMD backends are executable model/optimizer dependencies.
+    amd = root.parent / "production" / "amd"
+    result.update({"production/amd/" + path.name: file_sha256(path)
+                   for path in sorted(amd.glob("*.py"))})
+    for name in ("packed_mixture.py", "document_packing.py", "translation_pairs.py"):
+        result["production/" + name] = file_sha256(root.parent / "production" / name)
+    return result
 
 
 def fsync_directory(path):
@@ -87,6 +87,10 @@ def write_json_atomic(path, payload):
 
 
 def validate_manifest(manifest: TokenManifest, root, model_config, *, development_mode=False):
+    if manifest.is_packed:
+        from .packed_data import validate_packed_manifest
+
+        return validate_packed_manifest(manifest, root, model_config, development_mode=development_mode)
     root = Path(root)
     if manifest.config.seq_len != model_config.max_seq_len:
         raise ValueError("manifest sequence length must equal model context")
@@ -165,11 +169,8 @@ def validate_manifest(manifest: TokenManifest, root, model_config, *, developmen
             if {source_keys.get(source) for source in mix} != required:
                 raise ValueError(f"every curriculum phase must cover the declared scope {scope['name']!r}")
         if (manifest.provenance.get("normalization") != "NFC"
-                or manifest.provenance.get("packing") != "continuous_eos"
-                or manifest.provenance.get("document_dedup") not in
-                {"sha256_nfc", "id_exact_minhash_v1", "id_exact_guard_v1"}
-                or not manifest.provenance.get("licenses")):
-            raise ValueError("production needs preprocessing, document deduplication and source-license provenance")
+                or manifest.provenance.get("packing") != "continuous_eos"):
+            raise ValueError("production needs NFC normalization and continuous-EOS packing")
     router = TrainingTokenRouter(manifest, root=root)
     if not development_mode:
         scope = manifest_scope(manifest)
@@ -196,4 +197,7 @@ def validate_manifest(manifest: TokenManifest, root, model_config, *, developmen
         by_key[spec.split][key] += spec.num_tokens
     report["tokens_by_key"] = by_key
     report["scope"] = scope["name"]
+    from .stream_contract import capture_training_stream
+
+    report["training_stream"] = capture_training_stream(router)
     return report

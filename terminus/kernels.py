@@ -61,7 +61,24 @@ def sdpa_reference_attention(query, key, value, *, local_window=None, dropout_p=
 
 
 def attention(query, key, value, *, backend, local_window=None, query_position_offset=0,
-              attention_mask=None, dropout_p=0.0):
+              attention_mask=None, dropout_p=0.0, document_layout=None):
+    if document_layout is not None:
+        if query_position_offset or attention_mask is not None or dropout_p or query.shape[2] != key.shape[2]:
+            raise ValueError("document attention requires self-attention, zero dropout and its own layout")
+        document_layout.validate_for((query.shape[0], query.shape[2]), query.device)
+        if backend == "sdpa_reference":
+            from .document_attention import reference_attention
+
+            return reference_attention(query, key, value, document_layout, local_window=local_window)
+        if backend not in {"rocm_aiter", "rocm_ck"}:
+            raise KernelBackendError("packed documents require ROCm variable-length or explicit reference attention")
+    if backend in {"rocm_aiter", "rocm_ck"}:
+        from production.amd.attention import attention as rocm_attention
+
+        return rocm_attention(query, key, value, backend=backend, local_window=local_window,
+                              query_position_offset=query_position_offset,
+                              attention_mask=attention_mask, dropout_p=dropout_p,
+                              document_layout=document_layout)
     if backend == "sdpa_reference":
         return sdpa_reference_attention(query, key, value, local_window=local_window,
                                          query_position_offset=query_position_offset,

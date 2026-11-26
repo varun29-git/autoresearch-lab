@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import contextlib
+import copy
+import fcntl
 import json
 import os
 import random
@@ -51,33 +54,76 @@ def validate_finite_state(payload):
         raise FloatingPointError("refusing to commit nonfinite model or optimizer state")
 
 
-def save_checkpoint(directory, model, optimizer, state, contract, rank_rng):
+@contextlib.contextmanager
+def checkpoint_lock(directory, *, exclusive=False):
+    """Coordinate committed payload readers, writers and active retention."""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
+    with (directory / ".checkpoint.lock").open("a") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        yield
+
+
+def checkpoint_payload(model, optimizer, state, contract, rank_rng):
+    return {"schema_version": SCHEMA_VERSION, "contract": contract, "state": state,
+            "model": model.state_dict(), "optimizer": optimizer.state_dict(), "rank_rng": rank_rng}
+
+
+def freeze_payload(value):
+    """Synchronous CPU copy: no background access to live accelerator state."""
+    if isinstance(value, torch.Tensor):
+        return value.detach().to(device="cpu", copy=True)
+    if isinstance(value, dict):
+        return {k: freeze_payload(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [freeze_payload(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(freeze_payload(v) for v in value)
+    return copy.deepcopy(value)
+
+
+def commit_checkpoint_payload(directory, payload):
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    state, contract = payload["state"], payload["contract"]
     path = directory / f"step_{state['updates']:08d}.pt"
     if path.exists() or path.with_suffix(".json").exists():
         raise FileExistsError(f"refusing to overwrite checkpoint {path}")
     temporary = directory / f".{uuid.uuid4().hex}.tmp"
-    payload = {"schema_version": SCHEMA_VERSION, "contract": contract, "state": state,
-               "model": model.state_dict(), "optimizer": optimizer.state_dict(), "rank_rng": rank_rng}
     validate_finite_state((payload["model"], payload["optimizer"]))
     try:
         with temporary.open("xb") as handle:
             torch.save(payload, handle)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        fsync_directory(directory)
+        receipt = {"schema_version": SCHEMA_VERSION, "file": path.name, "sha256": file_sha256(temporary),
+                   "size_bytes": temporary.stat().st_size, "contract_sha256": fingerprint(contract), "state": state}
+        with checkpoint_lock(directory, exclusive=True):
+            if path.exists() or path.with_suffix(".json").exists():
+                raise FileExistsError(f"refusing to overwrite checkpoint {path}")
+            latest = directory / "latest.json"
+            if latest.exists() and json.loads(latest.read_text())["state"]["updates"] >= state["updates"]:
+                raise ValueError("checkpoint commit cannot move latest backwards")
+            os.replace(temporary, path)
+            fsync_directory(directory)
+            write_json_atomic(path.with_suffix(".json"), receipt)
+            write_json_atomic(latest, receipt)
     finally:
         temporary.unlink(missing_ok=True)
-    receipt = {"schema_version": SCHEMA_VERSION, "file": path.name, "sha256": file_sha256(path),
-               "size_bytes": path.stat().st_size, "contract_sha256": fingerprint(contract), "state": state}
-    write_json_atomic(path.with_suffix(".json"), receipt)
-    write_json_atomic(directory / "latest.json", receipt)
     return path
 
 
+def save_checkpoint(directory, model, optimizer, state, contract, rank_rng):
+    return commit_checkpoint_payload(directory, checkpoint_payload(model, optimizer, state, contract, rank_rng))
+
+
 def load_checkpoint(path, expected_contract):
+    path = Path(path)
+    with checkpoint_lock(path if path.is_dir() else path.parent):
+        return _load_checkpoint(path, expected_contract)
+
+
+def _load_checkpoint(path, expected_contract):
     path = Path(path)
     if path.is_dir():
         receipt = json.loads((path / "latest.json").read_text())
@@ -91,7 +137,7 @@ def load_checkpoint(path, expected_contract):
         raise ValueError("checkpoint integrity verification failed")
     if receipt["contract_sha256"] != fingerprint(expected_contract):
         raise ValueError("resume contract changed; use a deliberate fresh run instead")
-    payload = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
+    payload = torch.load(os.fspath(path), map_location="cpu", weights_only=True, mmap=True)
     if payload.get("schema_version") != SCHEMA_VERSION or payload.get("contract") != expected_contract:
         raise ValueError("checkpoint schema or resume contract mismatch")
     if payload["state"] != receipt["state"]:

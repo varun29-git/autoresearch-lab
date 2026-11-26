@@ -1,0 +1,12 @@
+{
+  "started": "2026-11-12",
+  "processor": "ultra2x",
+  "recipe": {
+    "run_id": "trun_b2ed6650f0164e45864e0ca360e72cb0",
+    "result_url": "https://platform.parallel.ai/play/deep-research/trun_b2ed6650f0164e45864e0ca360e72cb0"
+  },
+  "systems": {
+    "run_id": "trun_b2ed6650f0164e45977bfd69facdd25c",
+    "result_url": "https://platform.parallel.ai/play/deep-research/trun_b2ed6650f0164e45977bfd69facdd25c"
+  }
+}

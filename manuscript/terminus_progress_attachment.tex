@@ -1,0 +1,346 @@
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=0.82in]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb}
+\usepackage{array,booktabs,tabularx}
+\usepackage{float}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\definecolor{navy}{HTML}{17324D}
+\definecolor{blue}{HTML}{24588D}
+\definecolor{teal}{HTML}{16716A}
+\definecolor{soft}{HTML}{F1F6F9}
+\definecolor{line}{HTML}{D5E1E8}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue,
+  pdftitle={Terminus: Selected Architecture and Research Progress for Offline Indic AI},
+  pdfauthor={Compact Intelligence}
+}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.45em}
+\renewcommand{\arraystretch}{1.16}
+\newcommand{\flowbox}[2]{\fcolorbox{line}{soft}{\parbox[c][1.28cm][c]{#1}{\centering\small\color{navy}#2}}}
+
+\begin{document}
+\begin{center}
+{\LARGE\bfseries\color{navy} Terminus: Selected Architecture and Research Progress\\[0.14em]
+for Offline Indic AI}\par
+\vspace{0.4em}
+{\large Compact Intelligence}\par
+\vspace{0.15em}
+{\color{blue} Project progress attachment \quad | \quad October 2026}
+\end{center}
+\vspace{0.2em}
+{\color{teal}\rule{\linewidth}{1.1pt}}
+
+\begin{abstract}
+Terminus is a selected, implemented decoder-only transformer architecture
+for a compact language model intended for offline Indic-language assistance.
+It has about one and a half billion trainable parameters and combines a
+four-local-to-one-global attention cadence, grouped-query attention,
+Peri-LN normalization, and a learned cross-layer value residual. The training
+design starts with dense weights and FP8 matrix computation, then adapts
+eligible projection weights through ternary quantization-aware training.
+The program targets \textbf{one trillion valid training-token presentations}
+across both stages. Its initial Indic-language set is Hindi, Bengali, Tamil,
+Telugu, Kannada, Marathi, and Gujarati. This attachment specifies the
+architecture first, then records research progress, intended applications,
+and the measurements required before release claims.
+\end{abstract}
+
+\section{Project definition: selected model architecture}
+
+\subsection{Geometry and end-to-end information path}
+
+Terminus is a causal, decoder-only transformer with twenty-five residual
+blocks. Each block contains grouped-query self-attention followed by a
+SwiGLU feed-forward network. The frozen tokenizer maps text to a vocabulary
+of 65,536 pieces. The input embedding and output classifier share one
+weight table; a final RMSNorm precedes next-token prediction. The starting
+training context is 4,096 tokens.
+
+\begin{table}[H]
+\centering\small
+\caption{Selected architecture and dense-stage implementation.}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries\raggedright\arraybackslash}p{0.38\linewidth}X@{}}
+\toprule
+Component & Selected specification \\
+\midrule
+Model geometry & 25 decoder blocks; hidden width 2,304; SwiGLU width 5,760 \\
+Attention geometry & 18 query heads; six key/value heads; head dimension 128; uniform 3:1 query-to-KV ratio \\
+Attention range & 20 causal sliding-window layers at 1,024 tokens; five full-context layers at 4,096 tokens \\
+Token interface & Frozen 65,536-piece vocabulary; tied embedding and classifier \\
+Normalization & Input RMSNorm before attention and FFN; output-side Peri-LN; learned-gain Q/K RMSNorm \\
+Cross-layer path & Learned mixture of first-layer and current-layer values in later attention blocks \\
+Dense compute & FP32 projection masters; block-scaled FP8 E4M3 linear operands; BF16 residual stream \\
+Kernels and loss & FlashAttention-3; DeepGEMM; packed QKV and MLP projections; streaming cross-entropy \\
+Trainable size & About one and a half billion parameters; exact selected count: 1,500,456,496 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Of the exact count, 1,349,222,400 parameters are projection weights eligible
+for the later ternary path; 150,994,944 belong to the tied
+embedding/readout, and 239,152 are other learned parameters. The tied
+table remains outside the selected ternary projection set. These counts
+separate the compactable part of the model from the weights that currently
+retain higher precision.
+
+\begin{center}
+\flowbox{0.17\linewidth}{\textbf{Token IDs}\\tied embedding}
+\hspace{0.35em}$\longrightarrow$\hspace{0.35em}
+\flowbox{0.38\linewidth}{\textbf{Twenty-five transformer blocks}\\
+four local + one global, repeated five times\\
+Peri-LN + learned value residual}
+\hspace{0.35em}$\longrightarrow$\hspace{0.35em}
+\flowbox{0.17\linewidth}{\textbf{Next token}\\final norm + tied head}
+\end{center}
+\vspace{-0.3em}
+\begin{center}\small\color{blue}Figure 1. Implemented model path; application-level retrieval and user interface sit outside the model.\end{center}
+
+\subsection{Grouped-query attention and receptive field}
+
+Every layer uses 18 query heads and six key/value heads, so each KV head
+serves three query heads. Each head has dimension 128. Query and key
+vectors receive learned-gain RMS normalization and rotary position encoding
+before attention. The attention operation is
+\[
+  \operatorname{Attn}_{\ell}(Q,K,V)
+  =\operatorname{softmax}\!\left(
+     \frac{QK^{\mathsf T}}{\sqrt{128}}+M_{\ell}
+   \right)V ,
+\]
+where the causal mask $M_{\ell}$ either admits the full starting context or
+restricts each position to the latest 1,024 tokens. Blocks five, ten,
+fifteen, twenty, and twenty-five use full-context attention; all other
+blocks use the local mask. The same head geometry applies to both kinds of
+block.
+
+This cadence gives local layers a bounded KV-cache window while each fifth
+layer can connect distant parts of a passage. Cached inference therefore
+allocates a 1,024-token capacity to each local layer and a 4,096-token
+capacity to each global layer at the specified context length. Grouped-query
+attention reduces KV storage compared with using a separate KV head for
+every query head. Extending context beyond 4,096 tokens would require a
+separate model and evaluation decision.
+
+\subsection{Peri-LN residual block and SwiGLU feed-forward path}
+
+Let $R_{\gamma}(z)=\gamma\odot z/
+\sqrt{\operatorname{mean}(z^2)+\epsilon}$ be RMS normalization with a learned
+gain. For block $\ell$, $x_\ell$ is the incoming residual stream, and the
+selected computation is
+\begin{align}
+  u_\ell &= R_{\gamma^{\mathrm{a,in}}_\ell}(x_\ell),\\
+  a_\ell &= x_\ell+
+    R_{\gamma^{\mathrm{a,out}}_\ell}
+    \!\left(W^O_\ell\,\operatorname{Attn}_{\ell}(u_\ell)\right),\\
+  h_\ell &= R_{\gamma^{\mathrm{f,in}}_\ell}(a_\ell),\\
+  x_{\ell+1} &= a_\ell+
+    R_{\gamma^{\mathrm{f,out}}_\ell}
+    \!\left(W^D_\ell[
+      \operatorname{SiLU}(W^G_\ell h_\ell)\odot W^U_\ell h_\ell
+    ]\right).
+\end{align}
+The two output-side RMSNorm operations sit immediately before residual
+addition and have gains distinct from the input normalizers. This is the
+Peri-LN component. The FFN uses the gated SwiGLU product shown above,
+with intermediate width 5,760. The selected path does not use the older
+SubLN branch. Output projection weights use a reduced residual-branch
+initialization scale; this is an initialization setting, not an inference
+multiplier.
+
+\subsection{Learned cross-layer value residual}
+
+The first attention block's value representation is reused in later blocks.
+If $v_0$ is the value vector from the first block and $v_\ell$ is the
+current block's value vector, then for later blocks
+\[
+  \widetilde v_\ell
+  =\lambda_{\ell,0}v_0+\lambda_{\ell,1}v_\ell,
+  \qquad \ell\geq 1.
+\]
+The two coefficients are independent learned scalars, each initialized to
+one half; they are not constrained to sum to one. Mixing occurs before
+attention masking and aggregation. Training preserves a gradient path to
+the first block's value projection. In cached inference, the corresponding
+first-block values for new positions must remain available alongside the
+ordinary per-layer KV caches. This path changes information flow without
+changing the local/global schedule.
+
+\section{Training architecture and compression path}
+
+\subsection{Dense FP8 starting stage}
+
+The selected first stage retains FP32 master projection weights. DeepGEMM
+uses block-scaled FP8 E4M3 weight operands and FP8 activations for projection
+matrix operations, with a full FP8 projection backward path. The residual
+stream is BF16. FlashAttention-3 handles attention where supported; packed
+QKV and gate/up matrices, fused pointwise operations, and streaming
+cross-entropy reduce kernel and memory overhead. The tied output head is
+not treated as a ternary projection matrix. The objective is next-token
+cross-entropy on tokenized text.
+
+FP8 here describes the arithmetic used for dense projections. It does not
+mean the model's trainable master weights or optimizer state are stored
+only in FP8. The selected production recipe freezes these model and
+optimizer semantics before a run-dependent batch, data manifest, and
+schedule are generated.
+
+\subsection{Ternary quantization-aware continuation}
+
+The implemented continuation path converts eligible projection weights,
+while keeping trainable master weights. For each 128-by-128 weight tile
+$B$, the scale and forward weight are
+\[
+  s_B=\max\!\left(\frac{1}{|B|}\sum_{i,j\in B}|W_{ij}|,10^{-6}\right),
+  \qquad
+  Q_B(W)=s_B\,\operatorname{clip}
+     \!\left(\operatorname{round}(W_B/s_B),-1,1\right).
+\]
+The resulting weight codes are minus one, zero, and plus one, multiplied
+by their tile scale. One scale covers 16,384 weights. FP8 activations
+remain in the linear compute path, and a straight-through weight-gradient
+rule updates the FP32 masters. The scale is recomputed from weights, not
+trained as an independent parameter. The tied vocabulary table,
+normalization gains, and value-mixture coefficients are outside the
+ternary projection set.
+
+The dense checkpoint, its immediate ternary conversion, and its trained
+ternary continuation must be compared on the same held-out material.
+The QAT learning rates, phase duration, data mixture, and optimizer-state
+policy require their own reviewed run configuration; dense-stage settings
+are not automatically QAT settings. A compact projection representation
+also does not establish loaded device RAM: the tied table, scales,
+activations, KV cache, and runtime workspace still contribute.
+
+\subsection{Optimizer and distributed execution}
+
+The selected dense optimizer applies spectral Muon to each \emph{logical}
+hidden matrix, even when QKV or gate/up projections share a physical packed
+parameter. If $W$ has shape $(d_{\rm out},d_{\rm in})$ and $U_t$ is the
+Newton--Schulz direction from its momentum-adjusted gradient, the update is
+\[
+  W_{t+1}=(1-\eta_t\lambda)W_t
+    -\eta_t\sqrt{d_{\rm out}/d_{\rm in}}\,U_t .
+\]
+The aspect-ratio factor applies to each individual Q, K, V, gate, up,
+output, and down matrix; weight decay uses the base learning rate.
+AdamW handles the tied table and smaller learned gain and scalar groups.
+
+\begin{table}[H]
+\centering\small
+\caption{Selected dense-stage optimizer starting settings.}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries\raggedright\arraybackslash}p{0.70\linewidth}X@{}}
+\toprule
+Setting & Value \\
+\midrule
+Spectral Muon base learning rate & 0.017 \\
+Tied embedding/readout AdamW learning rate & 0.003 \\
+Ordinary normalization, Peri-LN, final norm, value-mix AdamW rate & 0.0003 \\
+Learned Q/K norm AdamW rate & 0.0001 \\
+Hidden-matrix weight decay; tied-table decay & 0.02; zero \\
+Gradient clip; schedule & 1.0; warmup--stable--decay with cosine decay \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Replicated data parallelism is the initial multi-GPU strategy: every
+rank retains the complete model and optimizer state, accumulates local
+microsteps, and reduces FP32 gradients before clipping and updating.
+Global batch and token horizons are bound to an external production
+manifest. Full-cluster speed, stability, and the dense/QAT cost split
+remain measurements to make on the intended hardware, not properties
+established by the architecture.
+
+\section{Research progress and training scope}
+
+The project has moved from comparing sequence-model alternatives to a
+selected transformer definition and optimized training implementation.
+Smaller dense and ternary proxy runs informed the conversion risk;
+smaller-width experiments informed optimizer starting settings. The
+selected architecture, tokenizer integration, FP8 kernels, distributed
+trainer, checkpointing, and a separate QAT path are implemented. Short
+complete-update measurements exist on one H100-class GPU; sustained
+full-cluster throughput has not been measured.
+
+An earlier proxy trained on about ten billion dense tokens and continued
+for about two billion ternary-training tokens. Its immediate conversion
+raised held-out prediction loss; continuation recovered much of the loss,
+but its final measured result remained below its dense parent on the
+tracked held-out mixture. Because the training mixture also changed
+between stages, this observation motivates controlled transfer tests
+without predicting final quality for the selected larger model.
+
+The program target is \textbf{one trillion valid training-token
+presentations across dense learning and ternary adaptation}. A
+presentation counts one use of a text token by the trainer. Padding and
+held-out evaluation tokens do not count; repeated exposure and distinct
+source material are reported separately. The production manifests record
+the actual language/source mixture and stage allocation.
+
+The seven initial Indic-language targets are \textbf{Hindi, Bengali,
+Tamil, Telugu, Kannada, Marathi, and Gujarati}. English, code, mathematics,
+and relevant code-mixed material remain in broader training and
+evaluation. Data preparation includes source and license review, script
+checks, deduplication, sensitive-data screening, and train/evaluation
+separation. Each target language will be evaluated separately.
+
+\section{Applications enabled by the intended offline release}
+
+The selected model is being designed for local-language text assistance
+without requiring a live model server for each request. The following
+are application designs for an evaluated offline release. They do not
+assert that the final trained model or device application has been shipped.
+When information can change or carries high stakes, the application
+supplies current, trusted local documents and identifies their source.
+
+\begin{table}[H]
+\centering\small
+\caption{Application designs and the surrounding software they require.}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries\raggedright\arraybackslash}p{0.19\linewidth}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X@{}}
+\toprule
+Application & Example assistance & Application-side requirement \\
+\midrule
+Public-service forms & Explain a locally stored official form or scheme notice in the user's language and identify the relevant fields. & A versioned official copy, document date and source, and a route to the responsible authority for eligibility decisions. \\
+Education & Explain a lesson passage in simpler language and generate practice questions from supplied material. & Source text, age-appropriate controls, and learner or teacher review. \\
+Small-business records & Interpret a stock list or invoice draft and explain spreadsheet fields in a target language. & Local files, deterministic calculation of totals, and verified tax or pricing rules where relevant. \\
+Field and community work & Summarize an approved local manual as a short checklist in the worker's language. & Current manuals and human review for safety-critical decisions. \\
+Personal documents & Search and summarize a user's own stored documents, with pointers to relevant passages. & A local document index and explicit file-access boundaries. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+For example, a Hindi-speaking user opens a public-service form that is
+already on the device. Local retrieval selects the form's instruction
+paragraph; Terminus explains that paragraph in Hindi and cites it back to
+the user. If eligibility is not settled by the document, the interface
+directs the user to the official channel. Speech input, automatic
+submission, and live access to government databases would be separate
+software projects with separate evaluation.
+
+\section{Evidence required for completion}
+
+Model evaluation will compare the dense checkpoint, immediate ternary
+conversion, and final QAT checkpoint on matched held-out data. It will
+report each target language separately, including native script and
+relevant code mixing, plus English, code, mathematics, factuality, and
+safety-sensitive tasks. The production record will report valid token
+exposure, loss and stability traces, checkpoint recovery, and complete
+distributed-update speed. Offline readiness requires an exported model
+and target-device measurements of file size, peak RAM, response speed,
+energy use, and task accuracy.
+
+The current result is a concrete selected architecture and training
+implementation, supported by smaller-scale research and one-GPU
+engineering checks. The one-trillion-token production run, dense-to-QAT
+transfer at the selected scale, full-cluster throughput, multilingual
+release quality, and on-device performance remain to be measured.
+
+\end{document}

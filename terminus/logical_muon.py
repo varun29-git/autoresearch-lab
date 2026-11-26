@@ -1,4 +1,4 @@
-"""Pinned Muon update with logical row slices for fused projection weights."""
+"""Pinned NS5/Nesterov direction, with per-logical-matrix Muon scaling."""
 
 from collections import defaultdict
 
@@ -7,13 +7,17 @@ from muon import SingleDeviceMuonWithAuxAdam, zeropower_via_newtonschulz5
 
 
 class LogicalMuonWithAuxAdam(SingleDeviceMuonWithAuxAdam):
-    def __init__(self, param_groups, logical_rows, batched=True):
+    def __init__(self, param_groups, logical_rows, batched=True, *, adjust_lr_fn="spectral_unclamped"):
         if len(param_groups) != len(logical_rows):
             raise ValueError("logical Muon metadata must match optimizer groups")
+        if adjust_lr_fn not in {"spectral_unclamped", "original"}:
+            raise ValueError("adjust_lr_fn must be spectral_unclamped or original")
         # The pinned upstream constructor checks exact group keys. Add the
         # slice metadata after it has established the ordinary Muon groups.
         super().__init__(param_groups)
         for group, rows in zip(self.param_groups, logical_rows):
+            if group["use_muon"]:
+                group["adjust_lr_fn"] = adjust_lr_fn
             if rows is None:
                 continue
             if not group["use_muon"] or len(group["params"]) != 1:
@@ -25,11 +29,33 @@ class LogicalMuonWithAuxAdam(SingleDeviceMuonWithAuxAdam):
         if not isinstance(batched, bool):
             raise ValueError("batched must be a bool")
         self.batched = batched
+        self.active_muon_ids = None
+        self._slice_cache = None
+
+    def set_active_muon(self, parameter_ids):
+        """None steps every Muon matrix. A set steps only those parameter ids.
+
+        The restricted step uses the per-matrix Newton–Schulz path so a matrix
+        does not change because it shared a batched stack with matrices that
+        belong to another rank.
+        """
+        if parameter_ids is not None and isinstance(parameter_ids, (str, bytes)):
+            raise ValueError("active Muon ids must be parameter ids or None")
+        self.active_muon_ids = None if parameter_ids is None else frozenset(parameter_ids)
         self._slice_cache = None
 
     def load_state_dict(self, state_dict):
+        # Pre-spectral checkpoints have no tag and use the original aspect rule.
+        # Never silently turn a fresh spectral run into a legacy optimizer.
+        for current, saved in zip(self.param_groups, state_dict["param_groups"]):
+            if current["use_muon"] and current["adjust_lr_fn"] != saved.get("adjust_lr_fn", "original"):
+                raise ValueError("Muon scaling differs from checkpoint; use its original rule or start fresh")
         self._slice_cache = None  # state tensors are replaced; cached views would go stale
-        return super().load_state_dict(state_dict)
+        result = super().load_state_dict(state_dict)
+        for group in self.param_groups:
+            if group["use_muon"]:
+                group.setdefault("adjust_lr_fn", "original")
+        return result
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -37,10 +63,10 @@ class LogicalMuonWithAuxAdam(SingleDeviceMuonWithAuxAdam):
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
-        if self.batched:
-            self._step_batched()
-        else:
+        if self.active_muon_ids is not None or not self.batched:
             self._step_reference()
+        else:
+            self._step_batched()
         return loss
 
     def _collect_muon_slices(self):
@@ -75,7 +101,8 @@ class LogicalMuonWithAuxAdam(SingleDeviceMuonWithAuxAdam):
             by_beta[item["group"]["momentum"]].append(item)
         by_shape = defaultdict(list)
         for item in slices:
-            by_shape[(item["stop"] - item["start"], item["parameter"].grad.shape[1])].append(item)
+            by_shape[(item["stop"] - item["start"], item["parameter"].shape[1],
+                      item["group"]["adjust_lr_fn"])].append(item)
         self._slice_cache = (slices, sorted(by_beta.items()), sorted(by_shape.items()))
         return self._slice_cache
 
@@ -95,10 +122,13 @@ class LogicalMuonWithAuxAdam(SingleDeviceMuonWithAuxAdam):
         # normalizes per matrix (dim=(-2, -1)) and applies the orientation rule
         # per trailing shape, so one batched call equals per-slice calls up to
         # floating-point reduction order (class E).
-        for (rows, cols), members in by_shape:
+        for (rows, cols, adjust_lr_fn), members in by_shape:
             stacked = torch.stack([m["parameter"].grad[m["start"]:m["stop"]] for m in members])
             update = zeropower_via_newtonschulz5(stacked, steps=5)
-            update *= max(1, rows / cols) ** 0.5
+            if adjust_lr_fn == "original":
+                # Preserve the archived BF16 multiply and its rounding exactly.
+                update *= max(1, rows / cols) ** 0.5
+            shape_scale = (rows / cols) ** 0.5 if adjust_lr_fn == "spectral_unclamped" else 1.0
             by_rate = defaultdict(list)
             for member in members:
                 by_rate[(member["group"]["lr"], member["group"]["weight_decay"])].append(member)
@@ -108,7 +138,9 @@ class LogicalMuonWithAuxAdam(SingleDeviceMuonWithAuxAdam):
                 weights = [m["parameter"][m["start"]:m["stop"]] for m in group_members]
                 group_updates = [updates[positions[id(m)]] for m in group_members]
                 torch._foreach_mul_(weights, 1 - lr * weight_decay)
-                torch._foreach_add_(weights, group_updates, alpha=-lr)
+                # Apply the spectral coefficient directly in the FP32 add:
+                # no Moonshot factor, clamping, or extra BF16 scale rounding.
+                torch._foreach_add_(weights, group_updates, alpha=-lr * shape_scale)
         self._step_adam()
 
     def _step_adam(self):
@@ -152,6 +184,8 @@ class LogicalMuonWithAuxAdam(SingleDeviceMuonWithAuxAdam):
         for group in self.param_groups:
             if group["use_muon"]:
                 for parameter in group["params"]:
+                    if self.active_muon_ids is not None and id(parameter) not in self.active_muon_ids:
+                        continue
                     if parameter.grad is None:
                         parameter.grad = torch.zeros_like(parameter)
                     state = self.state[parameter]
@@ -161,10 +195,19 @@ class LogicalMuonWithAuxAdam(SingleDeviceMuonWithAuxAdam):
                     start = 0
                     for rows in group.get("logical_rows", (parameter.shape[0],)):
                         stop = start + rows
-                        update = muon_update(parameter.grad[start:stop], momentum[start:stop], beta=group["momentum"])
+                        if group["adjust_lr_fn"] == "spectral_unclamped":
+                            grad_slice = parameter.grad[start:stop]
+                            momentum_slice = momentum[start:stop]
+                            momentum_slice.lerp_(grad_slice, 1 - group["momentum"])
+                            direction = grad_slice.lerp_(momentum_slice, group["momentum"])
+                            update = zeropower_via_newtonschulz5(direction, steps=5).float()
+                            shape_scale = (rows / parameter.shape[1]) ** 0.5
+                        else:
+                            update = muon_update(parameter.grad[start:stop], momentum[start:stop], beta=group["momentum"])
+                            shape_scale = 1.0
                         logical_weight = parameter[start:stop]
                         logical_weight.mul_(1 - group["lr"] * group["weight_decay"])
-                        logical_weight.add_(update.reshape(logical_weight.shape), alpha=-group["lr"])
+                        logical_weight.add_(update.reshape(logical_weight.shape), alpha=-group["lr"] * shape_scale)
                         start = stop
             else:
                 for parameter in group["params"]:

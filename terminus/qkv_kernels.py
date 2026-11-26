@@ -17,7 +17,7 @@ def _packed_rope(X, Cos, Sin, R, Y, DQ, DK, DV, DX, GQ, GK,
                  KB: tl.constexpr, KH: tl.constexpr, KL: tl.constexpr,
                  VB: tl.constexpr, VH: tl.constexpr, VL: tl.constexpr,
                  EPS: tl.constexpr, BACKWARD: tl.constexpr, HEADS: tl.constexpr,
-                 NORMALIZE: tl.constexpr, GAIN: tl.constexpr):
+                 NORMALIZE: tl.constexpr, GAIN: tl.constexpr, BATCHED_ROPE: tl.constexpr):
     row = tl.program_id(0)
     h = tl.program_id(1) * HEADS + tl.arange(0, HEADS)
     c = tl.arange(0, D // 2)
@@ -25,8 +25,9 @@ def _packed_rope(X, Cos, Sin, R, Y, DQ, DK, DV, DX, GQ, GK,
     offset = row * ((Q + 2 * KV) * D) + h[:, None] * D + c[None, :]
     a = tl.load(X + offset, h[:, None] < Q + KV, other=0.).to(tl.float32)
     b = tl.load(X + offset + D // 2, h[:, None] < Q + KV, other=0.).to(tl.float32)
-    co = tl.load(Cos + pos * (D // 2) + c).to(X.dtype.element_ty).to(tl.float32)
-    si = tl.load(Sin + pos * (D // 2) + c).to(X.dtype.element_ty).to(tl.float32)
+    rope_row = row if BATCHED_ROPE else pos
+    co = tl.load(Cos + rope_row * (D // 2) + c).to(X.dtype.element_ty).to(tl.float32)
+    si = tl.load(Sin + rope_row * (D // 2) + c).to(X.dtype.element_ty).to(tl.float32)
     if GAIN:
         is_q = h[:, None] < Q
         ga = tl.where(is_q, tl.load(GQ + c), tl.load(GK + c)).to(tl.float32)
@@ -82,7 +83,7 @@ def _packed_gain_backward(X, Cos, Sin, R, DQ, DK, GQ, GK, DW,
                           Q: tl.constexpr, KV: tl.constexpr, D: tl.constexpr, L: tl.constexpr,
                           QB: tl.constexpr, QH: tl.constexpr, QL: tl.constexpr,
                           KB: tl.constexpr, KH: tl.constexpr, KL: tl.constexpr,
-                          ROWS: tl.constexpr, PROGRAMS: tl.constexpr):
+                          ROWS: tl.constexpr, PROGRAMS: tl.constexpr, BATCHED_ROPE: tl.constexpr):
     """Deterministic bounded-program reduction of the shared Q/K gain gradients.
 
     Recomputes the rotary inverse of the incoming gradients and accumulates
@@ -104,8 +105,9 @@ def _packed_gain_backward(X, Cos, Sin, R, DQ, DK, GQ, GK, DW,
         a = tl.load(X + offset).to(tl.float32)
         b = tl.load(X + offset + D // 2).to(tl.float32)
         inverse = tl.load(R + row * (Q + KV) + h)
-        co = tl.load(Cos + pos * (D // 2) + c).to(X.dtype.element_ty).to(tl.float32)
-        si = tl.load(Sin + pos * (D // 2) + c).to(X.dtype.element_ty).to(tl.float32)
+        rope_row = row if BATCHED_ROPE else pos
+        co = tl.load(Cos + rope_row * (D // 2) + c).to(X.dtype.element_ty).to(tl.float32)
+        si = tl.load(Sin + rope_row * (D // 2) + c).to(X.dtype.element_ty).to(tl.float32)
         if h < Q:
             go = (row // L) * QB + h * QH + pos * QL + c
             da = tl.load(DQ + go).to(tl.float32)
@@ -132,6 +134,57 @@ def _packed_gain_backward(X, Cos, Sin, R, DQ, DK, GQ, GK, DW,
     tl.store(DW + program * (2 * D) + D + D // 2 + half, dw_kb)
 
 
+@triton.jit
+def _packed_gain_tiled(X, Cos, Sin, R, G, DW,
+                       Q: tl.constexpr, KV: tl.constexpr, D: tl.constexpr, L: tl.constexpr,
+                       GB: tl.constexpr, GH: tl.constexpr, GL: tl.constexpr,
+                       ROWS: tl.constexpr, HEADS: tl.constexpr, START: tl.constexpr,
+                       BATCHED_ROPE: tl.constexpr, TILE: tl.constexpr):
+    # Reduce independent row/head pairs in parallel. The former 512-program
+    # grid serializes thousands of pairs per program at production batch size.
+    # Keep the rotary BF16 roundings and FP32 gain products unchanged; only
+    # the order of the deterministic FP32 sum changes.
+    index = tl.program_id(0).to(tl.int64) * TILE + tl.arange(0, TILE)
+    row, head = index // HEADS, index % HEADS
+    position = row % L
+    col = tl.arange(0, D // 2)
+    valid = row[:, None] < ROWS
+    offset = row[:, None] * ((Q + 2 * KV) * D) + (head[:, None] + START) * D + col[None, :]
+    a = tl.load(X + offset, valid, other=0.).to(tl.float32)
+    b = tl.load(X + offset + D // 2, valid, other=0.).to(tl.float32)
+    inverse = tl.load(R + row * (Q + KV) + head + START, row < ROWS, other=0.)
+    rope_row = row if BATCHED_ROPE else position
+    rope_offset = rope_row[:, None] * (D // 2) + col[None, :]
+    co = tl.load(Cos + rope_offset, valid, other=0.).to(X.dtype.element_ty).to(tl.float32)
+    si = tl.load(Sin + rope_offset, valid, other=0.).to(X.dtype.element_ty).to(tl.float32)
+    go = (row[:, None] // L) * GB + head[:, None] * GH + position[:, None] * GL + col[None, :]
+    da = tl.load(G + go, valid, other=0.).to(tl.float32)
+    db = tl.load(G + go + D // 2, valid, other=0.).to(tl.float32)
+    na = ((da * co).to(X.dtype.element_ty).to(tl.float32)
+          + (db * si).to(X.dtype.element_ty).to(tl.float32)).to(X.dtype.element_ty).to(tl.float32)
+    nb = ((db * co).to(X.dtype.element_ty).to(tl.float32)
+          - (da * si).to(X.dtype.element_ty).to(tl.float32)).to(X.dtype.element_ty).to(tl.float32)
+    dw_a = tl.sum(na * (a * inverse[:, None]), 0)
+    dw_b = tl.sum(nb * (b * inverse[:, None]), 0)
+    tl.store(DW + tl.program_id(0) * D + col, dw_a)
+    tl.store(DW + tl.program_id(0) * D + D // 2 + col, dw_b)
+
+
+def _tiled_gain_backward(dq, dk, packed, cos, sin, inverse, q, kv):
+    batch, length, width = packed.shape
+    dim = width // (q + 2 * kv)
+    gradients = []
+    for heads, start, gradient in ((q, 0, dq), (kv, q, dk)):
+        programs = triton.cdiv(batch * length * heads, 64)
+        partial = torch.empty((programs, dim), device=packed.device, dtype=torch.float32)
+        _packed_gain_tiled[(programs,)](
+            packed, cos, sin, inverse, gradient, partial, q, kv, dim, length,
+            *gradient.stride()[:3], batch * length, heads, start, cos.shape[0] != 1, 64,
+            num_warps=4, enable_fp_fusion=False)
+        gradients.append(partial.sum(0))
+    return gradients
+
+
 def packed_qkv_forward(packed, cos, sin, q, kv, eps, normalize_qk=True, q_gain=None, k_gain=None):
     batch, length, width = packed.shape
     dim = width // (q + 2 * kv)
@@ -142,7 +195,7 @@ def packed_qkv_forward(packed, cos, sin, q, kv, eps, normalize_qk=True, q_gain=N
     out = torch.empty((batch, length, q + kv, dim), device=packed.device, dtype=packed.dtype)
     inverse = torch.empty((batch * length, q + kv) if normalize_qk else (0,), device=packed.device, dtype=torch.float32)
     _packed_rope[(batch * length, triton.cdiv(q + kv, 4))](packed, cos, sin, inverse, out, None, None, None, None,
-        q_gain, k_gain, q, kv, dim, length, 0, 0, 0, 0, 0, 0, 0, 0, 0, eps, False, 4, normalize_qk, gain,
+        q_gain, k_gain, q, kv, dim, length, 0, 0, 0, 0, 0, 0, 0, 0, 0, eps, False, 4, normalize_qk, gain, cos.shape[0] != 1,
         num_warps=4, enable_fp_fusion=False)
     value = packed.view(batch, length, q + 2 * kv, dim)[:, :, q + kv:]
     return out[:, :, :q].transpose(1, 2), out[:, :, q:].transpose(1, 2), value.transpose(1, 2), inverse
@@ -161,15 +214,18 @@ def packed_qkv_backward(dq, dk, dv, packed, cos, sin, inverse, q, kv, normalize_
     output = torch.empty_like(packed)
     _packed_rope[(batch * length, triton.cdiv(q + 2 * kv, heads_per_program))](packed, cos, sin, inverse, None, dq, dk, dv, output,
         q_gain, k_gain, q, kv, dim, length, *dq.stride()[:3], *dk.stride()[:3], *dv.stride()[:3], 0., True,
-        heads_per_program, normalize_qk, gain, num_warps=num_warps, enable_fp_fusion=False)
+        heads_per_program, normalize_qk, gain, cos.shape[0] != 1, num_warps=num_warps, enable_fp_fusion=False)
     if not gain:
         return output, None, None
+    if torch.version.hip:
+        dq_gain, dk_gain = _tiled_gain_backward(dq, dk, packed, cos, sin, inverse, q, kv)
+        return output, dq_gain.to(q_gain.dtype), dk_gain.to(k_gain.dtype)
     # Gain gradients: bounded deterministic reduction over row/head pairs,
     # indexing DQ/DK with the same stride contract as the main kernel.
     programs = min(batch * length * (q + kv), 512)
     partial = torch.empty((programs, 2 * dim), device=packed.device, dtype=torch.float32)
     _packed_gain_backward[(programs,)](packed, cos, sin, inverse, dq, dk, q_gain, k_gain, partial,
-        q, kv, dim, length, *dq.stride()[:3], *dk.stride()[:3], batch * length, programs,
+        q, kv, dim, length, *dq.stride()[:3], *dk.stride()[:3], batch * length, programs, cos.shape[0] != 1,
         num_warps=4, enable_fp_fusion=False)
     reduced = partial.sum(0)
     return output, reduced[:dim].to(q_gain.dtype), reduced[dim:].to(k_gain.dtype)

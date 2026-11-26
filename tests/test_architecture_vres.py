@@ -153,6 +153,54 @@ class TestValueResidualForward:
         # The multi-path gradient must reach layer 0's value projection.
         assert retained.layers[0].attn.v_proj.weight.grad.abs().sum() > 0
 
+    def test_value_residual_handoff_releases_activation_after_backward(self):
+        import gc
+        import weakref
+
+        for checkpointing in (False, True):
+            model = make_model(value_residual="learned", n_layers=4,
+                               fuse_projections=True, gradient_checkpointing=checkpointing)
+            references = []
+            hook = model.layers[0].attn.register_forward_hook(
+                lambda module, inputs, output: references.append(weakref.ref(module.values_used)))
+            ids = torch.randint(0, 32, (2, 16))
+            output = model(ids, ids)
+            output["loss"].backward()
+            hook.remove()
+            del output
+            gc.collect()
+            assert references and all(reference() is None for reference in references)
+            assert all(getattr(layer.attn, "values_used", None) is None for layer in model.layers)
+            assert model.layers[0].attn.qkv_proj.weight.grad.abs().sum() > 0
+
+    def test_cached_values_belong_to_cache_and_not_model(self):
+        model = make_model(value_residual="learned", n_layers=4, fuse_projections=True).eval()
+        ids = torch.randint(0, 32, (1, 16))
+        _, cache = model.forward_cached(ids[:, :9])
+        result, cache = model.forward_cached(ids[:, 9:], cache=cache)
+        assert cache.value_residual_buffer.shape == (1, 2, 16, 8)
+        assert all(getattr(layer.attn, "values_used", None) is None for layer in model.layers)
+        assert torch.allclose(model(ids)["logits"][:, 9:], result["logits"], atol=1e-4)
+
+    def test_later_layers_share_one_contiguous_gradient_carrying_v1(self):
+        model = make_model(value_residual="learned", n_layers=4, fuse_projections=True)
+        sources = []
+
+        def capture_source(_module, _args, kwargs):
+            sources.append(kwargs["value_source"])
+
+        hooks = [layer.attn.register_forward_pre_hook(capture_source, with_kwargs=True)
+                 for layer in model.layers[1:]]
+        ids = torch.randint(0, 32, (2, 16))
+        model(ids, ids)["loss"].backward()
+        for hook in hooks:
+            hook.remove()
+        assert len(sources) == 3
+        assert all(source.is_contiguous() and source.requires_grad for source in sources)
+        assert len({source.contiguous().data_ptr() for source in sources}) == 1
+        kv = model.config.n_kv_heads * model.config.head_dim
+        assert model.layers[0].attn.qkv_proj.weight.grad[-kv:].abs().sum() > 0
+
     def test_training_loop_with_stability_monitor(self):
         # Regression for the trial-002 screen crash: the protected StabilityMonitor
         # hooks each attention module's output and requires a plain tensor return.

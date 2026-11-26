@@ -26,6 +26,8 @@ def causal_pairs(length, window):
 
 
 def training_roofline(config, training, *, variant="nvl", batch_size=1, target_tokens_s=67000., measured_tokens_s=None):
+    if config.linear_backend.startswith("rocm_") or config.attention_backend.startswith("rocm_") or config.local_attention_backend.startswith("rocm_"):
+        raise ValueError("this roofline models H100 hardware; AMD requires its own hardware and precision accounting")
     if variant not in H100 or batch_size < 1 or not math.isfinite(target_tokens_s) or target_tokens_s <= 0:
         raise ValueError("invalid hardware, batch, or throughput target")
     if measured_tokens_s is not None and (not math.isfinite(measured_tokens_s) or measured_tokens_s <= 0):

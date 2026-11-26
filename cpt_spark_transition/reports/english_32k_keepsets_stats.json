@@ -1,0 +1,167 @@
+{
+  "spark_sha256": "710cce15cf3565674c499f9413997c6e8101f2bdd96245cff8f0311fb501248c",
+  "target_non_special": 32000,
+  "specials": 100,
+  "byte_symbols_present": 243,
+  "forced_skeleton": 343,
+  "frequency_token_types_seen": 47427,
+  "frequency_tokens_counted": 21373986,
+  "corpora": {
+    "english": {
+      "train_documents": 39905,
+      "train_tokens": 7239395,
+      "held_documents": 1500,
+      "held_tokens": 136591,
+      "held_words": 109052
+    },
+    "code": {
+      "train_documents": 30000,
+      "train_tokens": 10449016,
+      "held_documents": 1500,
+      "held_tokens": 592820,
+      "held_words": 234596
+    },
+    "math": {
+      "train_documents": 14973,
+      "train_tokens": 3685575,
+      "held_documents": 600,
+      "held_tokens": 115044,
+      "held_words": 50907
+    }
+  },
+  "overlap_with_method1": {
+    "method2": 13497,
+    "method2_ancestors": 14559
+  },
+  "sets": {
+    "method1": {
+      "size": 32101,
+      "dropped_ancestors": 0,
+      "script_mix": {
+        "dropped_script": 11816,
+        "target_indic": 839,
+        "other": 19446
+      },
+      "by_domain": {
+        "english": {
+          "stock_tokens": 136591,
+          "distinct": 5794,
+          "missing_distinct": 2141,
+          "missing_occurrences": 13204,
+          "missing_occurrence_pct": 9.67,
+          "pruned_tokens": 150711,
+          "fertility_ratio": 1.1034,
+          "words": 109052
+        },
+        "code": {
+          "stock_tokens": 592820,
+          "distinct": 16480,
+          "missing_distinct": 8002,
+          "missing_occurrences": 62255,
+          "missing_occurrence_pct": 10.5,
+          "pruned_tokens": 658976,
+          "fertility_ratio": 1.1116,
+          "words": 234596
+        },
+        "math": {
+          "stock_tokens": 115044,
+          "distinct": 4189,
+          "missing_distinct": 1284,
+          "missing_occurrences": 8040,
+          "missing_occurrence_pct": 6.99,
+          "pruned_tokens": 123548,
+          "fertility_ratio": 1.0739,
+          "words": 50907
+        }
+      },
+      "english_tokens_per_word_stock": 1.2525,
+      "english_tokens_per_word_pruned": 1.382
+    },
+    "method2": {
+      "size": 32000,
+      "dropped_ancestors": 2629,
+      "script_mix": {
+        "dropped_script": 214,
+        "target_indic": 1,
+        "other": 31785
+      },
+      "by_domain": {
+        "english": {
+          "stock_tokens": 136591,
+          "distinct": 5794,
+          "missing_distinct": 198,
+          "missing_occurrences": 270,
+          "missing_occurrence_pct": 0.2,
+          "pruned_tokens": 141513,
+          "fertility_ratio": 1.036,
+          "words": 109052
+        },
+        "code": {
+          "stock_tokens": 592820,
+          "distinct": 16480,
+          "missing_distinct": 1098,
+          "missing_occurrences": 3437,
+          "missing_occurrence_pct": 0.58,
+          "pruned_tokens": 615197,
+          "fertility_ratio": 1.0377,
+          "words": 234596
+        },
+        "math": {
+          "stock_tokens": 115044,
+          "distinct": 4189,
+          "missing_distinct": 140,
+          "missing_occurrences": 303,
+          "missing_occurrence_pct": 0.26,
+          "pruned_tokens": 118330,
+          "fertility_ratio": 1.0286,
+          "words": 50907
+        }
+      },
+      "english_tokens_per_word_stock": 1.2525,
+      "english_tokens_per_word_pruned": 1.2977
+    },
+    "method2_ancestors": {
+      "size": 33752,
+      "dropped_ancestors": 0,
+      "script_mix": {
+        "dropped_script": 367,
+        "target_indic": 1,
+        "other": 33384
+      },
+      "by_domain": {
+        "english": {
+          "stock_tokens": 136591,
+          "distinct": 5794,
+          "missing_distinct": 170,
+          "missing_occurrences": 236,
+          "missing_occurrence_pct": 0.17,
+          "pruned_tokens": 136839,
+          "fertility_ratio": 1.0018,
+          "words": 109052
+        },
+        "code": {
+          "stock_tokens": 592820,
+          "distinct": 16480,
+          "missing_distinct": 997,
+          "missing_occurrences": 3105,
+          "missing_occurrence_pct": 0.52,
+          "pruned_tokens": 596291,
+          "fertility_ratio": 1.0059,
+          "words": 234596
+        },
+        "math": {
+          "stock_tokens": 115044,
+          "distinct": 4189,
+          "missing_distinct": 129,
+          "missing_occurrences": 282,
+          "missing_occurrence_pct": 0.25,
+          "pruned_tokens": 115357,
+          "fertility_ratio": 1.0027,
+          "words": 50907
+        }
+      },
+      "english_tokens_per_word_stock": 1.2525,
+      "english_tokens_per_word_pruned": 1.2548
+    }
+  }
+}

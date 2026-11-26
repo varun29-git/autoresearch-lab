@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -13,7 +14,8 @@ from terminus.codeexec import run_program, score_code_item
 from terminus.model import BitNetLlama
 from terminus.task_eval import (IGNORE_INDEX, TaskItem, aggregate, bootstrap_ci,
                                 choice_margins, encode_pair, group_by_length,
-                                load_scalingbench_items, reduce_partials, score_item,
+                                load_development_choices, load_scalingbench_items,
+                                masked_continuation, reduce_partials, score_item,
                                 score_items, shard_items, write_partials)
 from tests.helpers import tiny_config
 
@@ -43,6 +45,12 @@ class EncodePairTests(unittest.TestCase):
         tokenizer = ToyTokenizer()
         _, targets, meta = encode_pair(tokenizer, "", "abc", max_seq_len=64)
         self.assertTrue(all(t != IGNORE_INDEX for t in targets.tolist()[0]))
+        self.assertEqual(meta["output_tokens"], 2)
+        self.assertEqual(meta["unscored_reference_prefix_tokens"], 1)
+
+    def test_single_token_without_prompt_cannot_be_scored(self):
+        with self.assertRaisesRegex(ValueError, "predictable"):
+            encode_pair(ToyTokenizer(), "", "a", max_seq_len=64)
 
     def test_left_truncation_keeps_reference(self):
         tokenizer = ToyTokenizer()
@@ -130,6 +138,29 @@ class ScoringTests(unittest.TestCase):
         full = score_items(self.model, self.tokenizer, items, device=torch.device("cpu"),
                            max_seq_len=64)
         self.assertEqual([r["loss"] for r in records], [r["loss"] for r in full])
+
+    def test_frozen_choice_ids_match_text_scoring(self):
+        prompt, choices = "pick", ("aa", "bb")
+        row = {"task": "toy", "item_id": "1", "language": "en", "role": "development",
+               "kind": "choice", "cadence": "every_validation_stop",
+               "prompt_ids": self.tokenizer.encode(prompt),
+               "choice_ids": [self.tokenizer.encode(choice) for choice in choices],
+               "correct_choice": 1}
+        final = dict(row, role="final", item_id="2")
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            payload = (json.dumps(row) + "\n" + json.dumps(final) + "\n").encode()
+            (directory / "toy.jsonl").write_bytes(payload)
+            (directory / "MANIFEST.json").write_text(json.dumps({"tokenizer_sha256": "abc", "tasks": {"toy": {
+                "file": "toy.jsonl", "sha256": hashlib.sha256(payload).hexdigest(),
+                "kind": "choice", "cadence": "every_validation_stop"}}}))
+            records = load_development_choices(directory, expected_tokenizer_sha256="abc")
+        self.assertEqual([record["item_id"] for record in records], ["1"])
+        for choice in choices:
+            frozen = masked_continuation(records[0]["prompt_ids"], self.tokenizer.encode(choice), max_seq_len=64)
+            text = encode_pair(self.tokenizer, prompt, choice, max_seq_len=64)
+            self.assertEqual(frozen[0].tolist(), text[0].tolist())
+            self.assertEqual(frozen[1].tolist(), text[1].tolist())
 
     def test_bootstrap_ci_deterministic(self):
         values = [0.5, 1.0, 1.5, 2.0, 2.5]

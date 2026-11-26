@@ -14,8 +14,6 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-import numpy as np
-
 from .data import TokenDataConfig, TokenManifest, TokenShardSpec, TrainingTokenRouter
 from .integrity import file_sha256, manifest_scope, write_json_atomic
 from .tokenizer import load_tokenizer, tokenizer_contract
@@ -27,23 +25,34 @@ def pack_token_streams(output_dir, tokenizer_path, *, source_mix, total_train_to
     """Assemble manifest.json from {stream}.{split}.{index:05d}.bin + .json sidecars."""
     output_dir = Path(output_dir)
     tokenizer = load_tokenizer(tokenizer_path)
+    tokenizer_sha256 = file_sha256(tokenizer_path)
     suffix = Path(tokenizer_path).suffix
     tokenizer_name = {".txt": "tokenizer.txt", ".json": "tokenizer.json"}.get(suffix, "tokenizer.model")
     if not (output_dir / tokenizer_name).exists():
         import shutil
         shutil.copyfile(tokenizer_path, output_dir / tokenizer_name)
+    if file_sha256(output_dir / tokenizer_name) != tokenizer_sha256:
+        raise ValueError("existing packed tokenizer differs from the supplied tokenizer")
     contract = tokenizer_contract(tokenizer, output_dir / tokenizer_name)
     contract["path"] = tokenizer_name
 
     shards = []
     inventory = {}
     for path in sorted(output_dir.glob("*.bin")):
-        stream, split, _ = path.name.rsplit(".", 2)[0], None, None
         parts = path.name.split(".")
         stream, split = parts[0], parts[1]
-        num_tokens = path.stat().st_size // 2
+        size = path.stat().st_size
+        if size % 2:
+            raise ValueError(f"incomplete uint16 token in shard: {path.name}")
+        num_tokens = size // 2
         sidecar = path.with_suffix(".json")
-        side = json.loads(sidecar.read_text()) if sidecar.exists() else {}
+        if not sidecar.exists():
+            raise ValueError(f"missing tokenization provenance: {sidecar.name}")
+        side = json.loads(sidecar.read_text())
+        if side.get("tokenizer_sha256") != tokenizer_sha256:
+            raise ValueError(f"shard tokenizer identity mismatch: {path.name}")
+        if type(side.get("tokens")) is not int or side["tokens"] != num_tokens:
+            raise ValueError(f"shard token count differs from tokenization provenance: {path.name}")
         shards.append(TokenShardSpec(path.name, stream, split, num_tokens, dtype="uint16",
                                      language=languages_by_stream[stream],
                                      sha256=file_sha256(path)))

@@ -74,7 +74,7 @@ class BitNetLlamaConfig:
         validate_fp8_options(self.fp8_backward, self.fp8_quantizer)
         if isinstance(self.fp8_wgrad_splits, bool) or not isinstance(self.fp8_wgrad_splits, int) or self.fp8_wgrad_splits not in {0, 1, 2, 4, 8, 16}:
             raise ValueError("fp8_wgrad_splits must be 0 (DeepGEMM), 1, 2, 4, 8 or 16")
-        if self.fp8_wgrad_splits and (self.linear_backend != "deepgemm" or self.fp8_backward != "full"):
+        if self.fp8_wgrad_splits and (self.linear_backend not in {"deepgemm", "rocm_fp8", "rocm_fp8_triton", "rocm_fp8_te"} or self.fp8_backward != "full"):
             raise ValueError("split-K FP8 wgrad requires DeepGEMM with full FP8 backward")
         if self.fp8_wgrad_recipe not in {"1d1d", "1d2d_bf16"}:
             raise ValueError("fp8_wgrad_recipe must be 1d1d or 1d2d_bf16")
@@ -84,14 +84,14 @@ class BitNetLlamaConfig:
             raise ValueError("fused_mlp requires fused pointwise, fused projections and SwiGLU")
         if self.fused_qkv and (not self.fused_pointwise or not self.fuse_projections):
             raise ValueError("fused_qkv requires fused pointwise and fused projections")
-        if self.linear_backend != "deepgemm" and (self.fp8_backward != "bf16" or self.fp8_quantizer != "torch" or self.fp8_cache_weights):
+        if self.linear_backend not in {"deepgemm", "rocm_fp8", "rocm_fp8_triton", "rocm_fp8_te"} and (self.fp8_backward != "bf16" or self.fp8_quantizer != "torch" or self.fp8_cache_weights):
             raise ValueError("FP8 backward and fused quantizers require the explicit DeepGEMM backend")
         if self.loss_backend not in {"checkpoint", "streaming", "triton", "triton_fp8", "triton_fp8_quack"}:
             raise ValueError("unknown linear cross entropy backend")
         if self.loss_backend.startswith("triton_fp8") and not self.quantize_activations:
             raise ValueError("the FP8 head branch requires the FP8 activation recipe")
-        if self.fused_fp8_producers and not (self.fused_pointwise and self.linear_backend == "deepgemm" and self.quantize_activations):
-            raise ValueError("producer FP8 fusion requires fused pointwise kernels and the DeepGEMM FP8 recipe")
+        if self.fused_fp8_producers and not (self.fused_pointwise and self.fuse_projections and (self.linear_backend == "deepgemm" or self.linear_backend.startswith("rocm_fp8")) and self.quantize_activations):
+            raise ValueError("producer FP8 fusion requires fused pointwise kernels, packed projections and an explicit native FP8 recipe")
         if self.residual_dtype not in {"fp32", "bf16"}:
             raise ValueError("residual_dtype must be fp32 or bf16")
         if self.embedding_dim is not None and (isinstance(self.embedding_dim, bool)
@@ -116,9 +116,9 @@ class BitNetLlamaConfig:
             raise ValueError("require complete local/global cycles and window <= context")
         if not 0 <= self.dropout < 1 or not 0 <= self.quantization_strength <= 1:
             raise ValueError("invalid dropout or quantization strength")
-        if self.attention_backend not in {"fa3", "flex", "sdpa_reference"}:
+        if self.attention_backend not in {"fa3", "flex", "sdpa_reference", "rocm_aiter", "rocm_ck"}:
             raise ValueError("unknown attention backend")
-        if self.local_attention_backend not in {"", "fa3", "flex", "sdpa_reference"}:
+        if self.local_attention_backend not in {"", "fa3", "flex", "sdpa_reference", "rocm_aiter", "rocm_ck"}:
             raise ValueError("unknown local attention backend")
         if self.local_attention_backend == "sdpa_reference" and self.attention_backend != "sdpa_reference":
             raise ValueError("a reference local backend cannot be mixed into a production run")
@@ -140,7 +140,7 @@ class BitNetLlamaConfig:
             raise ValueError("the packed learned-gain Q/K path requires fused_pointwise")
         if self.pad_token_id is not None and not 0 <= self.pad_token_id < self.vocab_size:
             raise ValueError("pad_token_id is outside the vocabulary")
-        if self.weight_scale_layout not in {"rowwise", "blockwise"} or self.linear_backend not in {"torch", "deepgemm"}:
+        if self.weight_scale_layout not in {"rowwise", "blockwise"} or self.linear_backend not in {"torch", "deepgemm", "rocm_fp8", "rocm_fp8_triton", "rocm_fp8_te"}:
             raise ValueError("unknown quantization layout or linear backend")
         if self.weight_mode not in {"ternary", "dense"}:
             raise ValueError("weight_mode must be ternary (QAT) or dense (FP8/BF16 dense-weight pretraining)")
@@ -150,6 +150,10 @@ class BitNetLlamaConfig:
             or self.dim % 128 or self.ffn_dim % 128 or (self.n_kv_heads * self.head_dim) % 128
         ):
             raise ValueError("DeepGEMM requires full FP8, blockwise 128 scales and aligned dimensions")
+        if self.linear_backend.startswith("rocm_fp8"):
+            from production.amd.backend import validate_recipe
+
+            validate_recipe(self)
 
     @property
     def head_dim(self):
@@ -198,22 +202,30 @@ class BitLinear(nn.Module):
             raise ValueError("weight_mode must be ternary or dense")
         if isinstance(fp8_wgrad_splits, bool) or not isinstance(fp8_wgrad_splits, int) or fp8_wgrad_splits not in {0, 1, 2, 4, 8, 16}:
             raise ValueError("invalid FP8 wgrad split count")
-        if fp8_wgrad_splits and (linear_backend != "deepgemm" or fp8_backward != "full"):
+        if fp8_wgrad_splits and (linear_backend not in {"deepgemm", "rocm_fp8", "rocm_fp8_triton", "rocm_fp8_te"} or fp8_backward != "full"):
             raise ValueError("split-K FP8 wgrad requires DeepGEMM with full FP8 backward")
+        if linear_backend == "rocm_fp8_te" and fp8_wgrad_splits:
+            raise ValueError("TE owns its split-K scheduling; fp8_wgrad_splits must be zero")
         if not isinstance(fp8_cache_weights, bool):
             raise ValueError("fp8_cache_weights must be a boolean")
-        if linear_backend != "deepgemm" and (fp8_backward != "bf16" or fp8_quantizer != "torch" or fp8_cache_weights):
+        if linear_backend not in {"deepgemm", "rocm_fp8", "rocm_fp8_triton", "rocm_fp8_te"} and (fp8_backward != "bf16" or fp8_quantizer != "torch" or fp8_cache_weights):
             raise ValueError("FP8 backward and fused quantizers require DeepGEMM")
         validate_block(alpha_group_size, eps)
         if min(in_features, out_features) <= 0 or weight_init not in {"normal", "orthogonal"}:
             raise ValueError("invalid linear dimensions or initialization")
         if not 0 <= quantization_strength <= 1 or not math.isfinite(init_scale) or init_scale <= 0:
             raise ValueError("invalid strength or initialization scale")
-        if weight_scale_layout not in {"rowwise", "blockwise"} or linear_backend not in {"torch", "deepgemm"}:
+        if weight_scale_layout not in {"rowwise", "blockwise"} or linear_backend not in {"torch", "deepgemm", "rocm_fp8", "rocm_fp8_triton", "rocm_fp8_te"}:
             raise ValueError("unknown quantization layout or linear backend")
         if linear_backend == "deepgemm" and (eps != 1e-6 or weight_scale_layout != "blockwise" or alpha_group_size != 128
                 or not quantize_activations or quantization_strength != 1 or in_features % 128 or out_features % 128):
             raise ValueError("DeepGEMM requires full FP8 quantization and aligned 128x128 weight blocks")
+        if linear_backend.startswith("rocm_fp8") and (
+                weight_mode not in {"dense", "ternary"} or fp8_backward != "full" or fp8_quantizer != "triton_split"
+                or weight_scale_layout != "blockwise" or alpha_group_size != 128
+                or not quantize_activations or quantization_strength != 1
+                or in_features % 128 or out_features % 128 or fp8_wgrad_recipe != "1d1d"):
+            raise ValueError("ROCm FP8 requires full-backward 128-block scaling and immediate weight quantization")
         self.in_features, self.out_features = in_features, out_features
         self.eps, self.alpha_group_size = eps, alpha_group_size
         self.quantize_activations = quantize_activations
@@ -269,12 +281,25 @@ class BitLinear(nn.Module):
                     self.weight.dtype, self.weight.shape, self.weight.stride(), self.fp8_quantizer, transposed,
                     self.weight_mode, torch.is_inference_mode_enabled())
         if self._fp8_weight_cache is None or self._fp8_weight_cache[0] != identity:
-            operands = quantize_weight_directions(self.weight, weight_mode=self.weight_mode,
-                                                  transposed=transposed, backend=self.fp8_quantizer)
+            if self.linear_backend.startswith("rocm_fp8"):
+                from production.amd.backend import quantize_weight
+
+                operands = quantize_weight(self.weight, transposed=transposed,
+                                           weight_mode=self.weight_mode)
+            else:
+                operands = quantize_weight_directions(self.weight, weight_mode=self.weight_mode,
+                                                      transposed=transposed, backend=self.fp8_quantizer)
             self._fp8_weight_cache = (identity, operands)
         return self._fp8_weight_cache[1]
 
     def forward(self, values, activation_rows=None):
+        if self.linear_backend.startswith("rocm_fp8"):
+            from production.amd.backend import linear
+
+            return linear(values.to(torch.bfloat16), self.weight,
+                          weight_operands=self._weight_operands(values),
+                          backend=self.linear_backend, splits=self.fp8_wgrad_splits or 1,
+                          weight_mode=self.weight_mode, activation_rows=activation_rows)
         if self.linear_backend == "deepgemm":
             return deepgemm_bitlinear(values.to(torch.bfloat16), self.weight,
                                      backward_mode=self.fp8_backward, quantizer=self.fp8_quantizer,
@@ -384,7 +409,7 @@ class BitNetAttention(nn.Module):
         self.k_norm = RMSNorm(config.head_dim, config.rms_norm_eps, gain=norm_gain, fused=config.fused_pointwise) if config.qk_norm_mode != "none" else nn.Identity()
         self.attn_sub_norm = RMSNorm(config.dim, config.rms_norm_eps, gain="scalar", fused=config.fused_pointwise) if config.attention_subln_enabled else nn.Identity()
 
-    def forward(self, hidden, cos, sin, attention_mask=None, cache=None, *, value_source=None, hidden_fp8=None):
+    def forward(self, hidden, cos, sin, attention_mask=None, cache=None, *, value_source=None, hidden_fp8=None, document_layout=None):
         batch, length, _ = hidden.shape
         if self.config.fused_qkv:
             from .pointwise import packed_qkv_rope
@@ -404,7 +429,7 @@ class BitNetAttention(nn.Module):
             query = query.view(batch, length, self.config.n_heads, self.config.head_dim).transpose(1, 2)
             key = key.view(batch, length, self.config.n_kv_heads, self.config.head_dim).transpose(1, 2)
             value = value.view(batch, length, self.config.n_kv_heads, self.config.head_dim).transpose(1, 2)
-            if self.config.fused_pointwise and self.config.qk_norm_mode == "unit_rms":
+            if self.config.fused_pointwise and self.config.qk_norm_mode == "unit_rms" and document_layout is None:
                 from .pointwise import qk_rope
 
                 query, key = (qk_rope(values, cos, sin, self.config.rms_norm_eps) for values in (query, key))
@@ -418,24 +443,28 @@ class BitNetAttention(nn.Module):
                 value = value_mix(value_source, value, self.value_lambda)
             else:
                 value = self.value_lambda[0] * value_source + self.value_lambda[1] * value
-        if self.value_residual:
+        if self.value_residual and value_source is None:
             # Exposed for BitNetLlama's cross-layer V1 plumbing; forward must keep
             # returning a plain tensor because the protected stability monitor
             # hooks module outputs.
+            # Only V1 is handed to the model. Retaining every later layer's
+            # mixed values here keeps large activation storage alive between
+            # optimizer updates, including under activation checkpointing.
             self.values_used = value
         offset = 0
         if cache is not None:
             key, value, offset = cache.attention_inputs(key, value)
         probe = getattr(self, "stability_probe", None)
         if probe is not None and probe.active and cache is None:
-            probe.record_attention(self.stability_layer, query, key, self.is_global_layer)
+            probe.record_attention(self.stability_layer, query, key, self.is_global_layer,
+                                   document_layout=document_layout)
         backend = self.config.attention_backend
         if not self.is_global_layer and self.config.local_attention_backend:
             backend = self.config.local_attention_backend
         output = attention(query, key, value, backend=backend,
                            local_window=None if self.is_global_layer else self.config.local_attention_window,
                            query_position_offset=offset, attention_mask=attention_mask,
-                           dropout_p=self.config.dropout if self.training else 0.0)
+                           dropout_p=self.config.dropout if self.training else 0.0, document_layout=document_layout)
         if cache is not None:
             cache.commit(key, value)
         output = output.transpose(1, 2).reshape(batch, length, self.config.dim)
@@ -448,7 +477,8 @@ class BitNetFeedForward(nn.Module):
         self.ffn_activation = config.ffn_activation
         self.fused_pointwise = config.fused_pointwise
         self.fused_mlp = config.fused_mlp
-        self.emit_fp8 = config.fused_fp8_producers and config.linear_backend == "deepgemm"
+        self.emit_fp8 = config.fused_fp8_producers
+        self.amd_fp8 = config.linear_backend.startswith("rocm_fp8")
         self.fuse_projections = config.fuse_projections and self.ffn_activation == "swiglu"
         if self.fuse_projections:
             self.gate_up_proj = make_linear(config, config.dim, 2 * config.ffn_dim)
@@ -465,7 +495,10 @@ class BitNetFeedForward(nn.Module):
             eps = self.ffn_sub_norm.eps if weight is not None else 0.
             gate_input = self.gate_up_proj(hidden, activation_rows=hidden_fp8)
             if self.emit_fp8:
-                from .pointwise import packed_swiglu_norm_fp8
+                if self.amd_fp8:
+                    from production.amd.producers import packed_swiglu_norm_fp8
+                else:
+                    from .pointwise import packed_swiglu_norm_fp8
 
                 out, codes, scales = packed_swiglu_norm_fp8(gate_input, weight, eps)
                 return self.down_proj(out, activation_rows=(codes, scales))
@@ -500,19 +533,23 @@ class BitNetBlock(nn.Module):
         self.attn = BitNetAttention(config, layer_index=layer_index)
         self.ffn = BitNetFeedForward(config)
 
-    def forward(self, hidden, cos, sin, attention_mask=None, cache=None, *, value_source=None):
+    def forward(self, hidden, cos, sin, attention_mask=None, cache=None, *, value_source=None, document_layout=None):
         fuse_fp8 = (self.config.fused_fp8_producers and hidden.is_cuda and cache is None
-                    and self.attn.qkv_proj.linear_backend == "deepgemm")
+                    and (self.attn.qkv_proj.linear_backend == "deepgemm"
+                         or self.attn.qkv_proj.linear_backend.startswith("rocm_fp8")))
         if fuse_fp8:
-            from .pointwise import rms_norm_fp8
+            if self.config.linear_backend.startswith("rocm_fp8"):
+                from production.amd.producers import rms_norm_fp8
+            else:
+                from .pointwise import rms_norm_fp8
 
             normed, codes, scales = rms_norm_fp8(hidden, self.attn_norm.weight, self.attn_norm.eps)
             hidden = hidden + self.attn_out_norm(self.attn(normed, cos, sin, attention_mask, cache,
-                                                           value_source=value_source, hidden_fp8=(codes, scales)))
+                                                           value_source=value_source, hidden_fp8=(codes, scales), document_layout=document_layout))
             normed, codes, scales = rms_norm_fp8(hidden, self.ffn_norm.weight, self.ffn_norm.eps)
             return hidden + self.ffn_out_norm(self.ffn(normed, hidden_fp8=(codes, scales)))
         hidden = hidden + self.attn_out_norm(self.attn(self.attn_norm(hidden), cos, sin, attention_mask, cache,
-                                                       value_source=value_source))
+                                                       value_source=value_source, document_layout=document_layout))
         return hidden + self.ffn_out_norm(self.ffn(self.ffn_norm(hidden)))
 
 
@@ -557,11 +594,15 @@ class BitNetLlama(nn.Module):
             with torch.no_grad():
                 self.tok_embeddings.weight[config.pad_token_id].zero_()
 
-    def forward(self, input_ids, targets=None, attention_mask=None, *, return_logits=True):
+    def forward(self, input_ids, targets=None, attention_mask=None, *, return_logits=True, document_layout=None):
         if input_ids.ndim != 2 or min(input_ids.shape) <= 0 or input_ids.dtype != torch.long:
             raise ValueError("input_ids must be nonempty int64 [batch, sequence]")
         if targets is not None and (targets.shape != input_ids.shape or targets.dtype != torch.long):
             raise ValueError("targets must be pre-shifted int64 with input shape; use -100 to ignore")
+        if document_layout is not None:
+            document_layout.validate_for(input_ids.shape, input_ids.device)
+            if attention_mask is not None:
+                raise ValueError("document layout already defines the attention mask")
         if attention_mask is not None:
             if attention_mask.shape != input_ids.shape or attention_mask.dtype != torch.bool:
                 raise ValueError("attention_mask must be boolean [batch, sequence]")
@@ -570,6 +611,10 @@ class BitNetLlama(nn.Module):
         hidden = self.embed_rot_in(self.dropout(self.tok_embeddings(input_ids)))
         hidden = hidden.to(torch.bfloat16 if self.config.residual_dtype == "bf16" else torch.float32)
         cos, sin = self.rotary(input_ids.shape[1], device=hidden.device, dtype=hidden.dtype)
+        if document_layout is not None:
+            positions = document_layout.positions
+            cos = cos[0, 0][positions].unsqueeze(1).contiguous()
+            sin = sin[0, 0][positions].unsqueeze(1).contiguous()
         value_source = None
         for index, layer in enumerate(self.layers):
             # With value_residual, layer 0 stays uncheckpointed so its stashed V1
@@ -581,15 +626,19 @@ class BitNetLlama(nn.Module):
                               and not (self.config.value_residual != "none" and index == 0))
             if use_checkpoint and self.config.value_residual != "none":
                 hidden = checkpoint(layer, hidden, cos, sin, attention_mask,
-                                    use_reentrant=False, value_source=value_source)
+                                    use_reentrant=False, value_source=value_source, document_layout=document_layout)
             elif use_checkpoint:
-                hidden = checkpoint(layer, hidden, cos, sin, attention_mask, use_reentrant=False)
+                hidden = checkpoint(layer, hidden, cos, sin, attention_mask, use_reentrant=False, document_layout=document_layout)
             elif self.config.value_residual != "none":
-                hidden = layer(hidden, cos, sin, attention_mask, value_source=value_source)
+                hidden = layer(hidden, cos, sin, attention_mask, value_source=value_source, document_layout=document_layout)
                 if value_source is None:
-                    value_source = layer.attn.values_used
+                    # Every fused value-mix saves a contiguous V1 for backward.
+                    # Make that copy once, so the later layers share its storage
+                    # and its gradient-carrying layout conversion.
+                    value_source = layer.attn.values_used.contiguous()
+                    layer.attn.values_used = None
             else:
-                hidden = layer(hidden, cos, sin, attention_mask)
+                hidden = layer(hidden, cos, sin, attention_mask, document_layout=document_layout)
         hidden = self.embed_rot_out(self.norm(hidden))
         logits = functional.linear(hidden, self.tok_embeddings.weight) if return_logits else None
         loss = loss_sum = loss_tokens = None
@@ -627,7 +676,8 @@ class BitNetLlama(nn.Module):
             for index, (layer, layer_cache) in enumerate(zip(self.layers, cache.layers)):
                 if index == 0:
                     hidden = layer(hidden, cos, sin, cache=layer_cache, value_source=None)
-                    values = layer.attn.values_used
+                    values = layer.attn.values_used.contiguous()
+                    layer.attn.values_used = None
                     buffer = values if cache.value_residual_buffer is None else torch.cat(
                         (cache.value_residual_buffer, values), dim=2)
                     cache.value_residual_buffer = buffer[:, :, -self.config.max_seq_len:]
@@ -663,7 +713,8 @@ class BitNetLlama(nn.Module):
 
     @torch.no_grad()
     def set_quantization_strength_(self, strength):
-        if not 0 <= strength <= 1 or (self.config.linear_backend == "deepgemm" and strength != 1):
+        native_fp8 = self.config.linear_backend == "deepgemm" or self.config.linear_backend.startswith("rocm_fp8")
+        if not 0 <= strength <= 1 or (native_fp8 and strength != 1):
             raise ValueError("invalid quantization strength for the selected backend")
         for _, module in self.bitlinear_named_modules():
             module.quantization_strength.fill_(strength)

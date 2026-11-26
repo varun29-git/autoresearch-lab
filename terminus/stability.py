@@ -88,23 +88,41 @@ class StabilityMonitor:
             values = inputs[0].detach().reshape(-1, inputs[0].shape[-1])[:self.max_tokens]
             finite = torch.isfinite(values)
             safe = torch.where(finite, values, torch.zeros_like(values))
-            codes, scales = quantize_activation_fp8_e4m3(safe)
-            recovered = dequantize_activation_fp8_e4m3(codes, scales).float()
+            if _module.linear_backend.startswith("rocm_fp8"):
+                from production.amd.reference import quantize, dequantize
+
+                codes, scales = quantize(safe, eps=1e-5)
+                recovered = dequantize((codes, scales))
+            elif self.model.config.attention_backend.startswith("rocm_") and not _module.quantize_activations:
+                self.records[f"{name}.bf16_input"] = {"values": values.numel(), **_stats(values)}
+                return
+            else:
+                codes, scales = quantize_activation_fp8_e4m3(safe)
+                recovered = dequantize_activation_fp8_e4m3(codes, scales).float()
             relative_rms = ((recovered - safe.float()).square().mean().sqrt()
                             / safe.float().square().mean().sqrt().clamp_min(1e-12))
             self.records[f"{name}.fp8_input"] = {
                 "values": values.numel(), "relative_rms_error": relative_rms,
+                "format": str(codes.dtype),
                 "scale_min": scales.amin(), "scale_max": scales.amax(),
                 "nonfinite_fraction": 1 - finite.float().mean(),
                 "zero_fraction": (codes.float() == 0).float().mean()}
         return hook
 
     @torch.no_grad()
-    def record_attention(self, layer, query, key, is_global):
+    def record_attention(self, layer, query, key, is_global, *, document_layout=None):
         if not self.active:
             return
-        query_sample = query[0, :, -1, :].detach()
-        key_sample = key[0, :, -min(key.shape[2], self.max_keys):, :].detach()
+        row, start, end = 0, 0, key.shape[2]
+        if document_layout is not None:
+            if not document_layout.spans:
+                return
+            row, start, end = max(document_layout.spans, key=lambda span: span[2]-span[1])
+        if not is_global:
+            start = max(start, end-self.model.config.local_attention_window)
+        start = max(start, end-self.max_keys)
+        query_sample = query[row, :, end-1, :].detach()
+        key_sample = key[row, :, start:end, :].detach()
         repeat = query_sample.shape[0] // key_sample.shape[0]
         expanded_key = key_sample.repeat_interleave(repeat, dim=0)
         scores = torch.einsum("hd,hkd->hk", query_sample.float(), expanded_key.float()) / math.sqrt(query_sample.shape[-1])
@@ -112,7 +130,9 @@ class StabilityMonitor:
         entropy = -(probabilities * probabilities.clamp_min(1e-30).log()).sum(-1)
         self.records[f"layer_{layer:02d}.attention_sample"] = {
             "key_positions": key_sample.shape[1], "query_heads": query_sample.shape[0],
-            "global_layer": is_global, "unmasked_last_query": True,
+            "global_layer": is_global, "unmasked_last_query": document_layout is None,
+            "document_mask_applied": document_layout is not None,
+            "batch_row": row, "query_position": end-1, "key_start": start,
             "query": _stats(query_sample), "key": _stats(key_sample),
             "logits": _stats(scores), "max_probability": probabilities.amax(),
             "mean_entropy": entropy.mean(), "min_entropy": entropy.amin()}

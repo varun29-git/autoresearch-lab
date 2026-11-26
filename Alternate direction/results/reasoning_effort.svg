@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1960" height="912" viewBox="0 0 1960 912" role="img" aria-labelledby="title desc">
+<title id="title">Spark-X2.6 Reasoning Effort Comparison</title>
+<desc id="desc">High and Low reasoning effort comparisons for Spark-X2.6-1.7B and Spark-X2.6-4B, including score and integer length across five benchmark categories and the supplied Average row.</desc>
+<rect width="1960" height="912" fill="#FFFFFF"/>
+<g font-family="Arial, Helvetica, sans-serif">
+<text x="48" y="74" font-family="Arial, Helvetica, sans-serif" font-size="46" font-weight="700" fill="#172B4D" text-anchor="start">Spark-X2.6 Reasoning Effort Comparison</text>
+<text x="48" y="120" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="400" fill="#66788F" text-anchor="start">High vs Low</text>
+<rect x="48" y="164" width="400" height="196" fill="#F1F4F9"/>
+<text x="74" y="269.5" font-family="Arial, Helvetica, sans-serif" font-size="32" font-weight="700" fill="#56657B" text-anchor="start">Category</text>
+<rect x="448" y="164" width="732" height="76" fill="#315DDD"/>
+<text x="814" y="210" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="white" text-anchor="middle">Spark-X2.6-1.7B</text>
+<rect x="448" y="240" width="366" height="62" fill="#DCE7FF"/>
+<text x="631" y="278" font-family="Arial, Helvetica, sans-serif" font-size="29" font-weight="700" fill="#203B72" text-anchor="middle">High</text>
+<rect x="448" y="302" width="183" height="58" fill="#F1F4F9"/>
+<text x="539.5" y="337.5" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" fill="#56657B" text-anchor="middle">Score</text>
+<rect x="631" y="302" width="183" height="58" fill="#F1F4F9"/>
+<text x="722.5" y="337.5" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" fill="#56657B" text-anchor="middle">Length</text>
+<rect x="814" y="240" width="366" height="62" fill="#E9EFFC"/>
+<text x="997" y="278" font-family="Arial, Helvetica, sans-serif" font-size="29" font-weight="700" fill="#203B72" text-anchor="middle">Low</text>
+<rect x="814" y="302" width="183" height="58" fill="#F1F4F9"/>
+<text x="905.5" y="337.5" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" fill="#56657B" text-anchor="middle">Score</text>
+<rect x="997" y="302" width="183" height="58" fill="#F1F4F9"/>
+<text x="1088.5" y="337.5" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" fill="#56657B" text-anchor="middle">Length</text>
+<line x1="814" y1="240" x2="814" y2="360" stroke="white" stroke-width="2"/>
+<rect x="1180" y="164" width="732" height="76" fill="#315DDD"/>
+<text x="1546" y="210" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="white" text-anchor="middle">Spark-X2.6-4B</text>
+<rect x="1180" y="240" width="366" height="62" fill="#DCE7FF"/>
+<text x="1363" y="278" font-family="Arial, Helvetica, sans-serif" font-size="29" font-weight="700" fill="#203B72" text-anchor="middle">High</text>
+<rect x="1180" y="302" width="183" height="58" fill="#F1F4F9"/>
+<text x="1271.5" y="337.5" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" fill="#56657B" text-anchor="middle">Score</text>
+<rect x="1363" y="302" width="183" height="58" fill="#F1F4F9"/>
+<text x="1454.5" y="337.5" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" fill="#56657B" text-anchor="middle">Length</text>
+<rect x="1546" y="240" width="366" height="62" fill="#E9EFFC"/>
+<text x="1729" y="278" font-family="Arial, Helvetica, sans-serif" font-size="29" font-weight="700" fill="#203B72" text-anchor="middle">Low</text>
+<rect x="1546" y="302" width="183" height="58" fill="#F1F4F9"/>
+<text x="1637.5" y="337.5" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" fill="#56657B" text-anchor="middle">Score</text>
+<rect x="1729" y="302" width="183" height="58" fill="#F1F4F9"/>
+<text x="1820.5" y="337.5" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" fill="#56657B" text-anchor="middle">Length</text>
+<line x1="1546" y1="240" x2="1546" y2="360" stroke="white" stroke-width="2"/>
+<rect x="48" y="360" width="1864" height="84" fill="#FFFFFF"/>
+<text x="74" y="409" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700" fill="#354156" text-anchor="start">Agent</text>
+<text x="539.5" y="410" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#203B72" text-anchor="middle">47.4</text>
+<text x="722.5" y="409.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="400" fill="#354156" text-anchor="middle">38,057</text>
+<text x="905.5" y="410" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#203B72" text-anchor="middle">45.7</text>
+<text x="1088.5" y="409.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="400" fill="#354156" text-anchor="middle">35,422</text>
+<text x="1271.5" y="410" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#203B72" text-anchor="middle">58.9</text>
+<text x="1454.5" y="409.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="400" fill="#354156" text-anchor="middle">35,273</text>
+<text x="1637.5" y="410" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#203B72" text-anchor="middle">56.1</text>
+<text x="1820.5" y="409.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="400" fill="#354156" text-anchor="middle">34,079</text>
+<line x1="48" y1="444" x2="1912" y2="444" stroke="#E6EBF3" stroke-width="1"/>
+<rect x="48" y="444" width="1864" height="84" fill="#F8FAFD"/>
+<text x="74" y="493" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700" fill="#354156" text-anchor="start">Code</text>
+<text x="539.5" y="494" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#203B72" text-anchor="middle">41.0</text>
+<text x="722.5" y="493.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="400" fill="#354156" text-anchor="middle">91,030</text>
+<text x="905.5" y="494" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#203B72" text-anchor="middle">41.4</text>
+<text x="1088.5" y="493.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="400" fill="#354156" text-anchor="middle">74,453</text>
+<text x="1271.5" y="494" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#203B72" text-anchor="middle">54.7</text>
+<text x="1454.5" y="493.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="400" fill="#354156" text-anchor="middle">58,708</text>
+<text x="1637.5" y="494" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#203B72" text-anchor="middle">58.1</text>
+<text x="1820.5" y="493.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="400" fill="#354156" text-anchor="middle">42,740</text>
+<line x1="48" y1="528" x2="1912" y2="528" stroke="#E6EBF3" stroke-width="1"/>
+<rect x="48" y="528" width="1864" height="84" fill="#FFFFFF"/>
+<text x="74" y="577" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700" fill="#354156" text-anchor="start">Math</text>
+<text x="539.5" y="578" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#203B72" text-anchor="middle">71.2</text>
+<text x="722.5" y="577.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="400" fill="#354156" text-anchor="middle">103,515</text>
+<text x="905.5" y="578" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#203B72" text-anchor="middle">52.6</text>
+<text x="1088.5" y="577.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="400" fill="#354156" text-anchor="middle">34,537</text>
+<text x="1271.5" y="578" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#203B72" text-anchor="middle">95.7</text>
+<text x="1454.5" y="577.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="400" fill="#354156" text-anchor="middle">47,700</text>
+<text x="1637.5" y="578" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#203B72" text-anchor="middle">89.8</text>
+<text x="1820.5" y="577.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="400" fill="#354156" text-anchor="middle">36,130</text>
+<line x1="48" y1="612" x2="1912" y2="612" stroke="#E6EBF3" stroke-width="1"/>
+<rect x="48" y="612" width="1864" height="84" fill="#F8FAFD"/>
+<text x="74" y="661" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700" fill="#354156" text-anchor="start">Long Context</text>
+<text x="539.5" y="662" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#203B72" text-anchor="middle">45.9</text>
+<text x="722.5" y="661.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="400" fill="#354156" text-anchor="middle">11,154</text>
+<text x="905.5" y="662" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#203B72" text-anchor="middle">44.0</text>
+<text x="1088.5" y="661.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="400" fill="#354156" text-anchor="middle">6,380</text>
+<text x="1271.5" y="662" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#203B72" text-anchor="middle">56.4</text>
+<text x="1454.5" y="661.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="400" fill="#354156" text-anchor="middle">13,121</text>
+<text x="1637.5" y="662" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#203B72" text-anchor="middle">56.2</text>
+<text x="1820.5" y="661.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="400" fill="#354156" text-anchor="middle">9,547</text>
+<line x1="48" y1="696" x2="1912" y2="696" stroke="#E6EBF3" stroke-width="1"/>
+<rect x="48" y="696" width="1864" height="84" fill="#FFFFFF"/>
+<text x="74" y="745" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700" fill="#354156" text-anchor="start">General &amp; Knowledge</text>
+<text x="539.5" y="746" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#203B72" text-anchor="middle">48.5</text>
+<text x="722.5" y="745.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="400" fill="#354156" text-anchor="middle">41,089</text>
+<text x="905.5" y="746" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#203B72" text-anchor="middle">45.1</text>
+<text x="1088.5" y="745.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="400" fill="#354156" text-anchor="middle">15,666</text>
+<text x="1271.5" y="746" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#203B72" text-anchor="middle">61.9</text>
+<text x="1454.5" y="745.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="400" fill="#354156" text-anchor="middle">36,818</text>
+<text x="1637.5" y="746" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#203B72" text-anchor="middle">59.6</text>
+<text x="1820.5" y="745.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="400" fill="#354156" text-anchor="middle">21,294</text>
+<line x1="48" y1="780" x2="1912" y2="780" stroke="#E6EBF3" stroke-width="1"/>
+<rect x="48" y="780" width="1864" height="84" fill="#E9EFFC"/>
+<line x1="48" y1="780" x2="1912" y2="780" stroke="#CAD9F7" stroke-width="2"/>
+<text x="74" y="829.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="700" fill="#203B72" text-anchor="start">Average</text>
+<text x="539.5" y="830" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#214FCE" text-anchor="middle">49.6</text>
+<text x="722.5" y="829.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="700" fill="#354156" text-anchor="middle">49,074</text>
+<text x="905.5" y="830" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#214FCE" text-anchor="middle">45.6</text>
+<text x="1088.5" y="829.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="700" fill="#354156" text-anchor="middle">30,748</text>
+<text x="1271.5" y="830" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#214FCE" text-anchor="middle">63.3</text>
+<text x="1454.5" y="829.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="700" fill="#354156" text-anchor="middle">35,933</text>
+<text x="1637.5" y="830" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700" fill="#214FCE" text-anchor="middle">61.6</text>
+<text x="1820.5" y="829.5" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="700" fill="#354156" text-anchor="middle">28,044</text>
+<line x1="48" y1="864" x2="1912" y2="864" stroke="#E6EBF3" stroke-width="1"/>
+<line x1="448" y1="164" x2="448" y2="864" stroke="white" stroke-width="3"/>
+<line x1="1180" y1="164" x2="1180" y2="864" stroke="white" stroke-width="6"/>
+<line x1="814" y1="360" x2="814" y2="864" stroke="#E3EAF5" stroke-width="1"/>
+<line x1="1546" y1="360" x2="1546" y2="864" stroke="#E3EAF5" stroke-width="1"/>
+</g>
+</svg>

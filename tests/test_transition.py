@@ -12,6 +12,7 @@ from pathlib import Path
 
 import torch
 
+from terminus.data import TokenBatcher, TokenManifest
 from terminus.optim import OptimizerConfig
 from terminus.train import TrainConfig, run_training
 from terminus.transition import convert_checkpoint
@@ -105,6 +106,60 @@ class TransitionTests(unittest.TestCase):
             for name, tensor in expected["model"].items():
                 torch.testing.assert_close(actual["model"][name], tensor, rtol=0, atol=0)
 
+    def test_continue_rejects_replaced_corpus_with_valid_child_checksums(self):
+        from terminus.integrity import file_sha256
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.train_dense(updates=1)
+        payload = json.loads(self.manifest.read_text())
+        replacement = self.data_root / "different_train.bin"
+        original = (self.data_root / "train.bin").read_bytes()
+        # Still valid uint16 token IDs and budget; only the token order changes.
+        replacement.write_bytes(original[2:] + original[:2])
+        payload["shards"][0].update(path=replacement.name, sha256=file_sha256(replacement))
+        changed = self.root / "different_manifest.json"
+        changed.write_text(json.dumps(payload))
+        with self.assertRaisesRegex(ValueError, "changed or reordered.*shard"):
+            convert_checkpoint(self.root / "dense_run", self.root / "qat.json", changed,
+                               self.data_root, self.root / "bad_continue")
+        self.assertFalse((self.root / "bad_continue/checkpoints").exists())
+
+    def test_transition_rebases_microbatch_at_the_same_global_batch(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.train_dense(updates=1)  # 32 tokens: batch 2 x 2 microsteps
+            child_manifest = json.loads(self.manifest.read_text())
+            child_manifest["config"]["batch_size"] = 4
+            child_manifest_path = self.root / "qat_batch4_manifest.json"
+            child_manifest_path.write_text(json.dumps(child_manifest))
+            child_config = json.loads((self.root / "qat.json").read_text())
+            child_config["training"]["gradient_accumulation_steps"] = 1
+            child_config_path = self.root / "qat_batch4.json"
+            child_config_path.write_text(json.dumps(child_config))
+            receipt = convert_checkpoint(self.root / "dense_run", child_config_path,
+                                         child_manifest_path, self.data_root, self.root / "qat_batch4")
+            self.assertEqual(receipt["cursor_rebase"], {
+                "parent_next_micro_step": 2, "child_next_micro_step": 1, "tokens_seen": 32})
+            self.assertEqual(receipt["child"]["state"]["updates"], 1)
+            self.assertEqual(receipt["intentional_resets"], [])
+            parent_payload = checkpoint_payload(self.root / "dense_run")
+            child_payload = checkpoint_payload(self.root / "qat_batch4")
+            for key, old_state in parent_payload["optimizer"]["state"].items():
+                for name, old_value in old_state.items():
+                    new_value = child_payload["optimizer"]["state"][key][name]
+                    if isinstance(old_value, torch.Tensor):
+                        torch.testing.assert_close(new_value, old_value, rtol=0, atol=0)
+                    else:
+                        self.assertEqual(new_value, old_value)
+            old_batcher = TokenBatcher(TokenManifest.load(self.manifest), root=self.data_root)
+            new_batcher = TokenBatcher(TokenManifest.load(child_manifest_path), root=self.data_root)
+            old_next = torch.cat([old_batcher.train_batch(step)[0] for step in (2, 3)])
+            new_next = new_batcher.train_batch(1)[0]
+            torch.testing.assert_close(old_next, new_next, rtol=0, atol=0)
+            final = run_training(self.root / "qat_batch4/qat_config.json", child_manifest_path,
+                                 self.data_root, self.root / "qat_batch4",
+                                 resume=self.root / "qat_batch4/checkpoints")
+            self.assertEqual(final, {"next_micro_step": 3, "tokens_seen": 72, "updates": 3})
+
     def test_dense_history_changes_final_weights(self):
         with contextlib.redirect_stdout(io.StringIO()):
             self.train_dense(updates=1)
@@ -188,6 +243,44 @@ class TransitionTests(unittest.TestCase):
             (latest / receipt["file"]).write_bytes(bytes(blob))
             with self.assertRaises(ValueError):
                 self.convert(out="qat_corrupt")
+
+    def test_same_shape_architecture_change_is_rejected(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.train_dense(updates=1)
+        config = json.loads((self.root / "qat.json").read_text())
+        config["model"]["local_attention_window"] = 2
+        (self.root / "qat.json").write_text(json.dumps(config))
+        with self.assertRaisesRegex(ValueError, "model settings"):
+            self.convert()
+
+    def test_changed_optimizer_settings_require_explicit_reset(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.train_dense(updates=1)
+        config = json.loads((self.root / "qat.json").read_text())
+        config["optimizer"]["weight_decay"] = .123
+        (self.root / "qat.json").write_text(json.dumps(config))
+        with self.assertRaisesRegex(ValueError, "LR changes only"):
+            self.convert()
+        self.convert(intentional_resets=("optimizer",))
+        child = checkpoint_payload(self.root / "qat_run")
+        self.assertTrue(any(group["weight_decay"] == .123 for group in child["optimizer"]["param_groups"]))
+        self.assertFalse(child["optimizer"]["state"])
+
+    def test_rng_reset_is_honored_without_world_size_change(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.train_dense(updates=1)
+        receipt = self.convert(intentional_resets=("rng",))
+        self.assertIn("rng", receipt["intentional_resets"])
+        child = checkpoint_payload(self.root / "qat_run")
+        generator = torch.Generator().manual_seed(1337)
+        torch.testing.assert_close(child["rank_rng"][0]["torch"], generator.get_state())
+
+    def test_schedule_must_fit_remaining_qat_tokens(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.train_dense(updates=2)
+        # Eight tokens remain; configured warmup+decay require 24.
+        with self.assertRaisesRegex(ValueError, "warmup|budget"):
+            self.convert()
 
 
 if __name__ == "__main__":

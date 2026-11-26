@@ -11,17 +11,19 @@ initial checkpoint of a QAT run, with an explicit receipt. It:
   contract binds runtime and native-source identity;
 - carries model weights, compatible optimizer state, per-rank RNG, and the
   data cursor (unless a reset is explicitly requested and recorded);
+- can change microbatch while preserving global tokens per update, rebasing
+  the microstep cursor without changing token exposure or update count;
 - supports checkpoint branches: any parent checkpoint of the dense run may be
   converted, and the receipt records which one; different pre-switch histories
   are never presented as shared.
 
 Data policies:
 - "continue": the child manifest covers the same stream with a larger budget
-  (parent tokens_seen + QAT budget); the carried cursor guarantees no data
-  repeats or disappears across the switch.
+  (parent tokens_seen + QAT budget); verified routing and shard prefixes plus
+  the carried cursor prevent data repeats or gaps across the switch.
 - "phase_mix": the child manifest uses phase_source_mixes whose phase boundary
-  must equal the parent's tokens_seen, so the router switches mixture exactly
-  at the transition.
+  must equal the parent's tokens_seen; its consumed prefix must match the
+  parent's stream before the router switches mixture at the transition.
 - "restart": the data and update counters (and optionally RNG) are reset;
   the receipt records this as an intentional reset. A manifest may start each
   source at the exact unused example offset, so this can avoid repetition.
@@ -44,7 +46,7 @@ from .model import BitNetLlama
 from .optim import build_optimizer
 from .train import load_config, make_resume_contract
 
-POLICIES = ("continue", "phase_mix", "restart")
+POLICIES = ("continue", "phase_mix", "restart", "packed_phase")
 RESETTABLE = {"optimizer", "data_cursor", "rng"}
 
 
@@ -73,7 +75,17 @@ def convert_checkpoint(parent_run_dir, qat_config_path, qat_manifest_path, qat_d
         raise FileExistsError("the QAT run directory must be fresh")
     parent_run = json.loads((parent_run_dir / "run.json").read_text())
     parent_contract = parent_run["contract"]
+    if parent_run["contract_sha256"] != fingerprint(parent_contract):
+        raise ValueError("parent run contract digest mismatch")
+    if parent_contract["model"]["weight_mode"] != "dense":
+        raise ValueError("dense-to-QAT transition requires a dense parent")
     parent_source = parent_checkpoint or parent_run_dir / "checkpoints"
+    parent_source = Path(parent_source)
+    if parent_source.is_dir():
+        latest = json.loads((parent_source / "latest.json").read_text())
+        if Path(latest["file"]).name != latest["file"]:
+            raise ValueError("invalid parent checkpoint filename")
+        parent_source = parent_source / latest["file"]
     parent_payload = load_checkpoint(parent_source, parent_contract)
     parent_state = parent_payload["state"]
 
@@ -93,6 +105,19 @@ def convert_checkpoint(parent_run_dir, qat_config_path, qat_manifest_path, qat_d
     optimizer_config = OptimizerConfig(**config_payload["optimizer"])
     if model_config.weight_mode != "ternary":
         raise ValueError("the QAT phase must run the ternary weight mode")
+    parent_model = BitNetLlamaConfig(**parent_contract["model"])
+    architectural_changes = _diff(asdict(parent_model), asdict(model_config))
+    # A phase transition is not an implicit architecture/checkpoint migration.
+    if set(architectural_changes) - {"weight_mode", "quantization_strength"}:
+        raise ValueError("QAT transition changes model settings beyond weight quantization")
+    if "data_cursor" in resets and data_policy != "restart":
+        raise ValueError("a data_cursor reset requires data_policy='restart'")
+    if "optimizer" not in resets:
+        parent_optimizer = asdict(OptimizerConfig(**parent_contract["optimizer"]))
+        child_optimizer = asdict(optimizer_config)
+        changes = _diff(json.loads(json.dumps(parent_optimizer)), json.loads(json.dumps(child_optimizer)))
+        if any(not key.endswith("_lr") for key in changes):
+            raise ValueError("carrying optimizer state permits LR changes only; explicitly reset optimizer otherwise")
     manifest = TokenManifest.load(qat_manifest_path)
     manifest_report = validate_manifest(manifest, qat_data_root, model_config,
                                         development_mode=training.development_mode)
@@ -101,6 +126,16 @@ def convert_checkpoint(parent_run_dir, qat_config_path, qat_manifest_path, qat_d
     if parent_tokenizer and child_tokenizer and \
             parent_tokenizer.get("sha256") != child_tokenizer.get("sha256"):
         raise ValueError("parent and child manifests use different tokenizers")
+    stream_proof = None
+    if data_policy != "restart":
+        from .stream_contract import verify_training_continuation, verify_packed_continuation
+
+        parent_stream = parent_contract["data"].get("training_stream")
+        child_stream = manifest_report.get("training_stream")
+        if manifest.is_packed:
+            stream_proof = verify_packed_continuation(parent_stream, child_stream, parent_state, policy=data_policy)
+        else:
+            stream_proof = verify_training_continuation(parent_stream, child_stream, parent_seen, policy=data_policy)
     device = torch.device(device_name)
     contract = make_resume_contract(model_config, training, optimizer_config, manifest_report,
                                     world_size, device)
@@ -121,33 +156,52 @@ def convert_checkpoint(parent_run_dir, qat_config_path, qat_manifest_path, qat_d
         for group, child_lr in zip(optimizer.param_groups, child_base_lrs):
             group["base_lr"] = child_lr
             group["lr"] = child_lr
-    total_tokens = manifest.config.usable_train_tokens
+    total_tokens = manifest.scored_train_tokens
+    from .train import schedule_scale
+    schedule_scale(0, total_tokens - expected_offset, training.warmup_tokens,
+                   training.final_lr_fraction, schedule=training.schedule,
+                   decay_tokens=training.decay_tokens, decay_style=training.decay_style)
+    if training.quantization_warmup_tokens > total_tokens - expected_offset:
+        raise ValueError("quantization warmup exceeds the QAT phase budget")
+    if model_config.linear_backend == "deepgemm" and (training.quantization_warmup_tokens
+            or training.quantization_start_strength != 1):
+        raise ValueError("native DeepGEMM does not support a quantization curriculum")
     micro_tokens = manifest.config.tokens_per_step * world_size
     total_micro_steps = -(-manifest.config.total_examples //
                           (manifest.config.batch_size * world_size))
-    if "data_cursor" in resets:
+    if data_policy == "packed_phase":
+        state = dict(next_micro_step=0, tokens_seen=parent_seen, updates=0,
+                     input_slots_seen=0, content_tokens_seen=0)
+        resets_done.extend(("phase_local_data_cursor", "phase_local_update_counter"))
+    elif "data_cursor" in resets:
         state = {"next_micro_step": 0, "tokens_seen": 0, "updates": 0}
         resets_done.extend(("data_cursor", "update_counter"))
     else:
         state = dict(parent_state)
-        if state["tokens_seen"] % micro_tokens:
+        parent_accumulation = parent_contract["training"]["gradient_accumulation_steps"]
+        if state["next_micro_step"] != state["updates"] * parent_accumulation:
+            raise ValueError("parent checkpoint is not at a complete global update boundary")
+        cursor_tokens = state["input_slots_seen"] if manifest.is_packed else state["tokens_seen"]
+        if cursor_tokens % micro_tokens:
             raise ValueError("carried token cursor is not divisible by the child microbatch tokens; "
-                             "keep the batch decomposition or request data_policy='restart'")
-        if state["next_micro_step"] != state["tokens_seen"] // micro_tokens:
-            raise ValueError("carried data cursor does not align with the child batch decomposition")
-        if state["next_micro_step"] != min(state["updates"] * training.gradient_accumulation_steps,
-                                           total_micro_steps):
-            raise ValueError("carried update counter does not align with child accumulation")
+                             "choose an aligned child microbatch or request data_policy='restart'")
+        child_step = cursor_tokens // micro_tokens
+        if child_step != state["updates"] * training.gradient_accumulation_steps:
+            raise ValueError("carried updates do not align with the child global batch; "
+                             "keep tokens per update fixed or request data_policy='restart'")
+        # Re-express the same global token cursor in the child's microbatch
+        # units. This preserves update count, optimizer moments and data order.
+        state["next_micro_step"] = child_step
         if state["tokens_seen"] >= total_tokens:
             raise ValueError("child budget must extend beyond the parent's consumed tokens")
         if data_policy == "phase_mix":
             boundaries = _cumulative_phase_boundaries(manifest.config)
-            if state["tokens_seen"] not in boundaries:
+            if not manifest.is_packed and state["tokens_seen"] not in boundaries:
                 raise ValueError("phase_mix requires a phase boundary exactly at the parent's "
                                  f"consumed tokens ({state['tokens_seen']}); boundaries: {boundaries}")
-    if len(parent_payload["rank_rng"]) != world_size:
-        if "rng" not in resets:
-            raise ValueError("world size changed; request intentional_resets=('rng',) explicitly")
+    if len(parent_payload["rank_rng"]) != world_size and "rng" not in resets:
+        raise ValueError("world size changed; request intentional_resets=('rng',) explicitly")
+    if "rng" in resets:
         resets_done.append("rng")
         import random as random_module
 
@@ -173,8 +227,8 @@ def convert_checkpoint(parent_run_dir, qat_config_path, qat_manifest_path, qat_d
     parent_receipt_path = parent_payload_receipt(parent_source)
     parent_receipt = json.loads(parent_receipt_path.read_text()) if parent_receipt_path else {}
     child_training = asdict(training)
-    for name in ("checkpoint_interval", "validation_interval", "validation_batches_per_language",
-                 "log_interval", "prefetch_batches", "time_limit_seconds"):
+    from .train import OPERATIONAL_TRAINING_FIELDS
+    for name in OPERATIONAL_TRAINING_FIELDS:
         child_training.pop(name)
     changed = {"model": _diff(parent_contract["model"], asdict(model_config)),
                "training": _diff(parent_contract["training"], child_training),
@@ -192,6 +246,11 @@ def convert_checkpoint(parent_run_dir, qat_config_path, qat_manifest_path, qat_d
                          "manifest_sha256": manifest_report["manifest_sha256"],
                          "initial_checkpoint": path.name, "state": state},
                "data_policy": data_policy, "intentional_resets": sorted(resets_done),
+               "stream_continuity": stream_proof,
+               "cursor_rebase": None if "data_cursor" in resets else {
+                   "parent_next_micro_step": parent_state["next_micro_step"],
+                   "child_next_micro_step": state["next_micro_step"],
+                   "tokens_seen": state["tokens_seen"]},
                "changed_fields": changed,
                "tokenizer_sha256": child_tokenizer.get("sha256"),
                "source": source_hashes()}

@@ -3,7 +3,10 @@ import math
 import torch
 import triton
 import triton.language as tl
-from triton.language.extra.cuda import libdevice
+if torch.version.hip:
+    from triton.language.extra.hip import libdevice
+else:
+    from triton.language.extra.cuda import libdevice
 
 
 @triton.jit
@@ -221,7 +224,8 @@ def _quantize_blockwise_t_kernel(values, codes, scales,
 
 
 def _check_matrix(values, *, weight=False):
-    if not values.is_cuda or torch.cuda.get_device_capability(values.device)[0] != 9:
+    # gfx942 also reports compute capability 9.x; only CUDA SM90 is supported.
+    if not values.is_cuda or torch.version.hip is not None or torch.cuda.get_device_capability(values.device)[0] != 9:
         raise RuntimeError("fused ternary-FP8 kernels require Hopper SM90")
     if values.ndim != 2 or min(values.shape) <= 0 or values.shape[1] % 128:
         raise ValueError("fused quantizers need a nonempty matrix with 128-aligned width")
