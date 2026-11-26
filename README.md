@@ -1,6 +1,16 @@
-# Terminus autoresearch
+# AutoResearch Lab
 
-Public research code and campaign records for the 25-layer Terminus Stack 4 architecture. This release consolidates the completed architecture, dense-speed, and 200M hyperparameter-search campaigns. It is a research snapshot, not a trained model release or a production launch handoff.
+AutoResearch Lab is a general framework for controlled model-architecture, optimizer, hyperparameter, and GPU-kernel research. Protected campaign protocols keep data, evaluation, and compute budgets fixed while candidates change. The 25-layer Stack 4 architecture is the reference workload; this release consolidates its completed architecture, dense-speed, and 200M hyperparameter-search campaigns. It is a research snapshot, not a trained model release or a production launch handoff.
+
+## Development timeline
+
+| Date | Milestone |
+| --- | --- |
+| 5 October 2026 | Independent architecture-research repository and protected campaign protocol established. |
+| 6 October 2026 | Matched-token architecture campaign completed with dense and short-QAT comparisons. |
+| 9 October 2026 | E3 and combined dense-kernel campaigns recorded complete-update H100 measurements. |
+| 10 October 2026 | Twelve-trial 200M hyperparameter campaign completed. |
+| **27 November 2026** | **Architecture, speed, and HPO work consolidated into the first public open-source release under Apache-2.0.** |
 
 ## Evidence
 
