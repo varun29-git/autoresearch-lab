@@ -1,6 +1,10 @@
-# Terminus autoresearch speed
+# Terminus autoresearch
 
-This is the dedicated five-hour dense speed-research worktree for Kimi K3. It starts from the optimized stack-004 commit `1e8c0a4` with E3 packed Q/K, E4 fused value mix and E9 batched Muon. The model remains 25 layers and 1,500,456,496 parameters. The earlier architecture campaign files remain for provenance; **[speed_program.md](speed_program.md)** governs this worktree's speed loop, while `program.md` governs architecture research.
+This standalone Terminus research repository adapts [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) to the maintained Terminus ModelTunnelv2 code. It combines the completed architecture campaign with the subsequent dense speed campaign; `program.md` governs architecture research and `speed_program.md` governs kernel and execution research.
+
+**Architecture campaign `architecture-20261006c` — COMPLETE (2026-10-06 → 2026-10-07).** The stack architecture (Peri-LN branch output norms + ResFormer value residual) beat the baseline by −1.15% at a matched 2.5B-token dense-FP8 horizon and by −0.55% after ternary-weight conversion + 500M-token QAT, while bounding the residual stream the baseline lets migrate. Full evidence: [notes/FINAL_REPORT_ARCHITECTURE_20261006.md](notes/FINAL_REPORT_ARCHITECTURE_20261006.md) and [notes/qat500-probe-comparison.md](notes/qat500-probe-comparison.md).
+
+**Dense speed research** starts from the selected stack with E3 packed Q/K, E4 fused value mix and E9 batched Muon. The model remains 25 layers and 1,500,456,496 parameters. The measured E3/E4/E9 results and later experiments are documented under [docs/speed](docs/speed/README.md).
 
 - [KIMI_START.md](KIMI_START.md) is the copyable one-time paid-run prompt.
 - [PENDING_5H.md](docs/speed/PENDING_5H.md) lists every unfinished experiment, its status and the first falsifiable test.
