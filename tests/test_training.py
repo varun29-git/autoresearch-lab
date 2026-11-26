@@ -136,7 +136,7 @@ class TrainingTests(unittest.TestCase):
         for outputs, inputs in ((16, 4), (4, 16), (8, 8)):
             parameter = torch.nn.Parameter(torch.empty(outputs, inputs))
             upstream_scale = math.sqrt(max(1, outputs / inputs))
-            combined = muon_update_scale_for_param(parameter) * upstream_scale
+            combined = muon_update_scale_for_param(parameter, rule="sqrt_fan_in") * upstream_scale
             self.assertAlmostEqual(combined, .2 * math.sqrt(max(outputs, inputs)))
 
     def test_rng_roundtrip(self):

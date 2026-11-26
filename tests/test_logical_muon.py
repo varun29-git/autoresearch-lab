@@ -19,7 +19,9 @@ class LogicalMuonTests(unittest.TestCase):
             gate_up = groups[id(layer.ffn.gate_up_proj.weight)]
             self.assertEqual(qkv["logical_rows"], (32, 16, 16))
             self.assertEqual(gate_up["logical_rows"], (64, 64))
-            self.assertAlmostEqual(qkv["lr"], .003 * .2 * math.sqrt(32))
+            self.assertEqual(qkv["adjust_lr_fn"], "spectral_unclamped")
+            self.assertEqual(qkv["lr"], .003)
+            self.assertEqual(gate_up["lr"], .003)
             self.assertAlmostEqual(qkv["lr"] * qkv["weight_decay"], .003 * .1)
         self.assertEqual(sum(len(group["params"]) for group in optimizer.param_groups),
                          sum(parameter.requires_grad for parameter in model.parameters()))
@@ -35,7 +37,7 @@ class LogicalMuonTests(unittest.TestCase):
                 separate = [torch.nn.Parameter(chunk.clone()) for chunk in weight.detach().split(rows)]
                 scale = .2 * math.sqrt(weight.shape[1])
                 options = {"lr": .003 * scale, "weight_decay": .1 / scale, "momentum": .95, "use_muon": True}
-                fused = LogicalMuonWithAuxAdam([{"params": [weight], **options}], [rows])
+                fused = LogicalMuonWithAuxAdam([{"params": [weight], **options}], [rows], adjust_lr_fn="original")
                 reference = SingleDeviceMuonWithAuxAdam([{"params": [part], **options} for part in separate])
                 resumed = None
                 for index in range(2):
@@ -51,8 +53,10 @@ class LogicalMuonTests(unittest.TestCase):
                                                rtol=0, atol=0)
                     if index == 0:
                         resumed_weight = torch.nn.Parameter(weight.detach().clone())
-                        resumed = LogicalMuonWithAuxAdam([{"params": [resumed_weight], **options}], [rows])
-                        resumed.load_state_dict(copy.deepcopy(fused.state_dict()))
+                        resumed = LogicalMuonWithAuxAdam([{"params": [resumed_weight], **options}], [rows], adjust_lr_fn="original")
+                        legacy_state = copy.deepcopy(fused.state_dict())
+                        del legacy_state["param_groups"][0]["adjust_lr_fn"]
+                        resumed.load_state_dict(legacy_state)
                         self.assertEqual(resumed.param_groups[0]["logical_rows"], rows)
                     else:
                         resumed_weight.grad = gradient.clone()
@@ -72,7 +76,7 @@ class LogicalMuonTests(unittest.TestCase):
                 initial = torch.randn(sum(rows), 32)
                 weight_a = torch.nn.Parameter(initial.clone())
                 weight_b = torch.nn.Parameter(initial.clone())
-                options = {"lr": .003 * .2 * math.sqrt(32), "weight_decay": .1 / (.2 * math.sqrt(32)),
+                options = {"lr": .003, "weight_decay": .1,
                            "momentum": .95, "use_muon": True}
                 batched = LogicalMuonWithAuxAdam([{"params": [weight_a], **options}], [rows], batched=True)
                 reference = LogicalMuonWithAuxAdam([{"params": [weight_b], **options}], [rows], batched=False)
@@ -86,6 +90,80 @@ class LogicalMuonTests(unittest.TestCase):
                     torch.testing.assert_close(batched.state[weight_a]["momentum_buffer"],
                                                reference.state[weight_b]["momentum_buffer"],
                                                rtol=0, atol=0)
+
+    def test_spectral_steps_match_raw_ns_with_logical_shapes_decay_and_resume(self):
+        from muon import zeropower_via_newtonschulz5
+        from terminus.logical_muon import LogicalMuonWithAuxAdam
+
+        torch.manual_seed(47)
+        # Q/K/V use 3:1 GQA; gate/up expand 2.5x; down contracts 2.5x.
+        for batched in (False, True):
+            for rows, cols in (((24, 8, 8), 24), ((60, 60), 24), ((24,), 60)):
+                with self.subTest(batched=batched, rows=rows, cols=cols):
+                    initial = torch.randn(sum(rows), cols)
+                    weight = torch.nn.Parameter(initial.clone())
+                    expected = initial.clone()
+                    momentum = torch.zeros_like(initial)
+                    options = {"lr": .03, "weight_decay": .17, "momentum": .95, "use_muon": True}
+                    optimizer = LogicalMuonWithAuxAdam([{"params": [weight], **options}], [rows], batched=batched)
+                    for step, lr in enumerate((.03, 0.0, .007)):
+                        gradient = torch.randn_like(initial)
+                        weight.grad = gradient.clone()
+                        optimizer.param_groups[0]["lr"] = lr
+                        momentum.lerp_(gradient, .05)
+                        direction = gradient.lerp(momentum, .95)
+                        for w, d in zip(expected.split(rows), direction.split(rows)):
+                            raw = zeropower_via_newtonschulz5(d, steps=5).float()
+                            w.mul_(1 - lr * .17)
+                            w.add_(raw, alpha=-lr * math.sqrt(w.shape[0] / cols))
+                        optimizer.step()
+                        torch.testing.assert_close(weight, expected, rtol=1e-3, atol=1e-5)
+                        torch.testing.assert_close(optimizer.state[weight]["momentum_buffer"], momentum, rtol=1e-6, atol=1e-7)
+                        if step == 1:
+                            resumed_weight = torch.nn.Parameter(weight.detach().clone())
+                            resumed = LogicalMuonWithAuxAdam([{"params": [resumed_weight], **options}], [rows], batched=batched)
+                            resumed.load_state_dict(copy.deepcopy(optimizer.state_dict()))
+                        elif step == 2:
+                            resumed.param_groups[0]["lr"] = lr
+                            resumed_weight.grad = gradient.clone()
+                            resumed.step()
+                            torch.testing.assert_close(resumed_weight, weight, rtol=0, atol=0)
+
+    def test_spectral_coefficient_is_width_independent_on_raw_update(self):
+        from muon import zeropower_via_newtonschulz5
+        from terminus.logical_muon import LogicalMuonWithAuxAdam
+
+        torch.manual_seed(53)
+        for width in (16, 32, 48):
+            for rows, cols in ((width, width), (2 * width, width), (width, 2 * width)):
+                with self.subTest(rows=rows, cols=cols):
+                    weight = torch.nn.Parameter(torch.zeros(rows, cols))
+                    gradient = torch.randn_like(weight)
+                    momentum = torch.zeros_like(weight).lerp_(gradient, 1 - .95)
+                    raw = zeropower_via_newtonschulz5(gradient.lerp(momentum, .95), steps=5).float()
+                    options = {"lr": .03, "weight_decay": 0., "momentum": .95, "use_muon": True}
+                    optimizer = LogicalMuonWithAuxAdam([{"params": [weight], **options}], [None])
+                    weight.grad = gradient.clone()
+                    optimizer.step()
+                    measured = -(weight.detach() * raw).sum() / raw.square().sum()
+                    self.assertAlmostEqual(measured.item(), .03 * math.sqrt(rows / cols), places=6)
+
+    def test_resume_rejects_a_different_scaling_convention(self):
+        from terminus.logical_muon import LogicalMuonWithAuxAdam
+
+        def make(rule):
+            options = {"lr": .003, "weight_decay": .1, "momentum": .95, "use_muon": True}
+            return LogicalMuonWithAuxAdam([{"params": [torch.nn.Parameter(torch.ones(8, 16))], **options}],
+                                          [None], adjust_lr_fn=rule)
+
+        spectral, legacy = make("spectral_unclamped"), make("original")
+        for target, source in ((spectral, legacy), (legacy, spectral)):
+            with self.assertRaisesRegex(ValueError, "scaling differs"):
+                target.load_state_dict(source.state_dict())
+        untagged = legacy.state_dict()
+        del untagged["param_groups"][0]["adjust_lr_fn"]
+        with self.assertRaisesRegex(ValueError, "scaling differs"):
+            spectral.load_state_dict(untagged)
 
     def test_batched_step_matches_reference_adam_groups(self):
         from terminus.logical_muon import LogicalMuonWithAuxAdam
