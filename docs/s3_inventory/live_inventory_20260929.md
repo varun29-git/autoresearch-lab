@@ -77,4 +77,4 @@ Token estimate basis: measured on the bounded S3 sample (13,717 docs) with the f
 - `translation-benchmark/`: present
 - `translation-staging/`: present
 
-Excluded from training: `translation-staging/`, `translation-benchmark/`, TinyLlama-tokenized packs in `quark-research-repository-storage` (incompatible token IDs).
+Excluded from training: `translation-staging/`, `translation-benchmark/`, TinyLlama-tokenized packs in `YOUR_ARCHIVE_BUCKET` (incompatible token IDs).

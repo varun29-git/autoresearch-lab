@@ -1,11 +1,11 @@
 {
-  "resource_group": "H100_GROUP",
-  "vm_name": "h100",
-  "ssh_user": "azureuserboss",
-  "remote_repo": "/home/azureuserboss/terminus-autoresearch",
-  "remote_python": "/home/azureuserboss/terminus-results/runtime/venv/bin/python",
+  "resource_group": "YOUR_RESOURCE_GROUP",
+  "vm_name": "YOUR_VM_NAME",
+  "ssh_user": "YOUR_SSH_USER",
+  "remote_repo": "/remote/path/outside/git/terminus-autoresearch",
+  "remote_python": "/remote/path/to/runtime/bin/python",
   "remote_env": {
-    "PYTHONPATH": "/home/azureuserboss/terminus-results/runtime/fa3-site",
+    "PYTHONPATH": "/remote/path/to/runtime/fa3-site",
     "CUDA_HOME": "/usr/local/cuda-13.2",
     "DG_JIT_NVCC_COMPILER": "/usr/local/cuda-13.2/bin/nvcc"
   },
@@ -14,8 +14,8 @@
   "remote_results_root": "/srv/YOUR_PERSISTENT_DISK/architecture/results",
   "persistent_mount": "/srv/YOUR_PERSISTENT_DISK",
   "verification_parent": "/srv/YOUR_PERSISTENT_DISK/architecture/verification_scratch",
-  "blob_account": "t3logse388e1b8d9e3",
-  "blob_container": "terminus-autoresearch",
+  "blob_account": "YOUR_STORAGE_ACCOUNT",
+  "blob_container": "YOUR_ARCHIVE_CONTAINER",
   "blob_prefix": "architecture",
   "local_control_root": "/absolute/path/outside/git/terminus-architecture-control",
   "max_vm_hours": 12.0

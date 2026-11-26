@@ -1,6 +1,6 @@
 # Baseline provenance
 
-This standalone repository was initialized on 29 September 2026 from the maintained Terminus working tree at `/Users/varundaiya/terminus-flagship-150m-30btokens`.
+This standalone repository was initialized on 29 September 2026 from a maintained Terminus working tree associated with the source repository below. The personal local checkout path has been removed from the public record.
 
 - Original repository: `https://github.com/varun29-git/terminus-flagship-30b`
 - Original HEAD when copied: `fb4a966867656ada78dc276b25bae1fa5e0e392c`

@@ -1,0 +1,38 @@
+Terminus autoresearch
+Copyright 2026 Compact Intelligence Inc.
+Copyright 2026 Terminus contributors
+
+The original Terminus source code, documentation, research reports, and
+subsequent original modifications in this repository are licensed under the
+Apache License, Version 2.0. See LICENSE. The upstream snapshot identities and
+later research baseline are recorded in SOURCE_PROVENANCE.md and
+SOURCE_BASELINE.md.
+
+Provenance and third-party assets
+=================================
+
+The research workflow was adapted from Andrej Karpathy's autoresearch method at
+commit 228791fb499afffb54b46200aca536f79142f117. No upstream Python source was
+copied from that project. The pinned KellerJordan/Muon optimizer is an external
+dependency, not vendored source. PyTorch, NumPy, FlashAttention, DeepGEMM,
+Triton, QuACK, and other installed or referenced projects retain their own
+licenses; no license is granted here for those external projects.
+
+Third-party assets are not relicensed by this distribution:
+
+- tokenizer/tokenizer-65k.json is a derived tokenizer artifact identified in
+  tokenizer/tokenizer-65k-freeze.md as licensed by Sarvam AI under the Sarvam
+  AI Research License. It is not an official Sarvam product.
+- data/tokenizer/rwkv-7-world/rwkv_vocab_v20230424.txt is from BlinkDL/RWKV-LM
+  (RWKV-v7/rwkv_vocab_v20230424.txt), pinned at commit
+  aeda8a06fc4803655473c7e7359b1d7166e2c604. Upstream terms apply:
+  https://github.com/BlinkDL/RWKV-LM
+- External datasets, evaluation records, checkpoints, logs, papers, and other
+  research materials retain their respective terms and are not granted under
+  this repository's Apache-2.0 license.
+
+No third-party paper PDFs, raw training corpora, fetched evaluation records,
+or model checkpoints are distributed as Apache-licensed parts of this release.
+Canonical paper links are provided in RESEARCH_LIBRARY.md. Campaign summaries
+do not imply that external raw artifacts are publicly available or cleared for
+redistribution.

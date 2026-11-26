@@ -32,13 +32,13 @@ class AzureLifecycleTests(unittest.TestCase):
     def test_config_rejects_ephemeral_result_disk(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
-            value = {"resource_group": "H100_GROUP", "vm_name": "h100",
-                     "ssh_user": "azureuserboss", "remote_repo": "/home/azureuserboss/ar",
-                     "remote_python": "/home/azureuserboss/venv/bin/python",
+            value = {"resource_group": "test-resource-group", "vm_name": "h100",
+                     "ssh_user": "test-user", "remote_repo": "/home/test-user/ar",
+                     "remote_python": "/home/test-user/venv/bin/python",
                      "remote_campaign": "/mnt/ar/campaign.json",
                      "remote_data_root": "/mnt/ar/data",
                      "remote_results_root": "/mnt/ar/results",
-                     "persistent_mount": "/mnt", "blob_account": "t3logse388e1b8d9e3",
+                     "persistent_mount": "/mnt", "blob_account": "test-storage-account",
                      "blob_container": "terminus-autoresearch", "blob_prefix": "architecture",
                      "verification_parent": "/mnt/ar/verify",
                      "local_control_root": directory, "max_vm_hours": 12}
@@ -105,7 +105,7 @@ class AzureLifecycleTests(unittest.TestCase):
                                    blob_account="account", blob_container="container",
                                    blob_prefix="architecture/cycle-1",
                                    verification_parent=root / "verify",
-                                   resource_group="H100_GROUP", vm_name="h100")
+                                   resource_group="test-resource-group", vm_name="h100")
             calls = []
 
             def fake_run(*command):
@@ -160,7 +160,7 @@ class AzureLifecycleTests(unittest.TestCase):
     def test_controller_does_not_power_off_foreign_gpu_workload(self):
         with tempfile.TemporaryDirectory() as directory:
             settings = {"local_control_root": directory, "max_vm_hours": 12,
-                        "resource_group": "H100_GROUP", "vm_name": "h100"}
+                        "resource_group": "test-resource-group", "vm_name": "h100"}
             calls = []
             def fake_run(*command):
                 calls.append(command)

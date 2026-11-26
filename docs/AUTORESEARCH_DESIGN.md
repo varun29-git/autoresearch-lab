@@ -54,6 +54,6 @@ Stage two should tune hyperparameters and Muon/μP transfer **on a small archite
 ### Primary sources inspected for this adaptation
 
 - [Karpathy/autoresearch README, `program.md`, `prepare.py`, `train.py`](https://github.com/karpathy/autoresearch/tree/228791fb499afffb54b46200aca536f79142f117): actual fixed-time loop and metric, not a generic “agent framework.”
-- [MiniCPM4/BitCPM4 technical report](../papers/minicpm4_2506.07900.pdf): ModelTunnel task-aware proxy search and dense-to-ternary QAT; its schedules are hypotheses for Terminus, not defaults for this architecture screen.
-- [Tensor Programs V / μTransfer](../papers/tensor_programs_v_mup_2203.03466.pdf) and [Muon scaling](../papers/muon_scalable_2502.16982.pdf): why width-transfer and optimizer policy need a separate validation stage.
+- [MiniCPM4/BitCPM4 technical report](https://arxiv.org/abs/2506.07900): ModelTunnel task-aware proxy search and dense-to-ternary QAT; its schedules are hypotheses for Terminus, not defaults for this architecture screen.
+- [Tensor Programs V / μTransfer](https://arxiv.org/abs/2203.03466) and [Muon scaling](https://arxiv.org/abs/2502.16982): why width-transfer and optimizer policy need a separate validation stage.
 - [Terminus ModelTunnel quality strategy](terminus/TERMINUS_QUALITY_AND_HYPERPARAMETER_STRATEGY_20260927.md), [architecture evidence](terminus/architecture_review_20261005/RESEARCH_EVIDENCE.md), and [completed dense/QAT review](../experiments/terminus_lean_150m_qat_2b/analysis/COMBINED_DENSE_QAT_SCALING_REVIEW.md): local implementation and measured limitations.

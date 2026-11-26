@@ -18,9 +18,9 @@ merge/tokenization/upload. Its temporary work volume is not an output set.
 
 ## Aborted Azure launch and data-cap correction
 
-- VM: Azure `H100_GROUP/tok64`, `Standard_D96ads_v7` (96 vCPUs, 377 GiB RAM).
+- VM: Azure CPU instance with 96 vCPUs and 377 GiB RAM; resource identifiers removed from the public record.
 - Work volume: RAID0 across six temporary NVMe disks, XFS at `/data` (5.2 TiB usable).
-- Destination: `s3://quark-research-repository-storage/data/modeltunnelv2_tokensets_20261001/`.
+- Destination: an external object-storage prefix; the private bucket identifier is removed.
 - Tokenizer: frozen `tokenizer/tokenizer-65k.json`, SHA-256
   `c53e0e95cd19e2954a8c7114c0a580eeb16698b153fdf84c5d80a7187d778d29`.
 - Training mix: English 50%, math 10%, code 10%, seven Indic languages 30%.

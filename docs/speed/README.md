@@ -1,27 +1,29 @@
-# Stack-004 speed autoresearch, five-hour continuation
+# Stack 4 dense-speed research archive
 
-This dedicated worktree starts from the measured E3/E4/E9 dense stack on commit `1e8c0a4`. The candidate model remains 25 layers and 1,500,456,496 parameters. [speed_program.md](../../speed_program.md) is Kimi's operating program; [PENDING_5H.md](PENDING_5H.md) inventories every unfinished experiment and the largest measured costs. [EXPERIMENTS.md](EXPERIMENTS.md) supplies the original hypothesis atlas, and [PHYSICS.md](PHYSICS.md) supplies the active one-GPU hardware bounds. [PRODUCTION_CONTEXT.md](PRODUCTION_CONTEXT.md) is archived context. [KIMI_START.md](../../KIMI_START.md) is the copyable paid-run prompt. This loop optimizes only one-GPU dense throughput.
+This directory records the completed single-H100 dense-throughput campaign on the 25-layer, 1,500,456,496-parameter Stack 4 shape. It does not describe an active campaign or authorize cloud work. For the release-wide evidence boundaries, start with [RESULTS.md](../RESULTS.md) and [REPRODUCIBILITY.md](../REPRODUCIBILITY.md).
 
-The research budget is **five cumulative H100 VM-on hours** on one H100. This pass measures dense training only; QAT and 32-GPU transfer are outside its scope. The controller in `research/speed_session.py` caps the new campaign at 18,000 cumulative seconds and installs a VM-side cutoff before the cap. Use the **new** external control root `/Users/varundaiya/terminus-speed-external/stack-004-5h/control`; the old three-hour ledger belongs to a completed campaign. The candidate trials may use the same persistent remote data and results mount with unique `v2-...` names.
+## Auditable results
 
-The previous best sustained log reports 41,075 valid tokens/s at 55.5 GB allocated. Three complete paired 20-update receipts show a stable ~11.6% gain over the incumbent. The 80-update summary is archived, but its full JSON receipt was not copied locally. The first new winning run should save the complete JSON and its hash immediately. It does not need a long repeat of the old baseline before useful candidate work.
+- [E3/E4/E9 dense round](trials/e2-e3-e4-e9-dense-round.md): standalone E3 reached 40,187 valid tokens/s versus 36,527 in the 20-update confirmation, +10.0%. E2 was rejected; E4 and E9 were retained in the combined stack.
+- [Paired-run summary](TRANSFER_32GPU.md): three paired 20-update runs averaged **40,996 tokens/s** for E3/E4/E9 versus **36,723** for the incumbent, +11.6%, with 55.5 GB peak torch allocation.
+- An archived 80-update log line reports 41,075 tokens/s, but its full JSON receipt is unavailable. Use the complete paired receipts as the auditable evidence, not the shorter 41,936-token/s screen.
 
-A local config exists outside Git at `/Users/varundaiya/terminus-speed-external/stack-004-5h/control/speed_session.json`. If moving this worktree to another host, start from [the example](../../research/speed_session.example.json) and choose a fresh external `local_control_root`. Commands below are shown for Kimi **after the human's one-time paid-campaign authorization**; reading or local testing does not authorize `open`.
+The measurements cover complete dense optimizer updates on one H100 NVL with a real staged English stream. They do not validate QAT, 32-GPU throughput, final model quality, or production token-budget feasibility. The 32-GPU document is an analytical scenario only.
+
+## Research map
+
+- [MEASUREMENT.md](MEASUREMENT.md) defines the complete-update timing boundary and paired comparison policy.
+- [VALIDATION.md](VALIDATION.md) records the available numerical evidence and missing receipts.
+- [EXPERIMENTS.md](EXPERIMENTS.md) is the original hypothesis atlas; [PENDING_5H.md](PENDING_5H.md) is a historical planning snapshot, not the current release status.
+- [PHYSICS.md](PHYSICS.md) derives optimistic hardware bounds; these are not attainable-throughput claims.
+- [SOURCES.md](SOURCES.md) and [PRODUCTION_IMPLEMENTATIONS.md](PRODUCTION_IMPLEMENTATIONS.md) distinguish external implementations from Terminus measurements.
+
+Later N1/N2/E16 and QuACK source experiments are retained for review but are not promoted as validated winners without matched-token quality and sustained full-update evidence. `speed_program.md` and the root `KIMI_START.md` are archived protocols. Raw result receipts, data, checkpoints, and session configuration remain outside Git.
+
+Focused local protocol tests, without VM allocation:
 
 ```bash
-python3 -m research.speed_session status --config /Users/varundaiya/terminus-speed-external/stack-004-5h/control/speed_session.json
-python3 -m research.speed_session open --config /Users/varundaiya/terminus-speed-external/stack-004-5h/control/speed_session.json
-python3 -m research.speed_session stage --config /Users/varundaiya/terminus-speed-external/stack-004-5h/control/speed_session.json
-python3 -m research.speed_session exec --config /Users/varundaiya/terminus-speed-external/stack-004-5h/control/speed_session.json -- nvidia-smi -L
-python3 -m research.speed_session close --config /Users/varundaiya/terminus-speed-external/stack-004-5h/control/speed_session.json --reason budget
+python -m unittest tests.test_speed_session tests.test_s0_block tests.test_speed_s0 tests.test_speed_research tests.test_hopper_candidates
 ```
 
-`open` is paid. `stage` sends a clean committed candidate. `exec` runs the real complete-update timing script on the H100. Continue experiments under the same session instead of rebooting for each trial. If a development gap warrants deallocation, use `close --reason idle`, keep the ledger and resume later. An early `goal` stop requires a measured, physics-backed one-GPU saturation case with no credible high-upside experiments left. The earlier one-shot `research.azure_speed_worker` is not this loop.
-
-Local checks, without VM allocation:
-
-```bash
-python3 -m unittest tests.test_speed_session tests.test_s0_block tests.test_speed_s0 tests.test_speed_research tests.test_hopper_candidates
-```
-
-`tests.test_logical_muon` additionally needs the `muon-optimizer` package, which is absent from this local Python; the native H100 environment has its own runtime. No native H100 trial or VM lifecycle command has been run from this new five-hour worktree. The previous campaign's results remain in its separate archived external control tree.
+The full release verification commands are in [REPRODUCIBILITY.md](../REPRODUCIBILITY.md). CPU tests and skips are not native-H100 validation.

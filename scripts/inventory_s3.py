@@ -118,7 +118,7 @@ def main():
                  "bucket": BUCKET, "method": "ListObjectsV2 sums; one Parquet footer + first batch per family",
                  "sources": {}, "sangraha": {}, "fineweb2_indic": {}, "translations": {},
                  "presence_checks": {}, "excluded_prefixes": ["translation-staging/", "translation-benchmark/",
-                                                              "quark-research-repository-storage TinyLlama packs"]}
+                                                              "YOUR_ARCHIVE_BUCKET TinyLlama packs"]}
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
     if out.exists():  # resume: keep sections already inventoried

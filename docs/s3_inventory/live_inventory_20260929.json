@@ -3,7 +3,7 @@
  "excluded_prefixes": [
   "translation-staging/",
   "translation-benchmark/",
-  "quark-research-repository-storage TinyLlama packs"
+  "YOUR_ARCHIVE_BUCKET TinyLlama packs"
  ],
  "fineweb2_indic": {
   "asm_Beng": {

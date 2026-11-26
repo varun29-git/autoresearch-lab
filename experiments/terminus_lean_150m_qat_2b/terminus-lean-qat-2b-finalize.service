@@ -7,10 +7,10 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=azureuserboss
-Group=azureuserboss
-WorkingDirectory=/home/azureuserboss/terminus-modeltunnelv2-qat
-ExecStart=/home/azureuserboss/1bit_llm_advanced/.venv_test13/bin/python /home/azureuserboss/terminus-modeltunnelv2-qat/experiments/terminus_lean_150m_qat_2b/finalize_blob_and_deallocate.py --run-root /srv/terminus-10b/runs/lean_ternary_qat_2b_20261002 --s3-run-uri s3://quark-research-repository-storage/data/terminus_lean_150m_qat_2b_run_20261002 --blob-url https://t3logse388e1b8d9e3.blob.core.windows.net/runs/terminus_lean_150m_qat_2b_run_20261002/ --vm-resource-id /subscriptions/6ac11955-aa2f-4cf9-a693-e388e1b8d9e3/resourceGroups/H100_GROUP/providers/Microsoft.Compute/virtualMachines/h100 --train-service terminus-lean-qat-2b.service --ops-log /srv/terminus-10b/ops/qat/finalizer.log --poll-seconds 10
+User=terminus
+Group=terminus
+WorkingDirectory=/opt/terminus
+ExecStart=/opt/terminus-runtime/bin/python /opt/terminus/experiments/terminus_lean_150m_qat_2b/finalize_blob_and_deallocate.py --run-root /srv/terminus-10b/runs/lean_ternary_qat_2b_20261002 --s3-run-uri s3://YOUR_RUN_BUCKET/terminus_lean_150m_qat_2b_run_20261002 --blob-url https://YOUR_STORAGE_ACCOUNT.blob.core.windows.net/YOUR_ARCHIVE_CONTAINER/terminus_lean_150m_qat_2b_run_20261002/ --vm-resource-id /subscriptions/YOUR_SUBSCRIPTION_ID/resourceGroups/YOUR_RESOURCE_GROUP/providers/Microsoft.Compute/virtualMachines/YOUR_VM_NAME --train-service terminus-lean-qat-2b.service --ops-log /srv/terminus-10b/ops/qat/finalizer.log --poll-seconds 10
 Restart=on-failure
 RestartSec=300
 StandardOutput=append:/srv/terminus-10b/ops/qat/finalizer.log

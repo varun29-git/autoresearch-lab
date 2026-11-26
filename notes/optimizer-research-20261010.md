@@ -157,39 +157,27 @@ otherwise rank, report, and request deallocation. Negative controls for the
 later width bridge come from stable losers on opposite sides of the
 matrix-LR optimum, so the bracket trials double as bridge material.
 
-## 5. GPU staging protocol (when the human starts the H100)
+## 5. Historical GPU staging protocol
 
-VM: `H100_GROUP/h100` (Standard_NCC40ads_H100_v5, Central US), SSH
-`azureuserboss` with `~/.ssh/id_rsa`. Record the allocation start time;
-everything (startup, validation, idle) counts against 8 h.
+The completed campaign used one externally managed H100 NVL and counted startup, validation, and idle allocated time against its eight-hour cap. Cloud resource names, account identifiers, local home paths, SSH users, and key paths are removed from this public record. This section is not authorization for another run.
 
-1. Confirm power state (read-only):
-   `az vm get-instance-view -g H100_GROUP -n h100 --query instanceView.statuses -o tsv`
-2. Stage the exact controller manifest and verify:
-   `scp /Users/varundaiya/terminus-optimizer-evidence/stack004-manifest.json azureuserboss@<vm>:/srv/terminus-10b/stack004-manifest.json`
-   then on the VM: sha256sum must equal
-   `3c70bef91d09b2c31194887191a8058899d199f3bb4ebbed41c8691b3b521575`.
-   (If it is already staged with that hash, do not re-copy.)
-3. Verify readable shards under `/srv/terminus-10b/data/packed` (count 418
-   train/val .bin files, spot-check one sha256 against the manifest).
-4. Sync this exact commit to `/home/azureuserboss/terminus-autoresearch` via
-   `git bundle` (VM has no GitHub credential), checkout the branch commit.
-5. Create `/srv/terminus-10b/hpo-results` (outside Git).
-6. Run trials from the repo root with the pinned runtime env
-   (PYTHONPATH=/home/azureuserboss/terminus-optimization-20260910/runtime/fa3-site,
-   CUDA_HOME=/usr/local/cuda-13.2, DG_JIT_NVCC_COMPILER, DG_JIT_CACHE_DIR per
-   the architecture-cycle config), remote python
-   `/home/azureuserboss/terminus-results/runtime/venv/bin/python`:
-   `python -m hpo run --trial <name> --updates 1272 --candidate hpo/candidate.json
-     --manifest /srv/terminus-10b/stack004-manifest.json
-     --data-root /srv/terminus-10b/data/packed --results-root /srv/terminus-10b/hpo-results`
-   under nohup with a log; poll; on completion pull `result.json` / ledger
-   rows and the events curve for analysis.
-7. `python -m hpo rank --updates 1272 --results-root /srv/terminus-10b/hpo-results`
-   after each trial; keep/revert; commit each new candidate before running.
-8. Track allocated hours from VM start; before each new trial confirm a
-   complete run fits; when it cannot, rank, pull all results to the
-   controller, and ask the human to deallocate.
+1. Confirm the externally supplied VM is in the expected power state without changing it.
+2. Stage the exact manifest outside Git and verify SHA-256 `3c70bef91d09b2c31194887191a8058899d199f3bb4ebbed41c8691b3b521575`.
+3. Verify all 418 train/validation shards are readable and spot-check shard hashes against the manifest.
+4. Transfer the exact committed source with `git bundle`; the VM needs no GitHub credential.
+5. Keep results and checkpoints on an external persistent path.
+6. Run each committed candidate with the pinned external runtime:
+
+   ```bash
+   python -m hpo run --trial <name> --updates 1272 \
+     --candidate hpo/candidate.json \
+     --manifest /external/stack004-manifest.json \
+     --data-root /external/packed \
+     --results-root /external/hpo-results
+   ```
+
+7. Rank only compatible completed results with `python -m hpo rank --updates 1272 --results-root /external/hpo-results`; retain result files and event curves for analysis.
+8. Before every new trial, confirm the complete run fits the remaining authorized allocation. When it cannot, preserve the external records and request deallocation through the human-controlled infrastructure process.
 
 ## 6. Width-transfer plan (700M/1.5B) — prepared, NOT run under this cap
 

@@ -1,38 +1,29 @@
 # Stack 4 dense hyperparameter autoresearch
 
-This is a separate HPO worktree based on the completed single-GPU speed source
-`8a62293` and the spectral-Muon implementation `8153a78`. Its 200M reference
-uses the selected E3 packed learned Q/K path (`fused_qkv=true`), E4 value mix,
-and E9 batched Muon. Optional numerical speed candidates such as an FP8
-vocabulary head are **not** enabled. The architecture remains 25-layer Stack 4.
+This completed campaign used the E3 packed learned Q/K path, E4 value mix, E9 batched Muon, and the separate `spectral_unclamped` Muon rule. The model remained the 25-layer Stack 4 architecture at 200M scale. Optional numerical speed candidates such as an FP8 vocabulary head were not enabled.
 
-This campaign uses spectral Muon, fixed across all 200M candidates.
-`reference_200m.json` has placeholder rates and weight decay that Kimi must
-replace with researched candidate choices before training.
+Each ranked candidate ran exactly 1,272 complete updates, **500,170,752 tokens**, against the fixed English stream. Only the endpoint result ranked candidates. The final selection commit `5e5f4ab` records 12 ranked trials and endpoint CE **3.0456** for the values in [`candidate.json`](candidate.json):
 
-`python -m hpo run` executes each 200M candidate for exactly 1,272 full
-updates (500,170,752 tokens) against the fixed English stream, and
-`python -m hpo rank` compares candidates only at that endpoint. The dense
-200M search has an eight-allocated-GPU-hour cap. Candidates can tune global
-and role-specific Muon LRs, the tied embedding Adam LR/decay, norm and value
-mix group LRs, matrix decay, momentum/betas/epsilon, and clipping.
-Kimi must research and fill the six `null` LR/decay fields in `candidate.json`
-before its first run; the reference-file numbers are only valid-config placeholders.
-Its factual starting brief is [MODEL_PROFILE.md](MODEL_PROFILE.md).
-All results and checkpoints go outside Git. Read [program.md](program.md)
-before starting a paid run; [KIMI_START.md](KIMI_START.md) is the pasteable
-agent prompt. For later width checks, `python -m hpo.bridge` locks the
-width-specific reference and `python -m hpo.transfer` generates tied-embedding
-AdamW LR exponents 0, 0.5, and 1 at matched `LR × weight_decay`.
+- spectral-Muon LR 0.017;
+- tied-table AdamW LR 0.006;
+- norm LR 0.0003 and Q/K-norm LR 0.0001;
+- matrix weight decay 0.02;
+- embedding weight decay 0.0.
 
-The exact archived Stack 4 manifest is staged on the controller at
-`/Users/varundaiya/terminus-optimizer-evidence/stack004-manifest.json`.
-Its 415 English train and 3 validation shard paths resolve under the Azure
-persistent-disk directory `/srv/terminus-10b/data/packed`. Source shards are
-in `s3://quark-research-repository-storage/data/modeltunnelv2_tokensets_20261001/packed/`.
-The older `/srv/terminus-10b/architecture/manifest.en.json` is **not** the
-same file as the locked HPO reference manifest.
+This is a 200M English-proxy result, not a validated 1.5B optimizer recipe. No 700M or 1.5B width-transfer trial was completed. See [the consolidated evidence guide](../docs/RESULTS.md#4-hpo-result) for the bracket observations and limitations.
 
-No native H100 HPO run or width-transfer test has been performed in this
-worktree. The 1.5B production optimizer recipe cannot be declared from the
-200M English screen alone.
+## Auditing and reproduction
+
+[`reference_200m.json`](reference_200m.json) fixes the model, optimizer convention, schedule, campaign stages, and manifest SHA-256. Its original placeholder optimizer numbers are not the selected candidate; use `candidate.json` for the final values. [MODEL_PROFILE.md](MODEL_PROFILE.md) and [the optimizer research note](../notes/optimizer-research-20261010.md) record the starting assumptions and literature context.
+
+The raw manifest, 415 English train shards, 3 validation shards, candidate result files, checkpoints, and complete ranked ledger remain external. The exact manifest SHA-256 is `3c70bef91d09b2c31194887191a8058899d199f3bb4ebbed41c8691b3b521575`. The architecture campaign manifest is not interchangeable with this HPO manifest. A complete 12-row results table is not checked in.
+
+With an externally supplied compatible result set, ranking is local and does not start training:
+
+```bash
+python -m hpo rank --updates 1272 --results-root /external/hpo-results
+```
+
+`python -m hpo.bridge` prepares a width-specific reference from external inputs, and `python -m hpo.transfer` generates tied-embedding AdamW LR exponents 0, 0.5, and 1 at matched `LR × weight_decay`. Those generators do not establish transfer. [REPRODUCIBILITY.md](../docs/REPRODUCIBILITY.md) maps early HPO notes' unavailable source IDs to retained snapshots.
+
+[`program.md`](program.md) and [`KIMI_START.md`](KIMI_START.md) are historical campaign prompts, not authorization for new paid work. All results, data, checkpoints, credentials, and infrastructure configuration remain outside Git.
